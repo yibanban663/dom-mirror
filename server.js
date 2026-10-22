@@ -441,7 +441,7 @@ http.createServer(staticHandler(path.join(__dirname, 'protected')))
 
 // ---------- 会话 ----------
 let sessions = 0;
-wss.on('connection', async (ws) => {
+wss.on('connection', async (ws, req) => {
   if (sessions >= MAX_SESSIONS) {
     ws.send(JSON.stringify({ type: 'error', msg: `会话已满（上限 ${MAX_SESSIONS}），请稍后再试` }));
     ws.close(); return;
@@ -472,6 +472,17 @@ wss.on('connection', async (ws) => {
   };
   ws.on('close', cleanup);
   ws.on('error', () => {});
+
+  // 会话源站：虚影 proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
+  let sessionOrigin = ORIGIN_URL;
+  try {
+    const hOrigin = req && req.headers['x-rbi-origin'];
+    if (hOrigin) {
+      const u = new URL(String(hOrigin));
+      if ((u.protocol === 'http:' || u.protocol === 'https:') && u.hostname) sessionOrigin = u.origin + '/';
+    }
+  } catch (e) {}
+  console.log('[sess  ] origin =', sessionOrigin);
 
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
@@ -793,9 +804,9 @@ wss.on('connection', async (ws) => {
     });
     DPR = Math.max(1, Math.min(3, parseFloat(hello.dpr) || 1));
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: VIEW_W, height: VIEW_H, deviceScaleFactor: DPR, mobile: false });
-    await page.goto(ORIGIN_URL, { waitUntil: 'networkidle0', timeout: 20000 });
+    await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
     await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
-    sendJson({ type: 'meta', w: VIEW_W, h: VIEW_H, title: await page.title(), url: ORIGIN_URL, maxSessions: MAX_SESSIONS, mode });
+    sendJson({ type: 'meta', w: VIEW_W, h: VIEW_H, title: await page.title(), url: sessionOrigin, maxSessions: MAX_SESSIONS, mode });
     if (mode === 'dom') await startDomMirror();
     else await startScreencast();
 
