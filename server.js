@@ -116,6 +116,117 @@ const PAGE_HELPERS = `(() => {
         title: document.title,
       };
     },
+    // 文字位图化：在 live 页面"替换→实测偏差→relative 归位→还原"，
+    // 布局零扰动 + 逐元素像素对齐（偏差由实测吸收，不做任何布局假设）
+    async snapshotBitmap(pngB64) {
+      window.__xyBusy = true;
+      const img = new Image();
+      img.src = 'data:image/png;base64,' + pngB64;
+      await img.decode();
+      const sheet = document.createElement('canvas');
+      sheet.width = img.width; sheet.height = img.height;
+      sheet.getContext('2d').drawImage(img, 0, 0);
+      const skipTags = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE']);
+      const runs = [];
+      const walk = (node, path) => {
+        let idx = 0;
+        for (const ch of node.childNodes) {
+          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { continue; }
+          const p = path === '' ? String(idx) : path + '/' + idx;
+          if (ch.nodeType === 3) { if (ch.textContent.trim()) runs.push({ node: ch, path: p }); }
+          else if (ch.nodeType === 1) walk(ch, p);
+          idx++;
+        }
+      };
+      walk(document.body, '');
+      const rng = document.createRange();
+      const jobs = [];
+      const doneRuns = new Set();
+      // ① live 页就地替换为等大 inline 占位 img（测量用）
+      for (const run of runs) {
+        try {
+          rng.selectNodeContents(run.node);
+          const rects = [...rng.getClientRects()];
+          if (!rects.length) continue;
+          doneRuns.add(run);
+          const L = Math.min(...rects.map(r => r.left)), T = Math.min(...rects.map(r => r.top));
+          const R = Math.max(...rects.map(r => r.right)), B = Math.max(...rects.map(r => r.bottom));
+          const x = Math.round(L + window.scrollX), y = Math.round(T + window.scrollY);
+          const w = Math.round(R - L), h = Math.round(B - T);
+          if (w <= 0 || h <= 0) continue;
+          const im = document.createElement('img');
+          im.width = w; im.height = h;
+          im.style.cssText = 'display:inline-block;vertical-align:top';
+          run.parent = run.node.parentElement;
+          run.parent.replaceChild(im, run.node);
+          jobs.push({ run, im, x, y, w, h });
+        } catch (e) {}
+      }
+      // ② 等布局稳定，实测偏差归位、裁切，并立即还原 live 文本（clone 必须基于还原后的干净 DOM）
+      await new Promise(r2 => requestAnimationFrame(() => requestAnimationFrame(r2)));
+      for (const j of jobs) {
+        try {
+          const q = j.im.getBoundingClientRect();
+          const dx = Math.round((j.x - window.scrollX - q.left) * 2) / 2;
+          const dy = Math.round((j.y - window.scrollY - q.top) * 2) / 2;
+          if (dx || dy) { j.im.style.position = 'relative'; j.im.style.left = dx + 'px'; j.im.style.top = dy + 'px'; }
+          if (j.x >= 0 && j.y >= 0 && j.x + j.w <= sheet.width + 1 && j.y + j.h <= sheet.height + 1) {
+            const c2 = document.createElement('canvas');
+            c2.width = j.w; c2.height = j.h;
+            c2.getContext('2d').drawImage(sheet, j.x, j.y, j.w, j.h, 0, 0, j.w, j.h);
+            j.im.src = c2.toDataURL('image/png');
+            j.im.setAttribute('data-xy-bitmap', '1');
+            j.imgHtml = j.im.outerHTML;
+          }
+        } catch (e) {}
+        try { j.run.parent.replaceChild(j.run.node, j.im); } catch (e) {}
+      }
+      const clone = sanitizeClone(document.body);
+      // ③ clone 中同路径替换为带像素的 img（未产出 imgHtml 的文本剥除）
+      for (const j of jobs) {
+        try {
+          const parts = j.run.path.split('/');
+          let cn = clone;
+          for (const i of parts.slice(0, -1)) { cn = cn.childNodes ? cn.childNodes[+i] : null; if (!cn) break; }
+          const target = cn && cn.childNodes ? cn.childNodes[+parts[parts.length - 1]] : null;
+          if (!target || target.nodeType !== 3) continue;
+          if (j.imgHtml) {
+            const tpl = document.createElement('template');
+            tpl.innerHTML = j.imgHtml;
+            cn.replaceChild(tpl.content.firstChild, target);
+          } else {
+            cn.replaceChild(document.createTextNode(''), target);
+          }
+        } catch (e) {}
+      }
+      window.__xyBusy = false;
+      // ⑤ 不可见/未处理文本：clone 中剥除，绝不留明文
+      for (const run of runs) {
+        if (doneRuns.has(run)) continue;
+        try {
+          const parts = run.path.split('/');
+          let cn = clone;
+          for (const i of parts.slice(0, -1)) { cn = cn.childNodes ? cn.childNodes[+i] : null; if (!cn) break; }
+          const target = cn && cn.childNodes ? cn.childNodes[+parts[parts.length - 1]] : null;
+          if (target && target.nodeType === 3 && target.textContent.trim()) cn.replaceChild(document.createTextNode(''), target);
+        } catch (e) {}
+      }
+      const styleCss = [...document.querySelectorAll('style')].map(s => s.textContent).join('\\n');
+      const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
+      let linkCss = '';
+      try {
+        const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
+        linkCss = texts.join('\\n');
+      } catch (e) {}
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title };
+    },
+    rectOf(path) {
+      const el = window.__xy.find(path);
+      if (!el || !el.getBoundingClientRect) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return null;
+      return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
+    },
     patchOf(record) {
       // 补丁模型：childList/characterData → 目标元素 innerHTML 重发；attributes → 元素 outerHTML 重发
       let target = record.target;
@@ -289,29 +400,40 @@ wss.on('connection', async (ws) => {
   }
 
   // ---------- DOM 镜像通道 ----------
-  let domActive = false, domExposed = false;
+  let domActive = false, domExposed = false, domBitmap = false;
+  let patchChain = Promise.resolve();
 
   async function startDomMirror() {
     await page.evaluate(PAGE_HELPERS);
     if (!domExposed) {
       await page.exposeFunction('__xyPatch', (patches) => {
         if (!domActive || ws.readyState !== 1) return;
-        if (patches.some(p => p && p.full)) {
-          page.evaluate(() => window.__xy.snapshot())
-            .then(snap => sendJson({ type: 'dom-snapshot', css: snap.css.replace(/url\((['"]?)\//g, 'url($1/m/'), html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H }))
-            .catch(() => {});
-          return;
-        }
-        const payload = JSON.stringify({ type: 'dom-patches', patches });
-        ws.send(payload);
-        ws._bytes = (ws._bytes || 0) + payload.length;
-        ws._chunks = (ws._chunks || 0) + 1;
+        // 串行化处理，避免并发截图竞态
+        patchChain = patchChain.then(async () => {
+          try {
+            if (domBitmap) return await bitmapPatches(patches);
+            if (patches.some(p => p && p.full)) {
+              const snap = await page.evaluate(() => window.__xy.snapshot());
+              sendJson({ type: 'dom-snapshot', css: snap.css.replace(/url\((['"]?)\//g, 'url($1/m/'), html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H });
+              return;
+            }
+            const payload = JSON.stringify({ type: 'dom-patches', patches });
+            ws.send(payload);
+            ws._bytes = (ws._bytes || 0) + payload.length;
+            ws._chunks = (ws._chunks || 0) + 1;
+          } catch (e) {}
+        });
       });
       domExposed = true;
     }
     domActive = true;
-    const snap = await page.evaluate(() => window.__xy.snapshot());
-    // CSS 内部 url(/x) 重写到 /m/x 资源代理
+    let snap;
+    if (domBitmap) {
+      const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+      snap = await page.evaluate((b64) => window.__xy.snapshotBitmap(b64), shot.data);
+    } else {
+      snap = await page.evaluate(() => window.__xy.snapshot());
+    }
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/');
     const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H });
     ws.send(payload);
@@ -320,13 +442,52 @@ wss.on('connection', async (ws) => {
     await page.evaluate(() => {
       if (window.__xyObs) window.__xyObs.disconnect();
       window.__xyObs = new MutationObserver((recs) => {
+        if (window.__xyBusy) return; // 位图化期间的替换/还原不产生补丁
         const out = [];
         for (const r of recs) out.push(window.__xy.patchOf(r));
         window.__xyPatch(out);
       });
       window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
     });
-    console.log('[dom   ] mirror started');
+    console.log(`[dom   ] mirror started (bitmap=${domBitmap})`);
+  }
+
+  // 位图模式补丁：对每个变化元素截 clip 区域，整块（或元素内容）替换为服务端渲染位图
+  async function bitmapPatches(patches) {
+    if (patches.some(p => p && p.full)) {
+      await startDomMirror();
+      return;
+    }
+    const out = [];
+    for (const p of patches) {
+      if (!p || p.path === undefined) continue;
+      try {
+        const rect = await page.evaluate((path) => window.__xy.rectOf(path), p.path);
+        if (!rect) continue;
+        const shot = await cdp.send('Page.captureScreenshot', {
+          format: 'png',
+          clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h, scale: 1 },
+          captureBeyondViewport: true,
+        });
+        // 交互元素（按钮/链接等）保留语义结构，仅内容位图化，保证可点击
+        const keepEl = await page.evaluate((path) => {
+          const el = window.__xy.find(path);
+          return !!el && !!el.closest('button, a, input, select, label');
+        }, p.path);
+        out.push({
+          path: p.path,
+          [keepEl ? 'bitmapInner' : 'bitmap']: {
+            w: Math.round(rect.w), h: Math.round(rect.h),
+            url: 'data:image/png;base64,' + shot.data,
+          },
+        });
+      } catch (e) {}
+    }
+    if (!out.length) return;
+    const payload = JSON.stringify({ type: 'dom-patches', patches: out });
+    ws.send(payload);
+    ws._bytes = (ws._bytes || 0) + payload.length;
+    ws._chunks = (ws._chunks || 0) + 1;
   }
 
   async function stopDomMirror() {
@@ -388,12 +549,13 @@ wss.on('connection', async (ws) => {
             }
             break;
           case 'mode': {
-            const next = ['jpeg', 'webp', 'h264', 'dom'].includes(m.mode) ? m.mode : 'jpeg';
-            if (mode === 'dom' && next !== 'dom') await stopDomMirror();
+            const next = ['jpeg', 'webp', 'h264', 'dom', 'dombitmap'].includes(m.mode) ? m.mode : 'jpeg';
+            if ((mode === 'dom' || mode === 'dombitmap') && next !== 'dom' && next !== 'dombitmap') await stopDomMirror();
             mode = next;
+            domBitmap = (mode === 'dombitmap');
             if (mode === 'h264') { quality = 85; startFFmpeg(); } else { stopFFmpeg(); }
             try {
-              if (mode === 'dom') {
+              if (mode === 'dom' || mode === 'dombitmap') {
                 await cdp.send('Page.stopScreencast').catch(() => {});
                 await startDomMirror();
               } else {
@@ -401,7 +563,7 @@ wss.on('connection', async (ws) => {
               }
               sendJson({ type: 'mode', mode });
             } catch (e) {
-              mode = 'jpeg'; stopFFmpeg(); await stopDomMirror().catch(() => {});
+              mode = 'jpeg'; domBitmap = false; stopFFmpeg(); await stopDomMirror().catch(() => {});
               await startScreencast();
               sendJson({ type: 'error', msg: `模式 ${next} 启动失败已回退 JPEG: ${e.message}` });
               sendJson({ type: 'mode', mode: 'jpeg' });
