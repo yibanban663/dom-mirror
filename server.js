@@ -324,15 +324,65 @@ const PAGE_HELPERS = `(() => {
     },
     patchOf(record) {
       // 补丁模型：childList/characterData → 目标元素 innerHTML 重发；attributes → 元素 outerHTML 重发
+      // kind 保留变更类型，skiadom 用它区分"仅文字变"（增量 runs）与"结构变"（全量）
       let target = record.target;
       if (target.nodeType === 3) target = target.parentElement;
       if (!target || target === document.documentElement) return { full: true };
       const path = pathOf(target);
       if (path === null) return { full: true };
       if (record.type === 'attributes') {
-        return { path, outer: sanitizeClone(target).outerHTML };
+        return { path, outer: sanitizeClone(target).outerHTML, kind: record.type };
       }
-      return { path, inner: sanitizeClone(target).innerHTML };
+      // childList 里只有文本节点增删（如 textContent= 赋值）视为纯文字变化 → skiadom 走增量 runs
+      let kind = record.type;
+      if (record.type === 'childList') {
+        const onlyText = [...record.removedNodes].every(n => n.nodeType === 3) && [...record.addedNodes].every(n => n.nodeType === 3);
+        if (onlyText) kind = 'textChange';
+      }
+      if (record.type === 'characterData') kind = 'textChange';
+      return { path, inner: sanitizeClone(target).innerHTML, kind };
+    },
+    // skiadom 增量：只重测文字 runs（不碰 DOM 结构，无需占位替换）
+    async skiaRuns() {
+      const skipTags = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE']);
+      const runs = [];
+      const walk = (node, path) => {
+        let idx = 0;
+        for (const ch of node.childNodes) {
+          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { continue; }
+          const p = path === '' ? String(idx) : path + '/' + idx;
+          if (ch.nodeType === 3) {
+            if (!ch.textContent.trim()) { idx++; continue; }
+            const rng = document.createRange();
+            rng.selectNodeContents(ch);
+            const rects = [...rng.getClientRects()];
+            if (rects.length) {
+              const cs = getComputedStyle(ch.parentElement);
+              const mm = cs.color.match(/rgba?\\(([^)]+)\\)/);
+              runs.push({
+                node: ch, text: ch.textContent,
+                x: Math.min(...rects.map(r => r.left)) + window.scrollX,
+                y: Math.min(...rects.map(r => r.top)) + window.scrollY,
+                size: parseFloat(cs.fontSize) || 16,
+                bold: (+cs.fontWeight >= 600),
+                color: mm ? mm[1].split(',').slice(0, 3).map(v => (+v.trim()) / 255) : [0, 0, 0],
+              });
+            }
+          } else if (ch.nodeType === 1) {
+            walk(ch, p);
+          }
+          idx++;
+        }
+      };
+      walk(document.body, '');
+      const mctx = document.createElement('canvas').getContext('2d');
+      const out = [];
+      for (const r of runs) {
+        mctx.font = (r.bold ? '700 ' : '400 ') + r.size + 'px "Noto Sans CJK SC", sans-serif';
+        const m = mctx.measureText('汉字Ag');
+        out.push({ t: r.text, x: Math.round(r.x * 10) / 10, y: Math.round(r.y * 10) / 10, w: 0, h: 0, c: r.color, s: r.size, b: r.bold ? 1 : 0, a: Math.round(m.fontBoundingBoxAscent || r.size * 0.88) });
+      }
+      return out;
     },
   };
 })();`;
@@ -437,6 +487,19 @@ const demoSrv = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.url === '/f/noto-bold-otf') {
+    // 真 Bold 字形（引擎文字模式用，替代合成加粗）
+    fs.readFile('/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc', (err, buf) => {
+      if (err) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, {
+        'content-type': 'font/collection',
+        'cache-control': 'public, max-age=86400',
+        'content-length': buf.length,
+      });
+      res.end(buf);
+    });
+    return;
+  }
   return staticHandler(path.join(__dirname, 'client'))(req, res);
 });
 const wss = new WebSocketServer({ noServer: true });
@@ -510,14 +573,29 @@ wss.on('connection', async (ws) => {
   // ---------- DOM 镜像通道 ----------
   let domActive = false, domExposed = false, domBitmap = false;
   let patchChain = Promise.resolve();
-  let skiaTimer = null;
+  let skiaTimer = null, skiaRunsTimer = null;
   const skiaResched = () => {
-    // skiadom v0：文字/结构变化 → 200ms 防抖全量重发（快照为纯 DOM 测量，开销与 dom 模式同级）
+    // skiadom：结构/属性变化 → 200ms 防抖全量重发
     if (skiaTimer) return;
     skiaTimer = setTimeout(() => {
       skiaTimer = null;
       if (domActive && mode === 'skiadom' && ws.readyState === 1) startDomMirror().catch(() => {});
     }, 200);
+  };
+  const skiaRunsResched = () => {
+    // skiadom：纯文字变化 → 100ms 防抖只重发 runs（骨架不动、不重建 DOM）
+    if (skiaRunsTimer) return;
+    skiaRunsTimer = setTimeout(async () => {
+      skiaRunsTimer = null;
+      if (!domActive || mode !== 'skiadom' || ws.readyState !== 1) return;
+      try {
+        const runs = await page.evaluate(() => window.__xy.skiaRuns());
+        const payload = JSON.stringify({ type: 'skia-runs', runs });
+        ws.send(payload);
+        ws._bytes = (ws._bytes || 0) + payload.length;
+        ws._chunks = (ws._chunks || 0) + 1;
+      } catch (e) {}
+    }, 100);
   };
 
   async function startDomMirror() {
@@ -528,7 +606,12 @@ wss.on('connection', async (ws) => {
         // 串行化处理，避免并发截图竞态
         patchChain = patchChain.then(async () => {
           try {
-            if (mode === 'skiadom') { skiaResched(); return; }
+            if (mode === 'skiadom') {
+              const textOnly = patches.length > 0 && patches.every(p => p && !p.full && p.kind === 'textChange');
+              if (textOnly) skiaRunsResched();
+              else skiaResched();
+              return;
+            }
             if (domBitmap) return await bitmapPatches(patches);
             if (patches.some(p => p && p.full)) {
               const snap = await page.evaluate(() => window.__xy.snapshot());

@@ -300,7 +300,7 @@
   }
 
   // ---------- Skia 引擎（CanvasKit/WASM）：文字层由引擎本地绘制 ----------
-  let CK = null, ckFont = null, ckLoading = null, skiaCv = null, skiaSurface = null;
+  let CK = null, ckFont = null, ckFontBold = null, ckLoading = null, skiaCv = null, skiaSurface = null;
 
   function ensureCanvasKit() {
     if (CK) return Promise.resolve(CK);
@@ -313,6 +313,11 @@
           const mod = await CanvasKitInit({ locateFile: f => '/ck/' + f });
           const buf = await (await fetch('/f/noto')).arrayBuffer();
           ckFont = mod.Typeface.MakeFreeTypeFaceFromData(buf);
+          try {
+            const bufB = await (await fetch('/f/noto-bold-otf')).arrayBuffer();
+            const tfB = mod.Typeface.MakeFreeTypeFaceFromData(bufB);
+            if (tfB) ckFontBold = tfB; // TTC 首面即 SC Bold；失败则回落合成加粗
+          } catch (e) {}
           CK = mod;
           resolve(CK);
         } catch (e) { reject(e); }
@@ -346,8 +351,8 @@
       const paint = new mod.Paint();
       paint.setAntiAlias(true);
       for (const r of runs) {
-        const font = new mod.Font(ckFont, r.s);
-        if (r.b) font.setEmbolden(true);
+        const font = new mod.Font(r.b && ckFontBold ? ckFontBold : ckFont, r.s);
+        if (r.b && !ckFontBold) font.setEmbolden(true);
         paint.setColor(mod.Color4f(r.c[0], r.c[1], r.c[2], 1));
         c.drawText(r.t, r.x, r.y + r.a, paint, font);
         font.delete();
@@ -496,6 +501,7 @@
             if (j.runs) drawSkiaRuns(j.runs);
           }
           if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); applyPatches(j.patches); }
+          if (j.type === 'skia-runs') { noteBytes(ev.data.length || ev.data.size || 0); drawSkiaRuns(j.runs); }
           if (j.type === 'error') { lastErr = j.msg; setStatus('错误: ' + j.msg, false); }
           if (j.type === 'quality') {
             document.querySelectorAll('.quality button[data-q]').forEach(b => b.classList.toggle('active', +b.dataset.q === j.q));
