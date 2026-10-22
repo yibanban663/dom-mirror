@@ -1,6 +1,6 @@
 {
   "name": "@lizhen-xxaq/dom-mirror",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "dom-mirror — Remote Browser Isolation engine: mirror the DOM, not the pixels. Business JS and data never leave the server.",
   "license": "Apache-2.0",
   "repository": {

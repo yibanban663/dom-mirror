@@ -183,14 +183,9 @@ const PAGE_HELPERS = `(() => {
           if (j.kind === 'input' && !j.node.value && !j.node.placeholder) { continue; }
           if (j.w <= 0 || j.h <= 0) continue;
           done.add(j);
-          if (j.kind === 'select') {
-            // 下拉框：控件保留（交互原生化），外观与选项文字全部隐藏，瓦片作背景
-            j.node.setAttribute('data-xy-sel', '1');
-            j.node.style.appearance = 'none';
-            j.node.style.color = 'transparent';
-            j.node.style.background = 'transparent';
-            for (const op of j.node.querySelectorAll('option')) op.textContent = '';
-          } else {
+          // 注意：live 页只做等大占位（text/canvas/input）；select 绝不动 live——
+          // （透明化/清空选项只发生在 clone；曾把 live select 永久清空，导致第二次快照起底板里下拉框标签消失）
+          if (j.kind !== 'select') {
             const sp = document.createElement('span');
             sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + Math.round(j.w) + 'px;height:' + Math.round(j.h) + 'px';
             sp.setAttribute('data-xy-space', '1');
@@ -249,9 +244,13 @@ const PAGE_HELPERS = `(() => {
           for (const op of t.querySelectorAll('option')) op.textContent = '';
         } catch (e) {}
       }
-      // 输入类属性剥离：placeholder 属于静态 UI 明文
+      // 输入类属性剥离：placeholder/value 默认值/隐藏域/alt/title 均属静态明文（视觉已由瓦片承载）
       try {
         clone.querySelectorAll('input[placeholder], textarea[placeholder]').forEach(el => el.removeAttribute('placeholder'));
+        clone.querySelectorAll('input[type="hidden"]').forEach(el => el.remove());
+        clone.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])').forEach(el => el.removeAttribute('value'));
+        clone.querySelectorAll('[alt]').forEach(el => el.removeAttribute('alt'));
+        clone.querySelectorAll('[title]').forEach(el => el.removeAttribute('title'));
       } catch (e) {}
       // canvas 的 clone img → 透明占位（真像素走图层瓦片）
       for (const j of jobs) {
@@ -288,7 +287,7 @@ const PAGE_HELPERS = `(() => {
       const stripAll = (node) => {
         for (const ch of [...node.childNodes]) {
           if (ch.nodeType === 3) { if (ch.textContent.trim()) ch.textContent = ''; }
-          else if (ch.nodeType === 1 && !skipTags.has(ch.tagName) && ch.tagName !== 'SELECT') stripAll(ch);
+          else if (ch.nodeType === 1 && !skipTags.has(ch.tagName)) stripAll(ch);
         }
       };
       stripAll(clone);
@@ -601,9 +600,6 @@ wss.on('connection', async (ws) => {
             } else {
               await tilesPatches(patches);
             }
-            ws.send(payload);
-            ws._bytes = (ws._bytes || 0) + payload.length;
-            ws._chunks = (ws._chunks || 0) + 1;
           } catch (e) {}
         });
       });
@@ -653,7 +649,7 @@ wss.on('connection', async (ws) => {
         if (!rect) continue;
         const shot = await cdp.send('Page.captureScreenshot', {
           format: 'png',
-          clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h, scale: DPR },
+          clip: { x: Math.round(rect.x * DPR) / DPR, y: Math.round(rect.y * DPR) / DPR, width: rect.w, height: rect.h, scale: DPR },
           captureBeyondViewport: true,
         });
         const sw = Math.max(1, Math.round(rect.w * DPR)), sh = Math.max(1, Math.round(rect.h * DPR));
@@ -734,7 +730,10 @@ wss.on('connection', async (ws) => {
     dispatchReady = true;
     for (const raw of queue.splice(0)) await handleRaw(raw);
 
+    let closed = false;
     ws.on('close', async () => {
+      if (closed) return;
+      closed = true;
       sessions--;
       if (statTimer) clearInterval(statTimer);
       stopFFmpeg();
@@ -744,7 +743,7 @@ wss.on('connection', async (ws) => {
     });
     ws.on('error', () => {});
   } catch (e) {
-    sessions--;
+    if (ws.listenerCount('close') === 0) sessions--;
     sendJson({ type: 'error', msg: '会话建立失败: ' + e.message });
     try { if (page) await page.close(); } catch {}
     ws.close();

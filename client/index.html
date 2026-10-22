@@ -384,7 +384,14 @@
     const dh = Math.ceil((tile.cssY + tile.cssH) * dpr) + 1;
     const doResize = dh > layer.height;
     const draw = () => {
-      if (doResize) layer.height = dh;
+      if (doResize) {
+        // canvas.height 重设会清空已画内容：先拷贝到临时画布再回填
+        const old = document.createElement('canvas');
+        old.width = layer.width; old.height = layer.height;
+        old.getContext('2d').drawImage(layer, 0, 0);
+        layer.height = dh;
+        layer.getContext('2d').drawImage(old, 0, 0);
+      }
       const ctx = layer.getContext('2d');
       ctx.drawImage(tile.img, Math.round(tile.cssX * dpr), Math.round(tile.cssY * dpr), tile.w, tile.h);
     };
