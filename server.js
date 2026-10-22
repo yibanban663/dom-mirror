@@ -191,6 +191,20 @@ function proxyAsset(req, res) {
 
 const demoSrv = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
+  if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
+    // 与服务端 fontconfig 完全相同的字体文件原样下发 → 客户端文字度量与像素渲染逐字节一致
+    const f = req.url.endsWith('-bold') ? 'NotoSansCJK-Bold.ttc' : 'NotoSansCJK-Regular.ttc';
+    fs.readFile(path.join('/usr/share/fonts/opentype/noto', f), (err, buf) => {
+      if (err) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, {
+        'content-type': 'font/collection',
+        'cache-control': 'public, max-age=86400',
+        'content-length': buf.length,
+      });
+      res.end(buf);
+    });
+    return;
+  }
   if (req.url === '/f/noto') {
     // 服务端渲染所用字体的下发：保证镜像端文字与服务端像素渲染一致
     fs.readFile(path.join(__dirname, 'assets', 'NotoSansSC-Regular.otf'), (err, buf) => {

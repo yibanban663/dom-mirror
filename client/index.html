@@ -319,17 +319,21 @@
       .replace(/:root\s*(?=[,{])/g, '.xy-body')
       .replace(/(^|[\s,{}])html(?=\s*[,{])/g, '$1.xy-body')
       .replace(/(^|[\s,{}])body(?=\s*[,{])/g, '$1.xy-body');
-    // 字体一致性：服务端像素渲染将一切字体栈解析为 Noto Sans SC，
-    // 客户端把常见中文字体名统一映射到引擎下发的同一字体 → 两端文字必然一致。
-    // 注意：Shadow DOM <style> 内的 @font-face 在 Chromium 不生效，必须用 FontFace API 文档级注册
+    // 字体一致性：直接下发服务端 fontconfig 使用的同两个 .ttc（Regular/Bold 真字重），
+    // 客户端文字度量与像素渲染完全一致。注意两点实测教训：
+    // ① Shadow DOM <style> 内的 @font-face 在 Chromium 不生效 → 必须 FontFace API 文档级注册
+    // ② 只下发 Regular 并声明 weight:100 900 会让粗体变伪粗体，排版全部偏移 → 必须 400/700 分开注册真字重
     if (!window.__xyFontsRegistered) {
       window.__xyFontsRegistered = true;
-      ['Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑'].forEach((fam) => {
-        try {
-          const ff = new FontFace(fam, 'url(/f/noto)', { weight: '100 900', display: 'swap' });
-          document.fonts.add(ff);
-          ff.load().catch(() => {});
-        } catch (e) {}
+      const FAMS = ['Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑'];
+      FAMS.forEach((fam) => {
+        [['400', '/f/noto-regular'], ['700', '/f/noto-bold']].forEach(([w, u]) => {
+          try {
+            const ff = new FontFace(fam, `url(${u}) format('collection')`, { weight: w, display: 'swap' });
+            document.fonts.add(ff);
+            ff.load().catch(() => {});
+          } catch (e) {}
+        });
       });
     }
     mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body" style="min-height:100%;box-sizing:border-box">' + html + '</div>';
