@@ -46,12 +46,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: 准备 ffmpeg（bin/ 不入库，按需下载）
+      - name: 准备 ffmpeg 与 CanvasKit（bin/ck 不入库，按需下载）
         run: |
           mkdir -p bin && cd bin
           curl -sL --fail -o ffmpeg.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           tar -xf ffmpeg.tar.xz --strip-components=1 --wildcards '*/ffmpeg'
           rm -f ffmpeg.tar.xz && chmod +x ffmpeg && ./ffmpeg -version | head -1
+          cd .. && chmod +x get-canvaskit.sh && ./get-canvaskit.sh
       - name: 构建镜像
         run: docker build -t dom-mirror:ci .
       - name: 冒烟启动（内置演示源站 + HTTP 探活）
