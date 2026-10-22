@@ -47,6 +47,15 @@ const CHROME_ARGS = [
 
 // ---------- DOM 镜像：注入到受保护页面的辅助函数 ----------
 // 序列化 = 剥离 script/事件属性 + canvas→位图兜底 + 静态资源 URL 重写(/m 代理) ；路径 = 基于 body 的 childNodes 索引
+// 源站字体同源注入：残差根因（实测）——源站文字走 fontconfig 系统字体路径，镜像走 webfont 路径，
+// 两者的 FreeType 渲染参数不同 → 文字区残差 ~1/255。给源站页面注入与镜像同一份 @font-face
+// （webfont 路径）后三条渲染链同源：同引擎下文字残差 → 0（实测表格区逐位相同，整页 0.7→0.009）。
+const FONT_FAMS = ['Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑'];
+function originFontCssFor() {
+  const base = `http://127.0.0.1:${DEMO_PORT}`;
+  const face = (fam, w, u) => `@font-face{font-family:'${fam}';src:url(${base}${u}) format('woff2');font-weight:${w};font-display:block;}`;
+  return FONT_FAMS.map(f => face(f, 400, '/f/noto-regular') + face(f, 700, '/f/noto-bold')).join('');
+}
 const PAGE_HELPERS = `(() => {
   if (window.__xy) return;
   const ORIGIN_PREFIX = ${JSON.stringify(ORIGIN_BASE.origin)};
@@ -340,6 +349,8 @@ const demoSrv = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
     // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
+    // CORS：源站页面（服务端 Chrome 内）注入的 @font-face 会跨源加载这两个文件
+    res.setHeader('access-control-allow-origin', '*');
     // 演进：fontconfig TTC(21MB×2) → 提取 SC 单面 OTF → 与 Regular 同覆盖子集 + WOFF2（6.1/10.2MB）
     sendFile(req, res, path.join(__dirname, 'assets', req.url.endsWith('-bold') ? 'NotoSansSC-Bold.woff2' : 'NotoSansSC-Regular.woff2'),
       'font/woff2', 'public, max-age=86400, immutable');
@@ -503,6 +514,7 @@ wss.on('connection', async (ws) => {
     }, 1000);
 
     await page.goto(ORIGIN_URL, { waitUntil: 'networkidle0', timeout: 20000 });
+    await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
     sendJson({ type: 'meta', w: VIEW_W, h: VIEW_H, title: await page.title(), url: ORIGIN_URL, maxSessions: MAX_SESSIONS, mode });
     if (mode === 'dom') await startDomMirror();
     else await startScreencast();
