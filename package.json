@@ -1,0 +1,18 @@
+{
+  "name": "dom-mirror",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Xuying dom-mirror — Remote Browser Isolation engine: mirror the DOM, not the pixels. Business JS and data never leave the server.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lizhen-xxaq/dom-mirror.git"
+  },
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

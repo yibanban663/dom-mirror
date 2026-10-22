@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>虚影 RBI 帧流 PoC — 客户端只有像素</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#242e44; --txt:#dbe4f3; --dim:#8294b0; --accent:#4f8cff; --ok:#3fce8f; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--txt); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; overflow-x:auto; }
+  header { display:flex; align-items:center; gap:14px; padding:14px 22px; border-bottom:1px solid var(--line); }
+  header .logo { width:34px; height:34px; border-radius:8px; background:linear-gradient(135deg,#4f8cff,#2a5298); display:flex; align-items:center; justify-content:center; font-weight:800; }
+  header h1 { font-size:17px; font-weight:600; }
+  header .sub { color:var(--dim); font-size:12.5px; }
+  header .status { margin-left:auto; font-size:13px; padding:6px 14px; border-radius:20px; background:#332; color:#f88; }
+  header .status.on { background:#153a2c; color:var(--ok); }
+  main { display:flex; gap:16px; padding:16px 22px; align-items:flex-start; }
+  .stage { flex:0 0 auto; }
+  .canvas-box { position:relative; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#000; }
+  canvas#rbi { display:block; }
+  .cursor { position:absolute; width:18px; height:18px; border:2px solid #4f8cff; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; display:none; box-shadow:0 0 8px rgba(79,140,255,.8); }
+  .stage-hint { color:var(--dim); font-size:12px; margin-top:8px; max-width:1280px; line-height:1.7; }
+  aside { flex:1 1 380px; min-width:360px; display:flex; flex-direction:column; gap:14px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .panel h3 { font-size:13.5px; color:var(--accent); margin-bottom:10px; font-weight:600; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .metric { background:var(--bg); border-radius:8px; padding:10px; text-align:center; }
+  .metric .v { font-size:20px; font-weight:700; font-family:Consolas,monospace; }
+  .metric .l { font-size:11px; color:var(--dim); margin-top:2px; }
+  .quality { display:flex; gap:8px; margin-top:10px; }
+  .quality button { flex:1; background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 0; cursor:pointer; font-size:12.5px; }
+  .quality button.active { border-color:var(--accent); color:var(--accent); }
+  .quality button:disabled { opacity:.4; cursor:not-allowed; }
+  ul.plain { list-style:none; font-size:12.5px; line-height:1.9; color:var(--txt); }
+  ul.plain li::before { content:"✓ "; color:var(--ok); }
+  ul.plain li.bad::before { content:"✗ "; color:#f88; }
+  code { background:#0c111c; padding:1px 6px; border-radius:4px; font-size:11.5px; color:#9fc3ff; font-family:Consolas,monospace; }
+  table.cmp { width:100%; border-collapse:collapse; font-size:12px; }
+  table.cmp th, table.cmp td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  table.cmp th { background:#0c111c; color:var(--dim); font-weight:600; }
+  table.cmp td:first-child { color:var(--dim); white-space:nowrap; }
+  .conn-info { font-size:12px; color:var(--dim); line-height:1.8; }
+  .btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">影</div>
+  <div>
+    <h1>虚影 · RBI 远程浏览器隔离 帧流 PoC</h1>
+    <div class="sub">左侧画面 = 服务端 Chromium 的实时像素流。你的浏览器里没有该站点的任何 HTML / JS / 数据。</div>
+  </div>
+  <div class="status" id="status">连接中…</div>
+</header>
+
+<main>
+  <div class="stage">
+    <div class="canvas-box" id="box">
+      <canvas id="rbi" width="1280" height="800" tabindex="0"></canvas>
+      <div class="cursor" id="cur"></div>
+    </div>
+    <div class="canvas-box" id="mirrorBox" style="display:none">
+      <div id="mirrorScroll" style="width:1280px;height:800px;overflow:auto;background:#fff">
+        <div id="mirrorHost"></div>
+      </div>
+    </div>
+    <div class="stage-hint" id="stageHint">
+      操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入（试试搜索框：<b>输入"138"</b> 回车筛选客户表；报价计算器输入数字实时计算）。
+      PoC 未实现 IME 本地合成框，中文输入请暂用英文/数字验证键盘回传链路。
+    </div>
+  </div>
+
+  <aside>
+    <div class="panel">
+      <h3>实时链路指标（客户端视角实测）</h3>
+      <div class="metrics">
+        <div class="metric"><div class="v" id="mBw">0</div><div class="l">KB/s（下行）</div></div>
+        <div class="metric"><div class="v" id="mRtt">-</div><div class="l">RTT ms</div></div>
+        <div class="metric"><div class="v" id="mInLat">-</div><div class="l">输入→出帧 ms</div></div>
+        <div class="metric"><div class="v" id="mFrames">0</div><div class="l">累计帧数</div></div>
+        <div class="metric"><div class="v" id="mTotal">0</div><div class="l">累计 KB</div></div>
+        <div class="metric"><div class="v" id="mIdle">idle</div><div class="l">帧流状态</div></div>
+        <div class="metric"><div class="v" id="mFps">0</div><div class="l">收帧 FPS</div></div>
+        <div class="metric"><div class="v" id="mSrvFps">-</div><div class="l">服务端出帧 FPS</div></div>
+        <div class="metric"><div class="v" id="mMode">jpeg</div><div class="l">当前编码</div></div>
+      </div>
+      <div class="quality" style="margin-top:12px">
+        <button data-m="jpeg" class="active">JPEG 基线</button>
+        <button data-m="webp">WebP</button>
+        <button data-m="h264">H.264 帧间编码</button>
+        <button data-m="dom">DOM 镜像</button>
+      </div>
+      <div class="quality">
+        <button data-q="30">低质量 q30</button>
+        <button data-q="60" class="active">中质量 q60</button>
+        <button data-q="90">高质量 q90</button>
+      </div>
+      <div class="conn-info" style="margin-top:10px">
+        受保护源站标题：<code id="oTitle">-</code><br>
+        帧规格：<code id="spec">1280×800 JPEG</code> · 仅画面变化时推帧（空闲≈0 带宽）<br>
+        延迟构成：<code>输入→出帧</code> + 网络 RTT ×2 + 客户端解码；H.264 模式额外含 x264 编码耗时，换带宽数量级下降。
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>攻击者自测（打开你的 DevTools 验证）</h3>
+      <ul class="plain">
+        <li>右键左侧画面 → 检查：DOM 里只有一个 <code>&lt;canvas&gt;</code>，无任何业务节点</li>
+        <li>DevTools → Network：除本壳页面（约 15KB）外，只有 <code>ws://…/ws</code> 的二进制帧</li>
+        <li>照着画面抄一个值（任一客户姓名 / 完整手机号 / 报价数字）在 Sources 全局搜索：<b>0 命中</b>——数据从未下载到你的浏览器</li>
+        <li>把本页全部 JS 下载逆向：只有帧解码与事件转发，无一行业务逻辑</li>
+        <li class="bad">直接访问源站：源站只绑定容器内 <code>127.0.0.1:8077</code>，宿主机未发布端口 —— 物理不可达</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h3>方案对比（SW 加密 → RBI 帧流）</h3>
+      <table class="cmp">
+        <tr><th>维度</th><th>SW 加密（现状）</th><th>RBI 帧流（本 PoC）</th></tr>
+        <tr><td>客户端拿到什么</td><td>真实页面 + 加密逻辑（SW 在本地跑）</td><td><b>只有像素</b>，无源码无数据</td></tr>
+        <tr><td>防绕过</td><td>SW 可卸载、首载裸奔、高级爬虫可模拟</td><td>本地无可绕过——没有 JS 逻辑可逆向</td></tr>
+        <tr><td>带宽</td><td>与原页面相当</td><td>像素帧→WebP→H.264 帧间编码逐级下降（本页可实时切换对比）</td></tr>
+        <tr><td>服务端成本</td><td>一个 WAF</td><td>每在线会话一个真浏览器（本容器限 1.5GB / 最多 3 会话）</td></tr>
+        <tr><td>工程量</td><td>已有</td><td>浏览器集群、编码管道、输入回传、下载/剪贴板/验证码处理（本 PoC 已覆盖核心链路）</td></tr>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3>会话</h3>
+      <div class="conn-info" id="sessInfo">当前会话数上限 3（演示容器资源限制）。断开后自动回收服务端页面。</div>
+      <button class="btn" id="reconn" style="margin-top:8px">重连会话</button>
+    </div>
+  </aside>
+</main>
+
+<script>
+(function () {
+  const cv = document.getElementById('rbi');
+  const ctx = cv.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const curEl = document.getElementById('cur');
+  let ws = null, connected = false, lastErr = '', mode = 'jpeg';
+
+  let frames = 0, bytes = 0;
+  let winBw = [], winFps = [];
+  const m = id => document.getElementById(id);
+
+  function setStatus(txt, on) { statusEl.textContent = txt; statusEl.className = 'status' + (on ? ' on' : ''); }
+  function noteFrame(sz) {
+    frames++;
+    const now = performance.now();
+    if (sz) { bytes += sz; winBw.push({ t: now, v: sz }); }
+    winFps.push({ t: now, v: 1 });
+    m('mIdle').textContent = 'streaming';
+  }
+  function noteBytes(sz) {
+    bytes += sz;
+    winBw.push({ t: performance.now(), v: sz });
+  }
+
+  // ---------- 图像帧（JPEG/WebP）解码 ----------
+  let decoding = false, pendingBlob = null;
+  async function pumpImage() {
+    if (decoding || !pendingBlob) return;
+    decoding = true;
+    const blob = pendingBlob; pendingBlob = null;
+    try {
+      const bmp = await createImageBitmap(blob);
+      ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
+      bmp.close && bmp.close();
+    } catch (e) { /* 忽略单帧解码失败 */ }
+    decoding = false;
+    if (pendingBlob) pumpImage();
+  }
+
+  // ---------- H.264（Annex-B over WS）→ WebCodecs ----------
+  let vdec = null, vdecConfigured = false;
+  let hbuf = new Uint8Array(0), auNals = [], auHasKey = false, hts = 0, flushTimer = null;
+
+  function ensureDecoder() {
+    if (vdec) return vdec;
+    if (typeof VideoDecoder === 'undefined') {
+      lastErr = '此浏览器不支持 WebCodecs，请用 Chrome/Edge 打开，或切回 JPEG 模式';
+      setStatus('浏览器不支持 WebCodecs', false);
+      return null;
+    }
+    vdec = new VideoDecoder({
+      output: (frame) => {
+        ctx.drawImage(frame, 0, 0, cv.width, cv.height);
+        frame.close();
+        noteFrame(0);
+      },
+      error: (e) => { lastErr = e.message; setStatus('解码错误: ' + e.message, false); },
+    });
+    return vdec;
+  }
+
+  const hex2 = n => n.toString(16).padStart(2, '0').toUpperCase();
+  function configureFromSPS(nal) { // nal: Uint8Array（不含起始码）
+    if (vdecConfigured || nal.length < 4) return;
+    const d = ensureDecoder(); if (!d) return;
+    const codec = 'avc1.' + hex2(nal[1]) + hex2(nal[2]) + hex2(nal[3]);
+    try {
+      d.configure({ codec: codec, optimizeForLatency: true });
+      vdecConfigured = true;
+    } catch (e) {
+      lastErr = '解码器初始化失败: ' + e.message;
+      setStatus('解码器初始化失败', false);
+    }
+  }
+
+  function decodeAU() {
+    if (!auNals.length) return;
+    const d = ensureDecoder(); if (!d || !vdecConfigured) { auNals = []; auHasKey = false; return; }
+    const size = auNals.reduce((s, n) => s + 4 + n.length, 0);
+    const au = new Uint8Array(size);
+    let off = 0;
+    for (const n of auNals) { au.set([0, 0, 0, 1], off); au.set(n, off + 4); off += 4 + n.length; }
+    const key = auHasKey;
+    auNals = []; auHasKey = false;
+    try {
+      d.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: hts += 33333, data: au }));
+    } catch (e) { /* 跳过坏帧 */ }
+  }
+
+  function processNal(nal) { // nal: Uint8Array（不含起始码）
+    const t = nal[0] & 0x1F;
+    if (t === 7) { configureFromSPS(nal); auNals.push(nal); return; }
+    if (t === 8 || t === 6 || t === 9) { auNals.push(nal); return; }
+    if (t === 1 || t === 5) {
+      if (auNals.some(n => { const tt = n[0] & 0x1F; return tt === 1 || tt === 5; })) decodeAU();
+      auNals.push(nal);
+      if (t === 5) auHasKey = true;
+      return;
+    }
+    auNals.push(nal); // 其余类型并入当前 AU
+  }
+
+  function feedH264(chunk) {
+    const nb = new Uint8Array(hbuf.length + chunk.length);
+    nb.set(hbuf); nb.set(chunk, hbuf.length); hbuf = nb;
+    // 找所有 00 00 01 起始码；最后一个 NAL 可能不完整，留在缓冲等下一块或超时冲刷
+    const sc = [];
+    for (let i = 0; i < hbuf.length - 2; i++) {
+      if (hbuf[i] === 0 && hbuf[i + 1] === 0 && hbuf[i + 2] === 1) { sc.push(i); i += 2; }
+    }
+    if (sc.length === 0) return;
+    let lastNalStart = hbuf.length; // 兜底
+    for (let k = 0; k < sc.length - 1; k++) {
+      let end = sc[k + 1];
+      if (end > 0 && hbuf[end - 1] === 0) end -= 1; // 吞并 4 字节起始码的额外 0
+      const body = hbuf.subarray(sc[k] + 3, end);
+      if (body.length > 0) processNal(body);
+    }
+    // 保留最后一个（可能不完整的）NAL
+    const tailStart = sc[sc.length - 1];
+    hbuf = hbuf.slice(tailStart);
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => {
+      // 60ms 无后续数据：把尾部 NAL 当作完整处理
+      if (hbuf.length > 3 && hbuf[0] === 0 && hbuf[1] === 0 && hbuf[2] === 1) {
+        const body = hbuf.subarray(3);
+        if (body.length > 0) processNal(body);
+        decodeAU();
+        hbuf = new Uint8Array(0);
+      }
+    }, 60);
+  }
+
+  function resetH264() {
+    hbuf = new Uint8Array(0); auNals = []; auHasKey = false; vdecConfigured = false;
+    if (flushTimer) clearTimeout(flushTimer);
+  }
+
+  function setMode(mo) {
+    mode = mo;
+    m('mMode').textContent = mo;
+    m('spec').textContent = mo === 'dom' ? 'DOM 镜像（本地渲染 + 服务端补丁）'
+      : '1280×800 ' + (mo === 'h264' ? 'H.264 (WebCodecs 解码)' : mo.toUpperCase());
+    document.getElementById('box').style.display = mo === 'dom' ? 'none' : '';
+    document.getElementById('cur').style.display = 'none';
+    document.getElementById('mirrorBox').style.display = mo === 'dom' ? '' : 'none';
+    document.getElementById('stageHint').innerHTML = mo === 'dom'
+      ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端镜像、<b>渲染在你本地</b>——滚动/悬停/打字全部原生零延迟，表格等数据变化由服务端推送小补丁。试试：滚动页面、悬停按钮、在搜索框输入 <b>138</b>、点"发送验证码"。Canvas 图表已自动降级为位图（生产中即"位图兜底"层）。'
+      : '操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入（试试搜索框：<b>输入"138"</b> 回车筛选客户表；报价计算器输入数字实时计算）。PoC 未实现 IME 本地合成框，中文输入请暂用英文/数字验证键盘回传链路。';
+    document.querySelectorAll('.quality button[data-m]').forEach(b => b.classList.toggle('active', b.dataset.m === mo));
+    document.querySelectorAll('.quality button[data-q]').forEach(b => b.disabled = (mo === 'h264' || mo === 'dom'));
+    if (mo !== 'h264') resetH264();
+  }
+
+  // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
+  let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
+
+  function pathOfMirror(node) {
+    const parts = [];
+    let n = node;
+    while (n && n !== mirrorBody) {
+      const p = n.parentNode;
+      if (!p) return null;
+      parts.unshift([...p.childNodes].indexOf(n));
+      n = p;
+    }
+    return n === mirrorBody ? parts.join('/') : null;
+  }
+  function mirrorFind(path) {
+    if (!mirrorBody) return null;
+    if (path === '' || path === undefined) return mirrorBody;
+    let n = mirrorBody;
+    for (const i of String(path).split('/')) { n = n.childNodes[+i]; if (!n) return null; }
+    return n;
+  }
+  function buildMirror(css, html) {
+    const host = document.getElementById('mirrorHost');
+    if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
+    else mirrorRoot = host.shadowRoot;
+    // 选择器映射：:root/html/body → .xy-body（Shadow DOM 内 :root 与 html 匹配不到镜像根，
+    // 不映射则整组 CSS 变量/主题/基础字体失效——灵袭的主题全在 :root 上，实测踩过）
+    const css2 = css
+      .replace(/:root\s*(?=[,{])/g, '.xy-body')
+      .replace(/(^|[\s,{}])html(?=\s*[,{])/g, '$1.xy-body')
+      .replace(/(^|[\s,{}])body(?=\s*[,{])/g, '$1.xy-body');
+    mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body" style="min-height:100%;box-sizing:border-box">' + html + '</div>';
+    mirrorBody = mirrorRoot.querySelector('.xy-body');
+    if (!mirrorWired) {
+      mirrorWired = true;
+      mirrorRoot.addEventListener('click', (e) => {
+        // SPA 链接/表单导航一律拦截在本地，真实路由变化由服务端执行后以补丁回来
+        if (e.target.closest('a, form')) e.preventDefault();
+        const el = e.target.closest('button, a, input, select, label, tr, li');
+        const target = e.target.closest('button, a') || (el && el.tagName !== 'INPUT' && el.tagName !== 'SELECT' ? el : null);
+        if (!target) return;
+        const p = pathOfMirror(target);
+        if (p !== null) send({ type: 'dom', kind: 'click', path: p });
+      });
+      mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
+      mirrorRoot.addEventListener('input', (e) => {
+        if (!e.target.matches('input, select, textarea')) return;
+        const p = pathOfMirror(e.target);
+        if (p !== null) send({ type: 'dom', kind: 'input', path: p, value: e.target.value });
+      });
+      mirrorRoot.addEventListener('change', (e) => {
+        if (!e.target.matches('input, select, textarea')) return;
+        const p = pathOfMirror(e.target);
+        if (p !== null) send({ type: 'dom', kind: 'change', path: p, value: e.target.value });
+      });
+    }
+  }
+  function applyPatches(patches) {
+    if (!mirrorBody) return;
+    for (const p of patches) {
+      try {
+        const el = mirrorFind(p.path);
+        if (!el) throw new Error('path miss');
+        if (p.inner !== undefined) el.innerHTML = p.inner;
+        else if (p.outer !== undefined) {
+          const tpl = document.createElement('template');
+          tpl.innerHTML = p.outer;
+          el.replaceWith(tpl.content.firstChild);
+        }
+      } catch (e) {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: 'dom' })); // 请求全量重同步
+        return;
+      }
+    }
+    noteFrame(0);
+  }
+
+  // ---------- WS ----------
+  function connect() {
+    setStatus('连接中…', false);
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { connected = true; lastErr = ''; setStatus('会话在线', true); m('mIdle').textContent = 'waiting frame'; };
+    ws.onclose = () => { connected = false; setStatus(lastErr ? ('已断开：' + lastErr) : '已断开', false); m('mIdle').textContent = 'disconnected'; };
+    ws.onerror = () => setStatus('连接错误', false);
+    ws.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        noteBytes(ev.data.byteLength);
+        if (mode === 'h264') {
+          feedH264(new Uint8Array(ev.data));
+        } else {
+          noteFrame(0);
+          pendingBlob = new Blob([ev.data], { type: mode === 'webp' ? 'image/webp' : 'image/jpeg' });
+          pumpImage();
+        }
+      } else {
+        try {
+          const j = JSON.parse(ev.data);
+          if (j.type === 'meta') { m('oTitle').textContent = j.title || '-'; if (j.mode) setMode(j.mode); }
+          if (j.type === 'dom-snapshot') {
+            noteBytes(ev.data.length || ev.data.size || 0);
+            buildMirror(j.css, j.html);
+            m('oTitle').textContent = j.title || '-';
+            m('mIdle').textContent = 'mirror';
+          }
+          if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); applyPatches(j.patches); }
+          if (j.type === 'error') { lastErr = j.msg; setStatus('错误: ' + j.msg, false); }
+          if (j.type === 'quality') {
+            document.querySelectorAll('.quality button[data-q]').forEach(b => b.classList.toggle('active', +b.dataset.q === j.q));
+          }
+          if (j.type === 'mode') { setMode(j.mode); lastErr = ''; setStatus('会话在线', true); }
+          if (j.type === 'pong') { m('mRtt').textContent = Math.round(performance.now() - j.t); }
+          if (j.type === 'sstats') {
+            m('mSrvFps').textContent = j.fps;
+            if (j.inLat != null) m('mInLat').textContent = j.inLat;
+          }
+        } catch {}
+      }
+    };
+  }
+  connect();
+
+  setInterval(() => {
+    const now = performance.now();
+    winBw = winBw.filter(x => now - x.t < 5000);
+    winFps = winFps.filter(x => now - x.t < 1000);
+    m('mFps').textContent = winFps.length;
+    m('mBw').textContent = (winBw.reduce((s, x) => s + x.v, 0) / 5 / 1024).toFixed(1);
+    m('mFrames').textContent = frames;
+    m('mTotal').textContent = (bytes / 1024).toFixed(1);
+    if (winFps.length === 0) m('mIdle').textContent = connected ? 'idle (0帧)' : 'disconnected';
+    if (connected && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+  }, 1000);
+
+  document.querySelectorAll('.quality button[data-m]').forEach(b => b.addEventListener('click', () => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: b.dataset.m }));
+  }));
+  document.querySelectorAll('.quality button[data-q]').forEach(b => b.addEventListener('click', () => {
+    if (ws && ws.readyState === 1 && mode !== 'h264') ws.send(JSON.stringify({ type: 'quality', q: +b.dataset.q }));
+  }));
+  document.getElementById('reconn').addEventListener('click', () => { try { ws.close(); } catch {} setTimeout(connect, 300); });
+
+  // ---------- 输入回传 ----------
+  let lastMove = 0;
+  function pageXY(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
+  }
+  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+  cv.addEventListener('mousemove', (e) => {
+    const now = performance.now();
+    if (now - lastMove < 33) return; lastMove = now;
+    const { x, y } = pageXY(e);
+    const box = document.getElementById('box').getBoundingClientRect();
+    curEl.style.display = 'block';
+    curEl.style.left = (e.clientX - box.left) + 'px';
+    curEl.style.top = (e.clientY - box.top) + 'px';
+    send({ type: 'mouse', action: 'move', x, y });
+  });
+  cv.addEventListener('mousedown', (e) => { const { x, y } = pageXY(e); cv.focus({ preventScroll: true }); send({ type: 'mouse', action: 'down', x, y, button: 'left' }); });
+  cv.addEventListener('mouseup', (e) => { const { x, y } = pageXY(e); send({ type: 'mouse', action: 'up', x, y, button: 'left' }); });
+  cv.addEventListener('contextmenu', (e) => e.preventDefault());
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const { x, y } = pageXY(e);
+    send({ type: 'mouse', action: 'wheel', x, y, dx: e.deltaX, dy: e.deltaY });
+  }, { passive: false });
+
+  const SPECIAL = new Set(['Backspace', 'Enter', 'Tab', 'Escape', 'Delete', 'ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown', 'Home', 'End']);
+  cv.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (SPECIAL.has(e.key)) { e.preventDefault(); send({ type: 'key', action: 'down', key: e.key }); return; }
+    if (e.key.length === 1) { e.preventDefault(); send({ type: 'key', action: 'down', text: e.key }); }
+  });
+  cv.addEventListener('keyup', (e) => {
+    if (SPECIAL.has(e.key)) { send({ type: 'key', action: 'up', key: e.key }); return; }
+    if (e.key.length === 1) send({ type: 'key', action: 'up', text: e.key });
+  });
+})();
+</script>
+</body>
+</html>

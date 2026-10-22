@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>御之安·客户业务系统（演示源站）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Noto Sans CJK SC","PingFang SC","Microsoft YaHei",sans-serif; background:#f4f6fa; color:#1f2d3d; }
+  header { background:linear-gradient(135deg,#1e3c72,#2a5298); color:#fff; padding:18px 28px; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:20px; font-weight:600; }
+  header .clock { font-family:Consolas,monospace; font-size:18px; background:rgba(255,255,255,.15); padding:6px 14px; border-radius:6px; }
+  .wrap { padding:20px 28px; max-width:1220px; margin:0 auto; }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:18px; }
+  .kpi { background:#fff; border-radius:10px; padding:16px 18px; box-shadow:0 1px 4px rgba(31,45,61,.08); }
+  .kpi .label { font-size:13px; color:#7f8fa4; }
+  .kpi .value { font-size:28px; font-weight:700; margin-top:4px; color:#1e3c72; }
+  .kpi .delta { font-size:12px; margin-top:4px; }
+  .up { color:#27ae60; } .down { color:#e74c3c; }
+  .panel { background:#fff; border-radius:10px; box-shadow:0 1px 4px rgba(31,45,61,.08); padding:18px; margin-bottom:18px; }
+  .panel h2 { font-size:15px; color:#1e3c72; margin-bottom:12px; border-left:4px solid #2a5298; padding-left:8px; }
+  .toolbar { display:flex; gap:10px; margin-bottom:10px; align-items:center; }
+  .toolbar input { padding:8px 12px; border:1px solid #dcdfe6; border-radius:6px; width:260px; font-size:14px; }
+  .toolbar select { padding:8px; border:1px solid #dcdfe6; border-radius:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { background:#f0f3f9; color:#5a6a85; text-align:left; padding:9px 12px; font-weight:600; }
+  td { padding:9px 12px; border-top:1px solid #ebeef5; }
+  tr.risk td { background:#fff5f5; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; }
+  .tag.normal { background:#e8f7ee; color:#27ae60; }
+  .tag.watch { background:#fdf3e3; color:#e67e22; }
+  .tag.risk  { background:#fdeaea; color:#e74c3c; }
+  .cols { display:grid; grid-template-columns:1.2fr 1fr; gap:18px; }
+  .calc label { display:block; font-size:13px; color:#5a6a85; margin:10px 0 4px; }
+  .calc input { width:100%; padding:8px 10px; border:1px solid #dcdfe6; border-radius:6px; font-size:14px; }
+  .calc .result { margin-top:14px; background:#f0f7ff; border-radius:8px; padding:12px 14px; }
+  .calc .result b { color:#1e3c72; font-size:22px; }
+  button { background:#2a5298; color:#fff; border:none; border-radius:6px; padding:9px 18px; font-size:14px; cursor:pointer; }
+  button:disabled { background:#a0aec0; cursor:not-allowed; }
+  .toast { position:fixed; top:70px; right:30px; background:#1e3c72; color:#fff; padding:12px 18px; border-radius:8px; font-size:14px; display:none; box-shadow:0 4px 14px rgba(0,0,0,.2); }
+  footer { text-align:center; color:#a0aec0; font-size:12px; padding:16px; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>御之安 · 客户业务系统（演示源站）</h1>
+  <div class="clock" id="clock">--:--:--</div>
+</header>
+<div class="wrap">
+  <div class="kpis">
+    <div class="kpi"><div class="label">今日订单</div><div class="value" id="k1">1,284</div><div class="delta up">▲ 12.4% 较昨日</div></div>
+    <div class="kpi"><div class="label">活跃客户</div><div class="value">8,372</div><div class="delta up">▲ 3.1%</div></div>
+    <div class="kpi"><div class="label">风险拦截</div><div class="value">217</div><div class="delta down">▼ 8.7%</div></div>
+    <div class="kpi"><div class="label">在线坐席</div><div class="value">96</div><div class="delta">— 持平</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>近 14 日订单趋势（Canvas 绘制，无任何图表库外发）</h2>
+    <canvas id="chart" width="1160" height="180"></canvas>
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <h2>客户明细</h2>
+      <div class="toolbar">
+        <input id="q" placeholder="搜索姓名 / 手机号 / 套餐…（试试输入：王）" />
+        <select id="risk">
+          <option value="">全部风险等级</option>
+          <option value="normal">正常</option>
+          <option value="watch">关注</option>
+          <option value="risk">风险</option>
+        </select>
+      </div>
+      <table id="tbl">
+        <thead><tr><th>客户姓名</th><th>手机号</th><th>套餐</th><th>账户余额</th><th>风险评分</th><th>状态</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <p style="color:#a0aec0;font-size:12px;margin-top:8px">共 <span id="cnt">0</span> 条 · 数据为演示伪造，仅存在于服务端</p>
+    </div>
+
+    <div class="panel calc">
+      <h2>续约报价计算器（业务逻辑，永不外发）</h2>
+      <label>月租（元）</label>
+      <input id="rent" type="number" value="199" />
+      <label>合约期（月）</label>
+      <input id="months" type="number" value="24" />
+      <label>客户等级</label>
+      <select id="grade" style="width:100%;padding:8px;border:1px solid #dcdfe6;border-radius:6px">
+        <option value="A">A 级（9 折）</option>
+        <option value="B">B 级（9.5 折）</option>
+        <option value="C">C 级（原价）</option>
+      </select>
+      <div class="result">合约总价：<b id="total">￥4,298.40</b>（实时计算）</div>
+      <div style="margin-top:14px">
+        <button id="sms">发送验证码（本地逻辑演示）</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<footer>内网演示源站 · 只应经由 RBI 帧流访问 · 直接暴露即违规</footer>
+
+<script>
+// 【演示要点】下面这串"签名密钥"代表页面里的敏感逻辑/凭据。
+// SW 加密方案：本文件整体（含此密钥）会被下载到访客浏览器，混淆只是提高成本；
+// RBI 帧流方案：本文件只在本容器内的 Chromium 里执行，字节永远不出服务器。
+const API_SIGN_KEY = 'XY-INTERNAL-2026-SIGN-9f3ad21c7b6e';
+const API_ENDPOINT = '/internal/v2/settlement'; // 内部结算接口，绝不对外
+
+// 时钟：保证持续小量重绘，便于观察帧流"按变化推送"
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}, 1000);
+
+// 客户数据（伪造）
+const CUSTOMERS = [
+  ['王伟',   '13880112233', '5G畅享129', 342.50, 12, 'normal'],
+  ['李秀英', '15908223344', '5G畅享199', 88.00,  46, 'watch'],
+  ['张强',   '18613295566', '融合299',   1204.75, 7,  'normal'],
+  ['陈静',   '13567891234', '5G畅享99',  15.20,  88, 'risk'],
+  ['刘洋',   '18800007777', '融合399',   675.00, 23, 'normal'],
+  ['杨帆',   '13399886655', '5G畅享159', 201.40, 35, 'watch'],
+  ['赵磊',   '15012345678', '5G畅享129', 499.99, 9,  'normal'],
+  ['黄丽娟', '13987654321', '融合299',   62.30,  71, 'risk'],
+  ['周杰',   '18511112222', '5G畅享99',  430.10, 18, 'normal'],
+  ['吴敏',   '13655558888', '5G畅享199', 377.80, 29, 'normal'],
+  ['徐志远', '17799990000', '融合399',   95.60,  54, 'watch'],
+  ['孙晓梅', '15833336666', '5G畅享159', 812.45, 14, 'normal'],
+];
+const RISK_NAME = { normal: '正常', watch: '关注', risk: '风险' };
+const RISK_TAG  = { normal: 'normal', watch: 'watch', risk: 'risk' };
+
+function render() {
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  const rl = document.getElementById('risk').value;
+  const rows = CUSTOMERS.filter(c =>
+    (!q || c[0].toLowerCase().includes(q) || c[1].includes(q) || c[2].toLowerCase().includes(q)) &&
+    (!rl || c[5] === rl)
+  );
+  document.getElementById('tbody').innerHTML = rows.map(c =>
+    `<tr class="${c[5] === 'risk' ? 'risk' : ''}"><td>${c[0]}</td><td>${c[1].slice(0,3)}****${c[1].slice(-4)}</td><td>${c[2]}</td><td>￥${c[3].toFixed(2)}</td><td>${c[4]}</td><td><span class="tag ${RISK_TAG[c[5]]}">${RISK_NAME[c[5]]}</span></td></tr>`
+  ).join('');
+  document.getElementById('cnt').textContent = rows.length;
+}
+document.getElementById('q').addEventListener('input', render);
+document.getElementById('risk').addEventListener('change', render);
+render();
+
+// 报价计算：业务规则留在服务端，客户端只有像素
+const GRADE_RATE = { A: 0.9, B: 0.95, C: 1.0 };
+function calc() {
+  const rent = parseFloat(document.getElementById('rent').value) || 0;
+  const m = parseInt(document.getElementById('months').value) || 0;
+  const rate = GRADE_RATE[document.getElementById('grade').value];
+  const total = rent * m * rate;
+  document.getElementById('total').textContent = '￥' + total.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+['rent', 'months', 'grade'].forEach(id => {
+  document.getElementById(id).addEventListener('input', calc);
+  document.getElementById(id).addEventListener('change', calc);
+});
+calc();
+
+// 验证码按钮（前端可见的完整交互闭环）
+let smsTimer = null;
+document.getElementById('sms').addEventListener('click', () => {
+  const btn = document.getElementById('sms');
+  btn.disabled = true;
+  let sec = 30;
+  btn.textContent = `重发(${sec}s)`;
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  showToast(`验证码已提交下发队列（签名 ${API_SIGN_KEY.slice(-6)}）：${code.slice(0,3)} · · ·`);
+  smsTimer = setInterval(() => {
+    sec--;
+    if (sec <= 0) { clearInterval(smsTimer); btn.disabled = false; btn.textContent = '发送验证码（本地逻辑演示）'; }
+    else btn.textContent = `重发(${sec}s)`;
+  }, 1000);
+});
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 4000);
+}
+
+// Canvas 趋势图
+(function drawChart() {
+  const cv = document.getElementById('chart'), ctx = cv.getContext('2d');
+  const data = [820, 932, 901, 1094, 1190, 1130, 1321, 1280, 1410, 1382, 1543, 1601, 1489, 1723];
+  const W = cv.width, H = cv.height, pad = 34;
+  const max = Math.max(...data) * 1.1;
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = '#ebeef5';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad + (H - 2 * pad) * i / 4;
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke();
+  }
+  ctx.strokeStyle = '#2a5298'; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = pad + (W - 2 * pad) * i / (data.length - 1);
+    const y = H - pad - (H - 2 * pad) * v / max;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  data.forEach((v, i) => {
+    const x = pad + (W - 2 * pad) * i / (data.length - 1);
+    const y = H - pad - (H - 2 * pad) * v / max;
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#2a5298'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (i % 2 === 0) { ctx.fillStyle = '#a0aec0'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(`D${i + 1}`, x, H - 10); }
+  });
+  const last = data[data.length - 1];
+  ctx.fillStyle = '#1e3c72'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText(last.toLocaleString(), W - pad, pad - 12);
+})();
+</script>
+</body>
+</html>
