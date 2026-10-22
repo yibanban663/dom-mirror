@@ -45,6 +45,13 @@ JS执行 → [DOM+CSS] → 样式计算 → 布局 → 绘制 → 合成 → 像
 ## 快速开始
 
 ```bash
+# 方式 A：npm 包（需先取回运行时依赖：CanvasKit 引擎；H.264 通道另需 ffmpeg）
+npm i @lizhen-xxaq/dom-mirror
+cd node_modules/@lizhen-xxaq/dom-mirror
+npm run setup          # bash get-canvaskit.sh && bash get-ffmpeg.sh
+ORIGIN_URL=http://your-site.example.com/ DEFAULT_MODE=dom node server.js
+
+# 方式 B：源码 / Docker
 # 1. 获取静态 ffmpeg（H.264 通道用；只用 DOM 镜像可跳过）
 ./get-ffmpeg.sh
 

@@ -2,22 +2,29 @@
 
 本文件记录 dom-mirror 的版本演进。协议破坏性变更见 docs/PROTOCOL.md。
 
-## Unreleased
+## v0.1.1（2026-10-22）
 
 ### Fixed
+- **镜像整体布局偏移**：canvas→img 兜底未保留原盒子的 display/尺寸，源站 `canvas{display:block}`
+  等选择器在镜像中匹配不到 img，inline 空隙使图表以下内容整体偏移（实测 +5px，skiadom 文字与
+  骨架错位）。现在内联保留 display/width/height——逐元素实测 dom/skiadom 全部 Δ=0，
+  对无损真基准像素差 0.70/0.75（avg per 255）。
+- **button/inline-block 内文字的占位高度**：Chrome 对其 range rect 返回字体盒而非行盒，
+  占位直接采用会使行盒塌陷（按钮 38→34px）。现改用父元素内容盒高度。
 - skiadom：下拉框（select）在镜像中显示为空——option 文本被占位/清空导致原生控件标签消失。
   现在 SELECT 子树不参与 runs 收集，克隆时仅保留选中项标签（其余 option 文本不下发）。
 - 三个 runs 收集器跳过 SCRIPT/STYLE 等标签时未计数，导致后续兄弟节点路径错位
   （dombitmap 下可能造成个别文本替换静默失败）。
 
-### Fixed
-- 镜像整体布局偏移：canvas→img 兜底未保留原盒子的 display/尺寸，源站 canvas{display:block}
-  等选择器在镜像中匹配不到 img，inline 空隙使后续内容整体偏移（实测 +5px，skiadom 文字与骨架
-  错位）。现在内联保留 display/width/height，元素级实测 dom/skiadom 全部 Δ=0。
-- button/inline-block 内文字的占位高度：Chrome 对其 range rect 返回字体盒而非行盒，
-  占位直接采用会使行盒塌陷（按钮 38→34px）。现改用父元素内容盒高度。
-- 静态资源 gzip（wasm 7→3.3MB）+ Cache-Control + 引擎资源后台预取（切模式即秒开）；
-  字体从 fontconfig TTC（21MB×2）改为 SC 单面提取 + 同覆盖子集 + WOFF2（6.1/10.2MB）。
+### 性能
+- 静态资源按 Accept-Encoding 协商 gzip 并按文件缓存（canvaskit.wasm 7→3.3MB）+
+  Cache-Control immutable + 客户端在 WS 建立时后台预取引擎资源（切换 skiadom 即秒开）。
+- 字体下发从 fontconfig TTC（21MB×2，含全部 CJK 语言字形）改为 SC 单面提取 + 与 Regular
+  同覆盖子集（30,890 字位）+ WOFF2（Regular 6.1MB / Bold 10.2MB）；引擎通道保留 OTF（gzip 传输）。
+
+### 工程
+- package.json 公开化：scoped 包名 `@lizhen-xxaq/dom-mirror`（npm 上 `dom-mirror` 已被占用），
+  files 清单补 `get-canvaskit.sh`，`npm run setup` 一键取回 ffmpeg/CanvasKit。
 
 ## v0.1.0（2026-10-22）
 

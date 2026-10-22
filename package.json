@@ -1,7 +1,6 @@
 {
-  "name": "dom-mirror",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@lizhen-xxaq/dom-mirror",
+  "version": "0.1.1",
   "description": "dom-mirror — Remote Browser Isolation engine: mirror the DOM, not the pixels. Business JS and data never leave the server.",
   "license": "Apache-2.0",
   "repository": {
@@ -17,7 +16,8 @@
     "docs/PROTOCOL.md",
     "README.md",
     "LICENSE",
-    "get-ffmpeg.sh"
+    "get-ffmpeg.sh",
+    "get-canvaskit.sh"
   ],
   "keywords": [
     "remote-browser-isolation",
@@ -29,9 +29,13 @@
     "puppeteer"
   ],
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "setup": "bash get-canvaskit.sh && bash get-ffmpeg.sh"
   },
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
