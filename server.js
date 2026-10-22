@@ -152,7 +152,7 @@ const PAGE_HELPERS = `(() => {
           if (ch.nodeType === 3) { if (ch.textContent.trim()) jobs.push({ kind: 'text', node: ch, path: p }); }
           else if (ch.nodeType === 1) {
             if (ch.tagName === 'SELECT') { jobs.push({ kind: 'select', node: ch, path: p }); }
-            else if (ch.tagName === 'INPUT') { jobs.push({ kind: 'input', node: ch, path: p }); }
+            else if (ch.tagName === 'INPUT' || ch.tagName === 'TEXTAREA') { jobs.push({ kind: 'input', node: ch, path: p }); }
             else if (ch.tagName === 'CANVAS') { jobs.push({ kind: 'canvas', node: ch, path: p }); }
             else walk(ch, p);
           }
@@ -189,8 +189,7 @@ const PAGE_HELPERS = `(() => {
             const sp = document.createElement('span');
             sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + Math.round(j.w) + 'px;height:' + Math.round(j.h) + 'px';
             sp.setAttribute('data-xy-space', '1');
-            j.parent = j.node.parentElement;
-            j.parent.replaceChild(sp, j.node);
+            j.node.replaceWith(sp);
             j.sp = sp;
           }
         } catch (e) {}
@@ -217,7 +216,7 @@ const PAGE_HELPERS = `(() => {
             j.tile = { w: sw, h: sh, cssX: sx / DPR, cssY: sy / DPR, cssW: sw / DPR, cssH: sh / DPR, url: c2.toDataURL('image/png') };
           }
         } catch (e) {}
-        try { if (j.sp && j.parent) j.parent.replaceChild(j.node, j.sp); } catch (e) {}
+        try { if (j.sp) j.sp.replaceWith(j.node); } catch (e) {}
       }
       const clone = sanitizeClone(document.body);
       // ③ clone 同路径替换：文本→瓦片 img；select→透明控件+背景瓦片；未覆盖文本剥除（零明文）
@@ -265,7 +264,7 @@ const PAGE_HELPERS = `(() => {
         if (j.kind !== 'input' || !j.tile) continue;
         try {
           const t = findInClone(j.path);
-          if (!t || t.tagName !== 'INPUT') continue;
+          if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) continue;
           t.style.backgroundImage = 'url("' + j.tile.url + '")';
           t.style.backgroundSize = '100% 100%';
           t.style.backgroundRepeat = 'no-repeat';
@@ -353,7 +352,9 @@ function sendFile(req, res, file, ctype, cacheCtl) {
 }
 function staticHandler(root) {
   return (req, res) => {
-    let p = decodeURIComponent((req.url || '/').split('?')[0]);
+    let p;
+    try { p = decodeURIComponent((req.url || '/').split('?')[0]); }
+    catch { res.writeHead(400); res.end('bad url'); return; }
     if (p === '/') p = '/index.html';
     const file = path.join(root, path.normalize(p).replace(/^([/\\])+/, ''));
     if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
@@ -389,9 +390,20 @@ const KEYMAP = {
 // ---------- HTTP + WS ----------
 // /m/* —— 镜像静态资源代理（CSS/字体/图片回源拉取，仅表现层资源，无数据）
 const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? require('https') : require('http');
+const ASSET_RE = /\.(png|jpe?g|gif|svg|webp|avif|ico|bmp|css|woff2?|ttf|otf|eot|mp4|webm)$/i;
 function proxyAsset(req, res) {
-  const u = new URL(req.url.slice(2), ORIGIN_BASE);
+  // 白名单：只代理表现层静态资源（CSS url() 引用的图片/字体等）。
+  // 不加白名单时 GET /m/ 可直接拉到源站整页明文（含页面内密钥）——击穿"数据不出站"
+  let u;
+  try { u = new URL(req.url.slice(2), ORIGIN_BASE); } catch { res.writeHead(400); res.end(); return; }
+  if (!u.pathname || !ASSET_RE.test(u.pathname)) { res.writeHead(403); res.end('asset allowlist'); return; }
   const upstream = httpOrigin.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
+    const ct = (up.headers['content-type'] || '').toLowerCase();
+    if ((up.statusCode || 502) >= 400 || /text\/html|json|javascript|xml/.test(ct)) {
+      up.resume();
+      res.writeHead(403); res.end('asset allowlist');
+      return;
+    }
     res.writeHead(up.statusCode || 502, {
       'content-type': up.headers['content-type'] || 'application/octet-stream',
       'cache-control': 'public, max-age=300',
@@ -416,7 +428,9 @@ const demoSrv = http.createServer((req, res) => {
 });
 const wss = new WebSocketServer({ noServer: true });
 demoSrv.on('upgrade', (req, socket, head) => {
-  const { pathname } = new URL(req.url, 'http://x');
+  let pathname = '';
+  try { pathname = new URL(req.url, 'http://x').pathname; }
+  catch { socket.destroy(); return; }
   if (pathname !== '/ws') { socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
@@ -441,6 +455,24 @@ wss.on('connection', async (ws) => {
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
+  // 清理必须先于一切 await 注册：setup 期间（最长约 23s）断连也要释放会话槽、关 page、
+  // 清定时器——否则 3 次断连即耗尽 MAX_SESSIONS；无监听的 error 事件还会打崩整个进程
+  let dead = false;
+  let helloIv = null;
+  const cleanup = async () => {
+    if (dead) return;
+    dead = true;
+    sessions--;
+    if (statTimer) clearInterval(statTimer);
+    if (helloIv) clearInterval(helloIv);
+    stopFFmpeg();
+    try { await stopDomMirror(); } catch {}
+    try { if (page) await page.close(); } catch {}
+    console.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
+  };
+  ws.on('close', cleanup);
+  ws.on('error', () => {});
+
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
   const queue = [];
@@ -448,8 +480,20 @@ wss.on('connection', async (ws) => {
   const handleCommand = async (m) => {
     switch (m.type) {
           case 'ping': sendJson({ type: 'pong', t: m.t }); break;
+          case 'hello': {
+            // 会话中 DPR 变化（浏览器缩放/拖到别的屏）：重新按新 DPR 模拟并全量重发瓦片
+            const nd = Math.max(1, Math.min(3, parseFloat(m.dpr) || DPR));
+            if (nd !== DPR && page) {
+              DPR = nd;
+              try {
+                await cdp.send('Emulation.setDeviceMetricsOverride', { width: VIEW_W, height: VIEW_H, deviceScaleFactor: DPR, mobile: false });
+                if (mode === 'dom') await startDomMirror();
+              } catch (e) {}
+            }
+            break;
+          }
           case 'quality':
-            if (mode !== 'h264') {
+            if (mode !== 'h264' && mode !== 'dom') {
               quality = Math.max(10, Math.min(95, parseInt(m.q, 10) || 60));
               await startScreencast();
               sendJson({ type: 'quality', q: quality });
@@ -488,13 +532,9 @@ wss.on('connection', async (ws) => {
               el.dispatchEvent(new Event(kind, { bubbles: true }));
               return true;
             }, m.kind, m.path, m.value);
-            if (!ok) {
-              // 瓦片模式绝不回退明文快照（防御不变式）：失败时重发整页瓦片
-              if (mode === 'dom') { await startDomMirror().catch(() => {}); }
-              else {
-                const snap = await page.evaluate(() => window.__xy.snapshot()).catch(() => null);
-                if (snap) sendJson({ type: 'dom-snapshot', css: snap.css.replace(/url\((['"]?)\//g, 'url($1/m/'), html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H });
-              }
+            if (!ok && mode === 'dom') {
+              // 防御不变式：失败只做瓦片化全量重同步；明文快照在任何模式下都不下发
+              await startDomMirror().catch(() => {});
             }
             break;
           }
@@ -531,7 +571,9 @@ wss.on('connection', async (ws) => {
       await handleCommand(m);
     } catch (e) { sendJson({ type: 'error', msg: '事件处理异常: ' + e.message }); }
   };
-  ws.on('message', (raw) => { if (dispatchReady) handleRaw(raw); else queue.push(Buffer.from(raw)); });
+  let cmdChain = Promise.resolve();
+  const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
+  ws.on('message', (raw) => { if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
   const noteInput = () => { lastInputAt = Date.now(); };
 
   async function startScreencast() {
@@ -560,6 +602,11 @@ wss.on('connection', async (ws) => {
         ws._chunks = (ws._chunks || 0) + 1;
       }
     });
+    ff.on('error', (e) => {
+      console.log('[h264  ] ffmpeg error:', e.message);
+      try { ff.kill(); } catch {}
+      if (ffmpeg === ff) ffmpeg = null;
+    });
     ff.on('exit', (code, sig) => {
       console.log(`[h264  ] ffmpeg exit code=${code} sig=${sig} fed=${fedFrames} stdinMB=${(fedBytes/1048576).toFixed(2)}`);
       if (errTail.length) console.log('[h264  ] stderr tail:', errTail.join(' | ').slice(-500));
@@ -579,7 +626,18 @@ wss.on('connection', async (ws) => {
   let DPR = 1;
   let patchChain = Promise.resolve();
 
-  async function startDomMirror() {
+  let domStarting = null;
+  function startDomMirror() {
+    // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
+    // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白
+    if (domStarting) return domStarting;
+    domStarting = (async () => {
+      try { await doStartDomMirror(); }
+      finally { domStarting = null; }
+    })();
+    return domStarting;
+  }
+  async function doStartDomMirror() {
     await page.evaluate(PAGE_HELPERS);
     if (!domExposed) {
       await page.exposeFunction('__xyPatch', (patches) => {
@@ -621,12 +679,24 @@ wss.on('connection', async (ws) => {
     await page.evaluate(() => {
       if (window.__xyObs) window.__xyObs.disconnect();
       window.__xyObs = new MutationObserver((recs) => {
-        if (window.__xyBusy) return; // 位图化期间的替换/还原不产生补丁
+        if (window.__xyBusy) {
+          // 位图化期间的变更不丢、也不整体重同步（重同步自身耗时会再撞上变更，形成
+          // 自我延续的风暴，实测 15s 内 24 次全量快照）：记录下来，快照完成后按常规
+          // 补丁链补发（瓦片重裁的是最新像素）
+          const pend = window.__xyPending || (window.__xyPending = []);
+          for (const r of recs) { try { pend.push(window.__xy.patchOf(r)); } catch (e) {} }
+          if (pend.length > 200) pend.splice(0, pend.length - 200);
+          return;
+        }
         const out = [];
         for (const r of recs) out.push(window.__xy.patchOf(r));
         window.__xyPatch(out);
       });
       window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      // 快照期间发生的变更补发（常规补丁链；不触发全量重同步）
+      const pending = window.__xyPending || [];
+      window.__xyPending = null;
+      if (pending.length) window.__xyPatch(pending);
     });
     console.log('[dom   ] mirror started');
   }
@@ -634,6 +704,8 @@ wss.on('connection', async (ws) => {
   // 变化补丁：对每个变化元素按当前 DPR 重裁瓦片，整块替换（文字/外观均为服务端像素）
   async function tilesPatches(patches) {
     if (patches.some(p => p && p.full)) { await startDomMirror(); return; }
+    // 与全量快照同理：font-display:block 窗口内截图会得到空白文字瓦片
+    await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())).catch(() => {});
     const out = [];
     for (const p of patches) {
       if (!p || p.path === undefined) continue;
@@ -711,10 +783,10 @@ wss.on('connection', async (ws) => {
     // 等客户端上报 DPR（超时回落 1）：服务端按访客 DPR 渲染 → 瓦片 1:1 显示 → 构造性一致
     const hello = await new Promise((res) => {
       const t = setTimeout(() => res({ dpr: 1 }), 3000);
-      const iv = setInterval(() => {
+      helloIv = setInterval(() => {
         const i = queue.findIndex((r) => { try { return JSON.parse(r.toString()).type === 'hello'; } catch { return false; } });
         if (i >= 0) {
-          clearInterval(iv); clearTimeout(t);
+          clearInterval(helloIv); clearTimeout(t);
           try { res(JSON.parse(queue.splice(i, 1)[0].toString())); } catch { res({ dpr: 1 }); }
         }
       }, 100);
@@ -728,25 +800,12 @@ wss.on('connection', async (ws) => {
     else await startScreencast();
 
     dispatchReady = true;
-    for (const raw of queue.splice(0)) await handleRaw(raw);
+    for (const raw of queue.splice(0)) enqueue(raw);
 
-    let closed = false;
-    ws.on('close', async () => {
-      if (closed) return;
-      closed = true;
-      sessions--;
-      if (statTimer) clearInterval(statTimer);
-      stopFFmpeg();
-      await stopDomMirror().catch(() => {});
-      console.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
-      try { await page.close(); } catch {}
-    });
-    ws.on('error', () => {});
   } catch (e) {
-    if (ws.listenerCount('close') === 0) sessions--;
     sendJson({ type: 'error', msg: '会话建立失败: ' + e.message });
-    try { if (page) await page.close(); } catch {}
-    ws.close();
+    try { await cleanup(); } catch {}
+    try { ws.close(); } catch {}
   }
 });
 

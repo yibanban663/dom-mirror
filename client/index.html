@@ -350,7 +350,7 @@
       mirrorRoot.addEventListener('input', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
         // 输入瓦片：键入时隐藏服务端像素背景（placeholder 已被键入内容取代），清空后恢复
-        if (e.target.matches('input[data-xy-inp]')) {
+        if (e.target.matches('input[data-xy-inp], textarea[data-xy-inp]')) {
           e.target.style.backgroundImage = e.target.value ? 'none' : '';
         }
         const p = pathOfMirror(e.target);
@@ -375,7 +375,16 @@
       el.style.transform = 'translateZ(0) translate(' + dx + 'px,' + dy + 'px)';
     } catch (e) {}
   }
-  window.addEventListener('resize', () => snapMirrorToDevice());
+  let lastDpr = window.devicePixelRatio || 1;
+  window.addEventListener('resize', () => {
+    snapMirrorToDevice();
+    // DPR 变化（浏览器缩放/跨屏拖动）：上报服务端按新 DPR 重渲并全量重发瓦片
+    const d = window.devicePixelRatio || 1;
+    if (d !== lastDpr && connected && ws && ws.readyState === 1) {
+      lastDpr = d;
+      try { ws.send(JSON.stringify({ type: 'hello', dpr: d })); } catch (e) {}
+    }
+  });
   // 把瓦片画到设备分辨率 canvas（整数设备坐标 1:1 blit）
   function drawTileToLayer(tile) {
     const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
@@ -403,6 +412,26 @@
       im.onerror = rej;
     });
   }
+  // 瓦片矩形登记：补丁替换同路径瓦片前先清旧区域（否则内容上移后旧像素留影）
+  function tileLayerStore() {
+    const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
+    if (!layer) return null;
+    if (!layer._rects) layer._rects = new Map();
+    return layer;
+  }
+  function clearTileRect(pathKey) {
+    const layer = tileLayerStore();
+    if (!layer) return;
+    const r = layer._rects.get(pathKey);
+    if (!r) return;
+    const dpr = layer.tdpr || window.devicePixelRatio || 1;
+    layer.getContext('2d').clearRect(Math.floor(r.x * dpr), Math.floor(r.y * dpr), Math.ceil(r.w * dpr) + 1, Math.ceil(r.h * dpr) + 1);
+    layer._rects.delete(pathKey);
+  }
+  function noteTileRect(pathKey, t) {
+    const layer = tileLayerStore();
+    if (layer) layer._rects.set(pathKey, { x: t.cssX, y: t.cssY, w: t.cssW, h: t.cssH });
+  }
   function applyPatches(patches) {
     if (!mirrorBody) return;
     const dpr = window.devicePixelRatio || 1;
@@ -418,9 +447,12 @@
             el.style.backgroundSize = '100% 100%';
             el.style.backgroundRepeat = 'no-repeat';
           } else {
-            tile.img = new Image();
-            tile.img.src = t.url;
-            drawTileToLayer(tile).catch(() => {});
+            // 先清旧瓦片残留（内容变化布局位移后旧像素会留影），再画新瓦片
+            clearTileRect(p.path);
+            const nt = { cssX: t.cssX, cssY: t.cssY, cssW: t.cssW, cssH: t.cssH, w: t.w, h: t.h, url: t.url };
+            nt.img = new Image();
+            nt.img.src = t.url;
+            drawTileToLayer(nt).then(() => { noteTileRect(p.path, nt); }).catch(() => {});
           }
           continue;
         }
@@ -480,7 +512,6 @@
             }
             m('oTitle').textContent = j.title || '-';
             m('mIdle').textContent = 'mirror';
-            if (j.runs) drawSkiaRuns(j.runs);
           }
           if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); applyPatches(j.patches); }
           if (j.type === 'error') { lastErr = j.msg; setStatus('错误: ' + j.msg, false); }
