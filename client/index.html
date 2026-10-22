@@ -60,7 +60,7 @@
       <div class="cursor" id="cur"></div>
     </div>
     <div class="canvas-box" id="mirrorBox" style="display:none">
-      <div id="mirrorScroll" style="width:1280px;height:800px;overflow:auto;background:#fff">
+      <div id="mirrorScroll" style="width:1280px;height:800px;overflow:auto;background:#fff;transform:translateZ(0)">
         <div id="mirrorHost"></div>
       </div>
     </div>
@@ -319,6 +319,19 @@
       .replace(/:root\s*(?=[,{])/g, '.xy-body')
       .replace(/(^|[\s,{}])html(?=\s*[,{])/g, '$1.xy-body')
       .replace(/(^|[\s,{}])body(?=\s*[,{])/g, '$1.xy-body');
+    // 字体一致性：服务端像素渲染将一切字体栈解析为 Noto Sans SC，
+    // 客户端把常见中文字体名统一映射到引擎下发的同一字体 → 两端文字必然一致。
+    // 注意：Shadow DOM <style> 内的 @font-face 在 Chromium 不生效，必须用 FontFace API 文档级注册
+    if (!window.__xyFontsRegistered) {
+      window.__xyFontsRegistered = true;
+      ['Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑'].forEach((fam) => {
+        try {
+          const ff = new FontFace(fam, 'url(/f/noto)', { weight: '100 900', display: 'swap' });
+          document.fonts.add(ff);
+          ff.load().catch(() => {});
+        } catch (e) {}
+      });
+    }
     mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body" style="min-height:100%;box-sizing:border-box">' + html + '</div>';
     mirrorBody = mirrorRoot.querySelector('.xy-body');
     if (!mirrorWired) {

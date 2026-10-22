@@ -191,6 +191,19 @@ function proxyAsset(req, res) {
 
 const demoSrv = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
+  if (req.url === '/f/noto') {
+    // 服务端渲染所用字体的下发：保证镜像端文字与服务端像素渲染一致
+    fs.readFile(path.join(__dirname, 'assets', 'NotoSansSC-Regular.otf'), (err, buf) => {
+      if (err) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, {
+        'content-type': 'font/otf',
+        'cache-control': 'public, max-age=86400',
+        'content-length': buf.length,
+      });
+      res.end(buf);
+    });
+    return;
+  }
   return staticHandler(path.join(__dirname, 'client'))(req, res);
 });
 const wss = new WebSocketServer({ noServer: true });

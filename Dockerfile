@@ -18,6 +18,7 @@ WORKDIR /app
 COPY server.js package.json ./
 COPY client ./client
 COPY protected ./protected
+COPY assets ./assets
 
 RUN node -e "require('puppeteer');require('ws');console.log('deps ok')"
 
