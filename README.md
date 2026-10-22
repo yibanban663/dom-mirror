@@ -1,4 +1,4 @@
-# dom-mirror — 虚影 DOM 镜像（RBI 引擎 + 四通道演示）
+# dom-mirror — DOM 镜像（RBI 引擎 + 多通道演示）
 
 > 让业务逻辑与数据永不离开服务器的网页交付引擎。
 > DOM 镜像 / JPEG / WebP / H.264 四种通道运行时可切换，带真实系统接入实测。
@@ -114,9 +114,9 @@ WS 协议消息定义见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 - **v0.1**（当前）：单容器演示，四通道可切换，协议稳定
 - **v0.2**：npm 依赖包形态 —— `@yuzhian/dom-mirror-server`（挂到已有 Node 服务）+ `@yuzhian/dom-mirror-client`（纯前端 attach）；协议版本化
-- **v0.3**：Go 实现（chromedp）与浏览器池/会话管理，适配虚影按路径策略体系
+- **v0.3**：Go 实现（chromedp）与浏览器池/会话管理，适配dom-mirror按路径策略体系
 - 欢迎通过 issue 提交站点适配案例（"某某组件库镜像异常"），沉淀通用规则包
 
 ## License
 
-[Apache-2.0](LICENSE) © 2026 Chengdu Yuzhian Technology Co., Ltd.（成都御之安科技有限公司）
+[Apache-2.0](LICENSE) © 2026 Chengdu Yuzhian Technology Co., Ltd.（成都演示系统有限公司）

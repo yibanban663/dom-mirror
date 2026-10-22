@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 虚影 RBI 帧流 PoC 服务端 v2 —— 编码演进对比版
+ * dom-mirror RBI PoC 服务端 v2 —— 编码演进对比版
  *
  * 三种模式（客户端可运行时切换）：
  *  - jpeg : CDP screencast JPEG 直发（基线）
