@@ -131,7 +131,7 @@ const PAGE_HELPERS = `(() => {
       const walk = (node, path) => {
         let idx = 0;
         for (const ch of node.childNodes) {
-          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { continue; }
+          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { idx++; continue; }
           const p = path === '' ? String(idx) : path + '/' + idx;
           if (ch.nodeType === 3) { if (ch.textContent.trim()) runs.push({ node: ch, path: p }); }
           else if (ch.nodeType === 1) walk(ch, p);
@@ -238,7 +238,8 @@ const PAGE_HELPERS = `(() => {
       const walk = (node, path) => {
         let idx = 0;
         for (const ch of node.childNodes) {
-          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { continue; }
+          // SELECT 子树不下发：option 文本由原生控件显示；占位/清空都会让控件标签消失
+          if (ch.nodeType === 1 && (skipTags.has(ch.tagName) || ch.tagName === 'SELECT')) { idx++; continue; }
           const p = path === '' ? String(idx) : path + '/' + idx;
           if (ch.nodeType === 3) {
             if (!ch.textContent.trim()) { idx++; continue; }
@@ -296,6 +297,17 @@ const PAGE_HELPERS = `(() => {
         try { r.parent.replaceChild(r.node, j.sp); } catch (e) {}
       }
       const clone = sanitizeClone(document.body);
+      // select：标签文本是原生控件画出来的，必须留在 DOM；但只保留选中项，其余 option 文本不下发
+      try {
+        const liveSels = document.querySelectorAll('select');
+        const cloneSels = clone.querySelectorAll('select');
+        liveSels.forEach((ls, i) => {
+          const cs = cloneSels[i];
+          if (!cs) return;
+          cs.selectedIndex = ls.selectedIndex;
+          for (const op of cs.querySelectorAll('option')) if (!op.selected) op.textContent = '';
+        });
+      } catch (e) {}
       for (const j of jobs) {
         try {
           const parts = j.run.path.split('/');
@@ -349,7 +361,8 @@ const PAGE_HELPERS = `(() => {
       const walk = (node, path) => {
         let idx = 0;
         for (const ch of node.childNodes) {
-          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { continue; }
+          // SELECT 子树同 snapshotSkia：不下发，由原生控件显示标签
+          if (ch.nodeType === 1 && (skipTags.has(ch.tagName) || ch.tagName === 'SELECT')) { idx++; continue; }
           const p = path === '' ? String(idx) : path + '/' + idx;
           if (ch.nodeType === 3) {
             if (!ch.textContent.trim()) { idx++; continue; }
@@ -391,6 +404,7 @@ const PAGE_HELPERS = `(() => {
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2',
 };
 function staticHandler(root) {
   return (req, res) => {
