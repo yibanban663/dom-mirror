@@ -114,9 +114,10 @@ WS 协议消息定义见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 ## 路线图
 
-- **v0.1**（当前）：单容器演示，四通道可切换，协议稳定
+- **v0.1**（当前）：单容器演示，五通道可切换，协议稳定
 - **v0.2**：npm 依赖包形态 —— `@yuzhian/dom-mirror-server`（挂到已有 Node 服务）+ `@yuzhian/dom-mirror-client`（纯前端 attach）；协议版本化
-- **v0.3**：Go 实现（chromedp）与浏览器池/会话管理，适配dom-mirror按路径策略体系
+- **v0.3**：Go 实现（chromedp）与浏览器池/会话管理，适配虚影按路径策略体系
+- **"引擎下发"已做可行性验证（2026-10）**：同字体同坐标下，CanvasKit（Skia-WASM，7MB）与 Chromium 内置 Skia 渲染同一批中英文文本，**97.46% 像素逐字节一致（avg 2.3/255）**，残差为两份 Skia 的版本差（Chromium 内嵌版 vs CanvasKit 发行版），用与目标 Chromium 同源 revision 编译 CanvasKit 可进一步收敛——即 Cloudflare 路线（绘制指令 + Skia-WASM 客户端重放）的核心前提成立
 - 欢迎通过 issue 提交站点适配案例（"某某组件库镜像异常"），沉淀通用规则包
 
 ## License
