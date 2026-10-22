@@ -320,25 +320,21 @@
       .replace(/:root\s*(?=[,{])/g, '.xy-body')
       .replace(/(^|[\s,{}])html(?=\s*[,{])/g, '$1.xy-body')
       .replace(/(^|[\s,{}])body(?=\s*[,{])/g, '$1.xy-body');
-    // 字体一致性：直接下发服务端 fontconfig 使用的同两个 .ttc（Regular/Bold 真字重），
-    // 客户端文字度量与像素渲染完全一致。注意两点实测教训：
-    // ① Shadow DOM <style> 内的 @font-face 在 Chromium 不生效 → 必须 FontFace API 文档级注册
-    // ② 只下发 Regular 并声明 weight:100 900 会让粗体变伪粗体，排版全部偏移 → 必须 400/700 分开注册真字重
-    if (!window.__xyFontsRegistered) {
-      window.__xyFontsRegistered = true;
-      const FAMS = ['Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑'];
-      FAMS.forEach((fam) => {
-        [['400', '/f/noto-regular'], ['700', '/f/noto-bold']].forEach(([w, u]) => {
-          try {
-            const ff = new FontFace(fam, `url(${u}) format('woff2')`, { weight: w, display: 'swap' });
-            document.fonts.add(ff);
-            ff.load().catch(() => {});
-          } catch (e) {}
-        });
-      });
-    }
+    // 像素瓦片模式：镜像内零文字明文 → 客户端无需任何字体下发（省 16MB），
+    // 所有可见文字/图表 = 服务端按本机 DPR 渲染的原始像素瓦片，1:1 显示
     mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body" style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     mirrorBody = mirrorRoot.querySelector('.xy-body');
+    snapMirrorToDevice();
+    // 瓦片图层：设备分辨率 canvas。drawImage 一律用整数设备坐标做 1:1 位块拷贝，
+    // img 元素方案在 DPR≠1 时会被合成器按分数 CSS 坐标重采样（实测垂直发糊）
+    const layer = document.createElement('canvas');
+    layer.className = 'xy-tiles';
+    const tdpr = window.devicePixelRatio || 1;
+    layer.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:0;overflow:visible;pointer-events:none;z-index:5';
+    layer.width = Math.round(1280 * tdpr);
+    layer.height = 1;
+    layer.tdpr = tdpr;
+    mirrorBody.appendChild(layer);
     if (!mirrorWired) {
       mirrorWired = true;
       mirrorRoot.addEventListener('click', (e) => {
@@ -353,6 +349,10 @@
       mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
       mirrorRoot.addEventListener('input', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
+        // 输入瓦片：键入时隐藏服务端像素背景（placeholder 已被键入内容取代），清空后恢复
+        if (e.target.matches('input[data-xy-inp]')) {
+          e.target.style.backgroundImage = e.target.value ? 'none' : '';
+        }
         const p = pathOfMirror(e.target);
         if (p !== null) send({ type: 'dom', kind: 'input', path: p, value: e.target.value });
       });
@@ -363,10 +363,60 @@
       });
     }
   }
+  // 把镜像容器吸附到整数设备像素：DPR≠1 时 CSS 整数位置可能是半个设备像素（如 22px×1.25=27.5），
+  // 不吸附则整个镜像被合成器重采样，瓦片 1:1 前功尽弃
+  function snapMirrorToDevice() {
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const el = document.getElementById('mirrorScroll');
+      const r = el.getBoundingClientRect();
+      const dx = Math.round(r.left * dpr) / dpr - r.left;
+      const dy = Math.round(r.top * dpr) / dpr - r.top;
+      el.style.transform = 'translateZ(0) translate(' + dx + 'px,' + dy + 'px)';
+    } catch (e) {}
+  }
+  window.addEventListener('resize', () => snapMirrorToDevice());
+  // 把瓦片画到设备分辨率 canvas（整数设备坐标 1:1 blit）
+  function drawTileToLayer(tile) {
+    const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
+    if (!layer) return Promise.reject(new Error('no layer'));
+    const dpr = layer.tdpr || window.devicePixelRatio || 1;
+    const dh = Math.ceil((tile.cssY + tile.cssH) * dpr) + 1;
+    const doResize = dh > layer.height;
+    const draw = () => {
+      if (doResize) layer.height = dh;
+      const ctx = layer.getContext('2d');
+      ctx.drawImage(tile.img, Math.round(tile.cssX * dpr), Math.round(tile.cssY * dpr), tile.w, tile.h);
+    };
+    if (tile.img && tile.img.complete) { draw(); return Promise.resolve(); }
+    return new Promise((res, rej) => {
+      const im = tile.img || new Image();
+      if (!tile.img) { tile.img = im; im.src = tile.url; }
+      im.onload = () => { try { draw(); res(); } catch (e) { rej(e); } };
+      im.onerror = rej;
+    });
+  }
   function applyPatches(patches) {
     if (!mirrorBody) return;
+    const dpr = window.devicePixelRatio || 1;
     for (const p of patches) {
       try {
+        // 像素瓦片补丁：追加/替换图层中的瓦片（绝对坐标，设备像素对齐）
+        if (p.tile || p.selTile) {
+          const el = mirrorFind(p.path);
+          if (!el) throw new Error('path miss');
+          const t = p.tile || p.selTile;
+          if (p.selTile) {
+            el.style.backgroundImage = 'url("' + t.url + '")';
+            el.style.backgroundSize = '100% 100%';
+            el.style.backgroundRepeat = 'no-repeat';
+          } else {
+            tile.img = new Image();
+            tile.img.src = t.url;
+            drawTileToLayer(tile).catch(() => {});
+          }
+          continue;
+        }
         const el = mirrorFind(p.path);
         if (!el) throw new Error('path miss');
         if (p.inner !== undefined) el.innerHTML = p.inner;
@@ -391,6 +441,8 @@
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       connected = true; lastErr = ''; setStatus('会话在线', true); m('mIdle').textContent = 'waiting frame';
+      // 上报本机 DPR：服务端按访客 DPR 渲染文字像素瓦片，客户端 1:1 显示 → 构造性一致
+      try { ws.send(JSON.stringify({ type: 'hello', dpr: window.devicePixelRatio || 1 })); } catch (e) {}
     };
     ws.onclose = () => { connected = false; setStatus(lastErr ? ('已断开：' + lastErr) : '已断开', false); m('mIdle').textContent = 'disconnected'; };
     ws.onerror = () => setStatus('连接错误', false);
@@ -411,6 +463,14 @@
           if (j.type === 'dom-snapshot') {
             noteBytes(ev.data.length || ev.data.size || 0);
             buildMirror(j.css, j.html);
+            if (Array.isArray(j.tiles)) {
+              // 先把页面撑到内容高度（snapshotTiles 的 tiles 覆盖整页），再统一 blit
+              let maxBottom = 0;
+              for (const t of j.tiles) maxBottom = Math.max(maxBottom, (t.cssY + t.cssH) * (window.devicePixelRatio || 1));
+              const layer = mirrorBody.querySelector('.xy-tiles');
+              if (layer) layer.height = Math.ceil(maxBottom) + 1;
+              for (const t of j.tiles) drawTileToLayer(t).catch(() => {});
+            }
             m('oTitle').textContent = j.title || '-';
             m('mIdle').textContent = 'mirror';
             if (j.runs) drawSkiaRuns(j.runs);
