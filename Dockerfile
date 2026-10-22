@@ -19,6 +19,7 @@ COPY server.js package.json ./
 COPY client ./client
 COPY protected ./protected
 COPY assets ./assets
+COPY ck ./ck
 
 RUN node -e "require('puppeteer');require('ws');console.log('deps ok')"
 

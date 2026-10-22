@@ -37,3 +37,9 @@
 - 服务端：CDP screencast(JPEG) → ffmpeg `image2pipe` → libx264 `-preset ultrafast -tune zerolatency -profile main -level 4.0`，**`-analyzeduration 0 -probesize 1M`（稀疏输入首帧即出流的关键参数）**，`keyint=30`、`repeat-headers=1`。
 - 客户端：Annex-B NAL 切分 → 首个 SPS 解析 codec 字符串 → `VideoDecoder`（`optimizeForLatency`）→ canvas。
 - 需要 WebCodecs（Chrome/Edge）；不支持的浏览器应回落 jpeg/webp。
+
+## skiadom（引擎文字，v0.1 新增）
+
+- 快照：`dom-snapshot` 附带 `runs` 数组——`{t,x,y,w,h,c,s,b,a}`（文本/页面坐标/宽高/RGB/字号/粗体/ascent 基线偏移）。镜像 HTML 中文本全部替换为等大占位 span（`data-xy-space`），布局由实测 relative 归位保持。
+- 变更：200ms 防抖全量重发（无截图开销）。
+- 引擎与字体：`GET /ck/canvaskit.{js,wasm}`（Skia-WASM，0.42.0）+ `GET /f/noto`（OTF）；客户端 `MakeSWCanvasSurface` 按 devicePixelRatio 绘制，任意 DPR 清晰且跨平台一致。

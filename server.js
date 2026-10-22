@@ -24,7 +24,7 @@ const VIEW_H = parseInt(process.env.VIEW_H || '800', 10);
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
 const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
-const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
+const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom', 'dombitmap', 'skiadom'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
 const FRAME_MIN_INTERVAL = parseInt(process.env.FRAME_MIN_INTERVAL || '33', 10); // 30fps 上限
 const H264_ARGS = [
   '-hide_banner', '-loglevel', 'error',
@@ -227,6 +227,101 @@ const PAGE_HELPERS = `(() => {
       if (r.width < 1 || r.height < 1) return null;
       return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
     },
+    // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
+    // （runs: 文本/坐标/字号/颜色）下发，客户端 CanvasKit(Skia-WASM) 本地任意 DPR 清晰绘制。
+    // 零截图：服务端只做 DOM 测量，资源开销与纯 DOM 镜像同级。
+    async snapshotSkia() {
+      window.__xyBusy = true;
+      const skipTags = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE']);
+      const runs = [];
+      const jobs = [];
+      const walk = (node, path) => {
+        let idx = 0;
+        for (const ch of node.childNodes) {
+          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { continue; }
+          const p = path === '' ? String(idx) : path + '/' + idx;
+          if (ch.nodeType === 3) {
+            if (!ch.textContent.trim()) { idx++; continue; }
+            const run = { node: ch, path: p, parent: ch.parentElement };
+            const rng = document.createRange();
+            rng.selectNodeContents(ch);
+            const rects = [...rng.getClientRects()];
+            if (!rects.length) { jobs.push({ run, skip: true }); idx++; continue; }
+            run.x = Math.min(...rects.map(r => r.left)) + window.scrollX;
+            run.y = Math.min(...rects.map(r => r.top)) + window.scrollY;
+            run.w = Math.max(...rects.map(r => r.right)) - Math.min(...rects.map(r => r.left));
+            run.h = Math.max(...rects.map(r => r.bottom)) - Math.min(...rects.map(r => r.top));
+            const cs = getComputedStyle(ch.parentElement);
+            const mm = cs.color.match(/rgba?\\(([^)]+)\\)/);
+            run.color = mm ? mm[1].split(',').slice(0, 3).map(v => (+v.trim()) / 255) : [0, 0, 0];
+            run.size = parseFloat(cs.fontSize) || 16;
+            run.bold = (+cs.fontWeight >= 600);
+            run.text = ch.textContent;
+            jobs.push({ run, skip: false });
+          } else if (ch.nodeType === 1) {
+            walk(ch, p);
+          }
+          idx++;
+        }
+      };
+      walk(document.body, '');
+      const mctx = document.createElement('canvas').getContext('2d');
+      for (const j of jobs) {
+        if (j.skip) continue;
+        const r = j.run;
+        mctx.font = (r.bold ? '700 ' : '400 ') + r.size + 'px "Noto Sans CJK SC", sans-serif';
+        const m = mctx.measureText('汉字Ag');
+        const asc = m.fontBoundingBoxAscent || Math.round(r.size * 0.88);
+        runs.push({ t: r.text, x: Math.round(r.x * 10) / 10, y: Math.round(r.y * 10) / 10, w: Math.round(r.w), h: Math.round(r.h), c: r.color, s: r.size, b: r.bold ? 1 : 0, a: Math.round(asc) });
+      }
+      // live 就地替换为等大占位 span，实测偏差 relative 归位（复用文字位图的布局保持机制）
+      for (const j of jobs) {
+        if (j.skip) continue;
+        const r = j.run;
+        const sp = document.createElement('span');
+        sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + Math.round(r.w) + 'px;height:' + Math.round(r.h) + 'px';
+        sp.setAttribute('data-xy-space', '1');
+        r.parent.replaceChild(sp, r.node);
+        j.sp = sp;
+      }
+      await new Promise(r2 => requestAnimationFrame(() => requestAnimationFrame(r2)));
+      for (const j of jobs) {
+        if (j.skip) continue;
+        const r = j.run;
+        const q = j.sp.getBoundingClientRect();
+        const dx = Math.round((r.x - window.scrollX - q.left) * 2) / 2;
+        const dy = Math.round((r.y - window.scrollY - q.top) * 2) / 2;
+        if (dx || dy) { j.sp.style.position = 'relative'; j.sp.style.left = dx + 'px'; j.sp.style.top = dy + 'px'; }
+        j.spHtml = j.sp.outerHTML;
+        try { r.parent.replaceChild(r.node, j.sp); } catch (e) {}
+      }
+      const clone = sanitizeClone(document.body);
+      for (const j of jobs) {
+        try {
+          const parts = j.run.path.split('/');
+          let cn = clone;
+          for (const i of parts.slice(0, -1)) { cn = cn.childNodes ? cn.childNodes[+i] : null; if (!cn) break; }
+          const target = cn && cn.childNodes ? cn.childNodes[+parts[parts.length - 1]] : null;
+          if (!target || target.nodeType !== 3) continue;
+          if (j.spHtml) {
+            const tpl = document.createElement('template');
+            tpl.innerHTML = j.spHtml;
+            cn.replaceChild(tpl.content.firstChild, target);
+          } else {
+            cn.replaceChild(document.createTextNode(''), target);
+          }
+        } catch (e) {}
+      }
+      window.__xyBusy = false;
+      const styleCss = [...document.querySelectorAll('style')].map(s => s.textContent).join('\\n');
+      const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
+      let linkCss = '';
+      try {
+        const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
+        linkCss = texts.join('\\n');
+      } catch (e) {}
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, runs: runs.filter(Boolean) };
+    },
     patchOf(record) {
       // 补丁模型：childList/characterData → 目标元素 innerHTML 重发；attributes → 元素 outerHTML 重发
       let target = record.target;
@@ -302,6 +397,19 @@ function proxyAsset(req, res) {
 
 const demoSrv = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
+  if (req.url && req.url.startsWith('/ck/')) {
+    // CanvasKit(Skia-WASM) 引擎下发
+    const file = path.join(__dirname, 'ck', path.basename(req.url));
+    fs.readFile(file, (err, buf) => {
+      if (err) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, {
+        'content-type': req.url.endsWith('.wasm') ? 'application/wasm' : 'text/javascript; charset=utf-8',
+        'cache-control': 'public, max-age=86400',
+      });
+      res.end(buf);
+    });
+    return;
+  }
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
     // 与服务端 fontconfig 完全相同的字体文件原样下发 → 客户端文字度量与像素渲染逐字节一致
     const f = req.url.endsWith('-bold') ? 'NotoSansCJK-Bold.ttc' : 'NotoSansCJK-Regular.ttc';
@@ -402,6 +510,15 @@ wss.on('connection', async (ws) => {
   // ---------- DOM 镜像通道 ----------
   let domActive = false, domExposed = false, domBitmap = false;
   let patchChain = Promise.resolve();
+  let skiaTimer = null;
+  const skiaResched = () => {
+    // skiadom v0：文字/结构变化 → 200ms 防抖全量重发（快照为纯 DOM 测量，开销与 dom 模式同级）
+    if (skiaTimer) return;
+    skiaTimer = setTimeout(() => {
+      skiaTimer = null;
+      if (domActive && mode === 'skiadom' && ws.readyState === 1) startDomMirror().catch(() => {});
+    }, 200);
+  };
 
   async function startDomMirror() {
     await page.evaluate(PAGE_HELPERS);
@@ -411,6 +528,7 @@ wss.on('connection', async (ws) => {
         // 串行化处理，避免并发截图竞态
         patchChain = patchChain.then(async () => {
           try {
+            if (mode === 'skiadom') { skiaResched(); return; }
             if (domBitmap) return await bitmapPatches(patches);
             if (patches.some(p => p && p.full)) {
               const snap = await page.evaluate(() => window.__xy.snapshot());
@@ -431,11 +549,13 @@ wss.on('connection', async (ws) => {
     if (domBitmap) {
       const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
       snap = await page.evaluate((b64) => window.__xy.snapshotBitmap(b64), shot.data);
+    } else if (mode === 'skiadom') {
+      snap = await page.evaluate(() => window.__xy.snapshotSkia());
     } else {
       snap = await page.evaluate(() => window.__xy.snapshot());
     }
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/');
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H });
+    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, ...(snap.runs ? { runs: snap.runs } : {}) });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -533,7 +653,7 @@ wss.on('connection', async (ws) => {
 
     await page.goto(ORIGIN_URL, { waitUntil: 'networkidle0', timeout: 20000 });
     sendJson({ type: 'meta', w: VIEW_W, h: VIEW_H, title: await page.title(), url: ORIGIN_URL, maxSessions: MAX_SESSIONS, mode });
-    if (mode === 'dom') await startDomMirror();
+    if (mode === 'dom' || mode === 'dombitmap' || mode === 'skiadom') await startDomMirror();
     else await startScreencast();
 
     ws.on('message', async (raw) => {
@@ -549,13 +669,14 @@ wss.on('connection', async (ws) => {
             }
             break;
           case 'mode': {
-            const next = ['jpeg', 'webp', 'h264', 'dom', 'dombitmap'].includes(m.mode) ? m.mode : 'jpeg';
-            if ((mode === 'dom' || mode === 'dombitmap') && next !== 'dom' && next !== 'dombitmap') await stopDomMirror();
+            const next = ['jpeg', 'webp', 'h264', 'dom', 'dombitmap', 'skiadom'].includes(m.mode) ? m.mode : 'jpeg';
+            const isDomLike = (x) => x === 'dom' || x === 'dombitmap' || x === 'skiadom';
+            if (isDomLike(mode) && !isDomLike(next)) await stopDomMirror();
             mode = next;
             domBitmap = (mode === 'dombitmap');
             if (mode === 'h264') { quality = 85; startFFmpeg(); } else { stopFFmpeg(); }
             try {
-              if (mode === 'dom' || mode === 'dombitmap') {
+              if (isDomLike(mode)) {
                 await cdp.send('Page.stopScreencast').catch(() => {});
                 await startDomMirror();
               } else {
