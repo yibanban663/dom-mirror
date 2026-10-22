@@ -2,6 +2,14 @@
 
 本文件记录 dom-mirror 的版本演进。协议破坏性变更见 docs/PROTOCOL.md。
 
+## Unreleased
+
+### Fixed
+- skiadom：下拉框（select）在镜像中显示为空——option 文本被占位/清空导致原生控件标签消失。
+  现在 SELECT 子树不参与 runs 收集，克隆时仅保留选中项标签（其余 option 文本不下发）。
+- 三个 runs 收集器跳过 SCRIPT/STYLE 等标签时未计数，导致后续兄弟节点路径错位
+  （dombitmap 下可能造成个别文本替换静默失败）。
+
 ## v0.1.0（2026-10-22）
 
 首个发布版本：RBI 引擎 + 五通道演示，Apache-2.0。
