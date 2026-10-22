@@ -25,7 +25,7 @@ const VIEW_H = parseInt(process.env.VIEW_H || '800', 10);
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
 const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
-const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom', 'dombitmap', 'skiadom'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
+const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
 const FRAME_MIN_INTERVAL = parseInt(process.env.FRAME_MIN_INTERVAL || '33', 10); // 30fps 上限
 const H264_ARGS = [
   '-hide_banner', '-loglevel', 'error',
@@ -120,110 +120,6 @@ const PAGE_HELPERS = `(() => {
         html: sanitizeClone(document.body).innerHTML,
         title: document.title,
       };
-    },
-    // 文字位图化：在 live 页面"替换→实测偏差→relative 归位→还原"，
-    // 布局零扰动 + 逐元素像素对齐（偏差由实测吸收，不做任何布局假设）
-    async snapshotBitmap(pngB64) {
-      window.__xyBusy = true;
-      const img = new Image();
-      img.src = 'data:image/png;base64,' + pngB64;
-      await img.decode();
-      const sheet = document.createElement('canvas');
-      sheet.width = img.width; sheet.height = img.height;
-      sheet.getContext('2d').drawImage(img, 0, 0);
-      const skipTags = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE']);
-      const runs = [];
-      const walk = (node, path) => {
-        let idx = 0;
-        for (const ch of node.childNodes) {
-          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { idx++; continue; }
-          const p = path === '' ? String(idx) : path + '/' + idx;
-          if (ch.nodeType === 3) { if (ch.textContent.trim()) runs.push({ node: ch, path: p }); }
-          else if (ch.nodeType === 1) walk(ch, p);
-          idx++;
-        }
-      };
-      walk(document.body, '');
-      const rng = document.createRange();
-      const jobs = [];
-      const doneRuns = new Set();
-      // ① live 页就地替换为等大 inline 占位 img（测量用）
-      for (const run of runs) {
-        try {
-          rng.selectNodeContents(run.node);
-          const rects = [...rng.getClientRects()];
-          if (!rects.length) continue;
-          doneRuns.add(run);
-          const L = Math.min(...rects.map(r => r.left)), T = Math.min(...rects.map(r => r.top));
-          const R = Math.max(...rects.map(r => r.right)), B = Math.max(...rects.map(r => r.bottom));
-          const x = Math.round(L + window.scrollX), y = Math.round(T + window.scrollY);
-          const w = Math.round(R - L), h = Math.round(B - T);
-          if (w <= 0 || h <= 0) continue;
-          const im = document.createElement('img');
-          im.width = w; im.height = h;
-          im.style.cssText = 'display:inline-block;vertical-align:top';
-          run.parent = run.node.parentElement;
-          run.parent.replaceChild(im, run.node);
-          jobs.push({ run, im, x, y, w, h });
-        } catch (e) {}
-      }
-      // ② 等布局稳定，实测偏差归位、裁切，并立即还原 live 文本（clone 必须基于还原后的干净 DOM）
-      await new Promise(r2 => requestAnimationFrame(() => requestAnimationFrame(r2)));
-      for (const j of jobs) {
-        try {
-          const q = j.im.getBoundingClientRect();
-          const dx = Math.round((j.x - window.scrollX - q.left) * 2) / 2;
-          const dy = Math.round((j.y - window.scrollY - q.top) * 2) / 2;
-          if (dx || dy) { j.im.style.position = 'relative'; j.im.style.left = dx + 'px'; j.im.style.top = dy + 'px'; }
-          if (j.x >= 0 && j.y >= 0 && j.x + j.w <= sheet.width + 1 && j.y + j.h <= sheet.height + 1) {
-            const c2 = document.createElement('canvas');
-            c2.width = j.w; c2.height = j.h;
-            c2.getContext('2d').drawImage(sheet, j.x, j.y, j.w, j.h, 0, 0, j.w, j.h);
-            j.im.src = c2.toDataURL('image/png');
-            j.im.setAttribute('data-xy-bitmap', '1');
-            j.imgHtml = j.im.outerHTML;
-          }
-        } catch (e) {}
-        try { j.run.parent.replaceChild(j.run.node, j.im); } catch (e) {}
-      }
-      const clone = sanitizeClone(document.body);
-      // ③ clone 中同路径替换为带像素的 img（未产出 imgHtml 的文本剥除）
-      for (const j of jobs) {
-        try {
-          const parts = j.run.path.split('/');
-          let cn = clone;
-          for (const i of parts.slice(0, -1)) { cn = cn.childNodes ? cn.childNodes[+i] : null; if (!cn) break; }
-          const target = cn && cn.childNodes ? cn.childNodes[+parts[parts.length - 1]] : null;
-          if (!target || target.nodeType !== 3) continue;
-          if (j.imgHtml) {
-            const tpl = document.createElement('template');
-            tpl.innerHTML = j.imgHtml;
-            cn.replaceChild(tpl.content.firstChild, target);
-          } else {
-            cn.replaceChild(document.createTextNode(''), target);
-          }
-        } catch (e) {}
-      }
-      window.__xyBusy = false;
-      // ⑤ 不可见/未处理文本：clone 中剥除，绝不留明文
-      for (const run of runs) {
-        if (doneRuns.has(run)) continue;
-        try {
-          const parts = run.path.split('/');
-          let cn = clone;
-          for (const i of parts.slice(0, -1)) { cn = cn.childNodes ? cn.childNodes[+i] : null; if (!cn) break; }
-          const target = cn && cn.childNodes ? cn.childNodes[+parts[parts.length - 1]] : null;
-          if (target && target.nodeType === 3 && target.textContent.trim()) cn.replaceChild(document.createTextNode(''), target);
-        } catch (e) {}
-      }
-      const styleCss = [...document.querySelectorAll('style')].map(s => s.textContent).join('\\n');
-      const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
-      let linkCss = '';
-      try {
-        const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
-        linkCss = texts.join('\\n');
-      } catch (e) {}
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title };
     },
     rectOf(path) {
       const el = window.__xy.find(path);
@@ -352,66 +248,13 @@ const PAGE_HELPERS = `(() => {
     },
     patchOf(record) {
       // 补丁模型：childList/characterData → 目标元素 innerHTML 重发；attributes → 元素 outerHTML 重发
-      // kind 保留变更类型，skiadom 用它区分"仅文字变"（增量 runs）与"结构变"（全量）
       let target = record.target;
       if (target.nodeType === 3) target = target.parentElement;
       if (!target || target === document.documentElement) return { full: true };
       const path = pathOf(target);
       if (path === null) return { full: true };
-      if (record.type === 'attributes') {
-        return { path, outer: sanitizeClone(target).outerHTML, kind: record.type };
-      }
-      // childList 里只有文本节点增删（如 textContent= 赋值）视为纯文字变化 → skiadom 走增量 runs
-      let kind = record.type;
-      if (record.type === 'childList') {
-        const onlyText = [...record.removedNodes].every(n => n.nodeType === 3) && [...record.addedNodes].every(n => n.nodeType === 3);
-        if (onlyText) kind = 'textChange';
-      }
-      if (record.type === 'characterData') kind = 'textChange';
-      return { path, inner: sanitizeClone(target).innerHTML, kind };
-    },
-    // skiadom 增量：只重测文字 runs（不碰 DOM 结构，无需占位替换）
-    async skiaRuns() {
-      const skipTags = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE']);
-      const runs = [];
-      const walk = (node, path) => {
-        let idx = 0;
-        for (const ch of node.childNodes) {
-          // SELECT 子树同 snapshotSkia：不下发，由原生控件显示标签
-          if (ch.nodeType === 1 && (skipTags.has(ch.tagName) || ch.tagName === 'SELECT')) { idx++; continue; }
-          const p = path === '' ? String(idx) : path + '/' + idx;
-          if (ch.nodeType === 3) {
-            if (!ch.textContent.trim()) { idx++; continue; }
-            const rng = document.createRange();
-            rng.selectNodeContents(ch);
-            const rects = [...rng.getClientRects()];
-            if (rects.length) {
-              const cs = getComputedStyle(ch.parentElement);
-              const mm = cs.color.match(/rgba?\\(([^)]+)\\)/);
-              runs.push({
-                node: ch, text: ch.textContent,
-                x: Math.min(...rects.map(r => r.left)) + window.scrollX,
-                y: Math.min(...rects.map(r => r.top)) + window.scrollY,
-                size: parseFloat(cs.fontSize) || 16,
-                bold: (+cs.fontWeight >= 600),
-                color: mm ? mm[1].split(',').slice(0, 3).map(v => (+v.trim()) / 255) : [0, 0, 0],
-              });
-            }
-          } else if (ch.nodeType === 1) {
-            walk(ch, p);
-          }
-          idx++;
-        }
-      };
-      walk(document.body, '');
-      const mctx = document.createElement('canvas').getContext('2d');
-      const out = [];
-      for (const r of runs) {
-        mctx.font = (r.bold ? '700 ' : '400 ') + r.size + 'px "Noto Sans CJK SC", sans-serif';
-        const m = mctx.measureText('汉字Ag');
-        out.push({ t: r.text, x: Math.round(r.x * 10) / 10, y: Math.round(r.y * 10) / 10, w: 0, h: 0, c: r.color, s: r.size, b: r.bold ? 1 : 0, a: Math.round(m.fontBoundingBoxAscent || r.size * 0.88) });
-      }
-      return out;
+      if (record.type === 'attributes') return { path, outer: sanitizeClone(target).outerHTML };
+      return { path, inner: sanitizeClone(target).innerHTML };
     },
   };
 })();`;
@@ -495,27 +338,11 @@ function proxyAsset(req, res) {
 
 const demoSrv = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
-  if (req.url && req.url.startsWith('/ck/')) {
-    // CanvasKit(Skia-WASM) 引擎下发
-    const file = path.join(__dirname, 'ck', path.basename(req.url));
-    sendFile(req, res, file, req.url.endsWith('.wasm') ? 'application/wasm' : 'text/javascript; charset=utf-8', 'public, max-age=86400');
-    return;
-  }
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
     // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
     // 演进：fontconfig TTC(21MB×2) → 提取 SC 单面 OTF → 与 Regular 同覆盖子集 + WOFF2（6.1/10.2MB）
     sendFile(req, res, path.join(__dirname, 'assets', req.url.endsWith('-bold') ? 'NotoSansSC-Bold.woff2' : 'NotoSansSC-Regular.woff2'),
       'font/woff2', 'public, max-age=86400, immutable');
-    return;
-  }
-  if (req.url === '/f/noto') {
-    // 服务端渲染所用字体的下发：保证镜像端文字与服务端像素渲染一致
-    sendFile(req, res, path.join(__dirname, 'assets', 'NotoSansSC-Regular.otf'), 'font/otf', 'public, max-age=86400, immutable');
-    return;
-  }
-  if (req.url === '/f/noto-bold-otf') {
-    // 真 Bold 字形（引擎文字模式用，替代合成加粗）；SC 单面子集，覆盖与 Regular 完全一致
-    sendFile(req, res, path.join(__dirname, 'assets', 'NotoSansSC-Bold.otf'), 'font/otf', 'public, max-age=86400, immutable');
     return;
   }
   return staticHandler(path.join(__dirname, 'client'))(req, res);
@@ -589,32 +416,8 @@ wss.on('connection', async (ws) => {
   }
 
   // ---------- DOM 镜像通道 ----------
-  let domActive = false, domExposed = false, domBitmap = false;
+  let domActive = false, domExposed = false;
   let patchChain = Promise.resolve();
-  let skiaTimer = null, skiaRunsTimer = null;
-  const skiaResched = () => {
-    // skiadom：结构/属性变化 → 200ms 防抖全量重发
-    if (skiaTimer) return;
-    skiaTimer = setTimeout(() => {
-      skiaTimer = null;
-      if (domActive && mode === 'skiadom' && ws.readyState === 1) startDomMirror().catch(() => {});
-    }, 200);
-  };
-  const skiaRunsResched = () => {
-    // skiadom：纯文字变化 → 100ms 防抖只重发 runs（骨架不动、不重建 DOM）
-    if (skiaRunsTimer) return;
-    skiaRunsTimer = setTimeout(async () => {
-      skiaRunsTimer = null;
-      if (!domActive || mode !== 'skiadom' || ws.readyState !== 1) return;
-      try {
-        const runs = await page.evaluate(() => window.__xy.skiaRuns());
-        const payload = JSON.stringify({ type: 'skia-runs', runs });
-        ws.send(payload);
-        ws._bytes = (ws._bytes || 0) + payload.length;
-        ws._chunks = (ws._chunks || 0) + 1;
-      } catch (e) {}
-    }, 100);
-  };
 
   async function startDomMirror() {
     await page.evaluate(PAGE_HELPERS);
@@ -624,13 +427,6 @@ wss.on('connection', async (ws) => {
         // 串行化处理，避免并发截图竞态
         patchChain = patchChain.then(async () => {
           try {
-            if (mode === 'skiadom') {
-              const textOnly = patches.length > 0 && patches.every(p => p && !p.full && p.kind === 'textChange');
-              if (textOnly) skiaRunsResched();
-              else skiaResched();
-              return;
-            }
-            if (domBitmap) return await bitmapPatches(patches);
             if (patches.some(p => p && p.full)) {
               const snap = await page.evaluate(() => window.__xy.snapshot());
               sendJson({ type: 'dom-snapshot', css: snap.css.replace(/url\((['"]?)\//g, 'url($1/m/'), html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H });
@@ -646,17 +442,9 @@ wss.on('connection', async (ws) => {
       domExposed = true;
     }
     domActive = true;
-    let snap;
-    if (domBitmap) {
-      const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
-      snap = await page.evaluate((b64) => window.__xy.snapshotBitmap(b64), shot.data);
-    } else if (mode === 'skiadom') {
-      snap = await page.evaluate(() => window.__xy.snapshotSkia());
-    } else {
-      snap = await page.evaluate(() => window.__xy.snapshot());
-    }
+    const snap = await page.evaluate(() => window.__xy.snapshot());
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/');
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, ...(snap.runs ? { runs: snap.runs } : {}) });
+    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -670,45 +458,7 @@ wss.on('connection', async (ws) => {
       });
       window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
     });
-    console.log(`[dom   ] mirror started (bitmap=${domBitmap})`);
-  }
-
-  // 位图模式补丁：对每个变化元素截 clip 区域，整块（或元素内容）替换为服务端渲染位图
-  async function bitmapPatches(patches) {
-    if (patches.some(p => p && p.full)) {
-      await startDomMirror();
-      return;
-    }
-    const out = [];
-    for (const p of patches) {
-      if (!p || p.path === undefined) continue;
-      try {
-        const rect = await page.evaluate((path) => window.__xy.rectOf(path), p.path);
-        if (!rect) continue;
-        const shot = await cdp.send('Page.captureScreenshot', {
-          format: 'png',
-          clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h, scale: 1 },
-          captureBeyondViewport: true,
-        });
-        // 交互元素（按钮/链接等）保留语义结构，仅内容位图化，保证可点击
-        const keepEl = await page.evaluate((path) => {
-          const el = window.__xy.find(path);
-          return !!el && !!el.closest('button, a, input, select, label');
-        }, p.path);
-        out.push({
-          path: p.path,
-          [keepEl ? 'bitmapInner' : 'bitmap']: {
-            w: Math.round(rect.w), h: Math.round(rect.h),
-            url: 'data:image/png;base64,' + shot.data,
-          },
-        });
-      } catch (e) {}
-    }
-    if (!out.length) return;
-    const payload = JSON.stringify({ type: 'dom-patches', patches: out });
-    ws.send(payload);
-    ws._bytes = (ws._bytes || 0) + payload.length;
-    ws._chunks = (ws._chunks || 0) + 1;
+    console.log('[dom   ] mirror started');
   }
 
   async function stopDomMirror() {
@@ -754,7 +504,7 @@ wss.on('connection', async (ws) => {
 
     await page.goto(ORIGIN_URL, { waitUntil: 'networkidle0', timeout: 20000 });
     sendJson({ type: 'meta', w: VIEW_W, h: VIEW_H, title: await page.title(), url: ORIGIN_URL, maxSessions: MAX_SESSIONS, mode });
-    if (mode === 'dom' || mode === 'dombitmap' || mode === 'skiadom') await startDomMirror();
+    if (mode === 'dom') await startDomMirror();
     else await startScreencast();
 
     ws.on('message', async (raw) => {
@@ -770,11 +520,10 @@ wss.on('connection', async (ws) => {
             }
             break;
           case 'mode': {
-            const next = ['jpeg', 'webp', 'h264', 'dom', 'dombitmap', 'skiadom'].includes(m.mode) ? m.mode : 'jpeg';
-            const isDomLike = (x) => x === 'dom' || x === 'dombitmap' || x === 'skiadom';
+            const next = ['jpeg', 'webp', 'h264', 'dom'].includes(m.mode) ? m.mode : 'jpeg';
+            const isDomLike = (x) => x === 'dom';
             if (isDomLike(mode) && !isDomLike(next)) await stopDomMirror();
             mode = next;
-            domBitmap = (mode === 'dombitmap');
             if (mode === 'h264') { quality = 85; startFFmpeg(); } else { stopFFmpeg(); }
             try {
               if (isDomLike(mode)) {
@@ -785,7 +534,7 @@ wss.on('connection', async (ws) => {
               }
               sendJson({ type: 'mode', mode });
             } catch (e) {
-              mode = 'jpeg'; domBitmap = false; stopFFmpeg(); await stopDomMirror().catch(() => {});
+              mode = 'jpeg'; stopFFmpeg(); await stopDomMirror().catch(() => {});
               await startScreencast();
               sendJson({ type: 'error', msg: `模式 ${next} 启动失败已回退 JPEG: ${e.message}` });
               sendJson({ type: 'mode', mode: 'jpeg' });

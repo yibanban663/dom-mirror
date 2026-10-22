@@ -2,6 +2,17 @@
 
 本文件记录 dom-mirror 的版本演进。协议破坏性变更见 docs/PROTOCOL.md。
 
+## v0.2.0（2026-10-22）
+
+### Removed（破坏性）
+- 移除 `dombitmap`（DOM+文字位图）与 `skiadom`（DOM+引擎文字）两个实验通道，产品聚焦 DOM 镜像；
+  像素通道（jpeg/webp/h264）保留作保真基准与重交互页面兜底。完整实现见 git 历史 v0.1.x。
+- 移除 CanvasKit 引擎下发（`/ck/*`、`get-canvaskit.sh`）与引擎字体路由（`/f/noto`、`/f/noto-bold-otf`）；
+  npm 包从 35.5MB 减至 ~16MB（保留 DOM 模式所需的 Regular/Bold WOFF2）。
+
+### 升级
+- `DEFAULT_MODE` 与 WS `mode` 取值不再接受 `dombitmap` / `skiadom`，传旧值会回退 `jpeg`。
+
 ## v0.1.1（2026-10-22）
 
 ### Fixed

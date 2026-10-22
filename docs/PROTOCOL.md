@@ -26,11 +26,8 @@
 
 - **元素路径**：以 body 为根的 childNodes 索引串，`"3/5/1/3/1"`；空串表示 body 本身。两端使用同一算法（见 `server.js` PAGE_HELPERS `pathOf` 与客户端 `pathOfMirror`）。
 - **快照**：`css` 为源站全部样式文本（`<style>` + 外链 `<link>` 抓取，`url(/x)` 已重写为 `/m/x`）；`html` 为海关消毒后的 body innerHTML（无 script/事件属性，canvas→img，静态资源 URL 已重写 `/m/...`）。
-- **补丁**：元素级重发。`inner` 替换该元素 innerHTML；`outer` 以整节点替换。路径失配时客户端应发送 `{type:"mode",mode:"dom"}`（或 `dombitmap`）请求重同步。
-- **文字位图补丁（dombitmap 模式）**：`{path, bitmap:{w,h,url}}` 将元素整块替换为服务端渲染位图（PNG dataURL）；`{path, bitmapInner:{w,h,url}}` 仅替换元素内容、保留元素本身（用于按钮/链接等交互元素，保证可点击）。快照阶段文本节点直接以 `<img data-xy-bitmap>` 形式内嵌；不可见文本被剥除。
 - **事件**：客户端在镜像 Shadow DOM 上捕获 click（a/form 之外不阻止默认，a 与表单提交一律 preventDefault）、input、change，携带路径与值上行；服务端定位真实页面元素执行（click() / 设值+dispatchEvent）。
 - **静态资源**：`GET /m/*` 由引擎代理回源（表现层资源；非白名单实现，严格模式自行收敛）。
-- **字体一致性（dom 模式）**：`GET /f/noto-regular|/f/noto-bold` 下发与服务端渲染同源的 Noto Sans CJK SC 单面字体的 WOFF2（Bold 与 Regular 同覆盖子集），客户端以 FontFace API 按字重注册（Shadow DOM 内 `<style>` 的 @font-face 在 Chromium 不生效；单一 Regular 覆盖全字重会导致伪粗体与排版偏移）。`dombitmap` 模式文字为位图，无需字体下发。
 
 ## H.264 通道要点
 
@@ -38,8 +35,6 @@
 - 客户端：Annex-B NAL 切分 → 首个 SPS 解析 codec 字符串 → `VideoDecoder`（`optimizeForLatency`）→ canvas。
 - 需要 WebCodecs（Chrome/Edge）；不支持的浏览器应回落 jpeg/webp。
 
-## skiadom（引擎文字，v0.1 新增）
 
 - 快照：`dom-snapshot` 附带 `runs` 数组——`{t,x,y,w,h,c,s,b,a}`（文本/页面坐标/宽高/RGB/字号/粗体/ascent 基线偏移）。镜像 HTML 中文本全部替换为等大占位 span（`data-xy-space`），布局由实测 relative 归位保持。
 - 变更：200ms 防抖全量重发（无截图开销）。
-- 引擎与字体：`GET /ck/canvaskit.{js,wasm}`（Skia-WASM，0.42.0）+ `GET /f/noto`（OTF）；客户端 `MakeSWCanvasSurface` 按 devicePixelRatio 绘制，任意 DPR 清晰且跨平台一致。

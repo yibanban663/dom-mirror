@@ -45,7 +45,7 @@
 </head>
 <body>
 <header>
-  <div class="logo">DM</div>
+  <div class="logo">影</div>
   <div>
     <h1>dom-mirror · RBI 远程浏览器隔离 PoC</h1>
     <div class="sub">左侧画面 = 服务端 Chromium 的实时像素流。你的浏览器里没有该站点的任何 HTML / JS / 数据。</div>
@@ -89,8 +89,6 @@
         <button data-m="webp">WebP</button>
         <button data-m="h264">H.264 帧间编码</button>
         <button data-m="dom">DOM 镜像</button>
-        <button data-m="dombitmap">DOM+文字位图</button>
-        <button data-m="skiadom">DOM+引擎文字</button>
       </div>
       <div class="quality">
         <button data-q="30">低质量 q30</button>
@@ -276,90 +274,19 @@
 
   function setMode(mo) {
     mode = mo;
-    const isDom = mo === 'dom' || mo === 'dombitmap' || mo === 'skiadom';
+    const isDom = mo === 'dom';
     m('mMode').textContent = mo;
     m('spec').textContent = mo === 'dom' ? 'DOM 镜像（本地渲染 + 服务端补丁）'
-      : mo === 'dombitmap' ? 'DOM 镜像 + 文字位图（文字=服务端渲染像素）'
-      : mo === 'skiadom' ? 'DOM 镜像 + Skia 引擎文字（引擎随内容下发，任意分辨率清晰、全客户端渲染一致）'
       : '1280×800 ' + (mo === 'h264' ? 'H.264 (WebCodecs 解码)' : mo.toUpperCase());
     document.getElementById('box').style.display = isDom ? 'none' : '';
     document.getElementById('cur').style.display = 'none';
     document.getElementById('mirrorBox').style.display = isDom ? '' : 'none';
-    document.getElementById('stageHint').innerHTML = mo === 'skiadom'
-      ? '你现在看到的是 <b>DOM+引擎文字</b>：布局/交互来自 DOM 镜像，<b>文字由下发的 Skia 引擎（CanvasKit/WASM）在你本机绘制</b>——任意缩放/高分屏都清晰（矢量字形本地光栅化），所有操作系统客户端渲染一致，文字不出现在 DOM（零明文）。首次进入需下载引擎（约 7MB，之后缓存）。试试搜索框输入 <b>138</b>。'
-      : mo === 'dombitmap'
-      ? '你现在看到的是 <b>DOM+文字位图</b>：布局与交互来自 DOM 镜像，<b>所有文字是服务端渲染的像素</b>——与像素流通道构造性一致（文字不可被脚本解析/选择，数据不出站）。试试在搜索框输入 <b>138</b>：表格过滤结果以服务端位图回来。'
-      : mo === 'dom'
+    document.getElementById('stageHint').innerHTML = mo === 'dom'
       ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端镜像、<b>渲染在你本地</b>——滚动/悬停/打字全部原生零延迟，表格等数据变化由服务端推送小补丁。试试：滚动页面、悬停按钮、在搜索框输入 <b>138</b>、点"发送验证码"。Canvas 图表已自动降级为位图（生产中即"位图兜底"层）。'
       : '操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入（试试搜索框：<b>输入"138"</b> 回车筛选客户表；报价计算器输入数字实时计算）。PoC 未实现 IME 本地合成框，中文输入请暂用英文/数字验证键盘回传链路。';
     document.querySelectorAll('.quality button[data-m]').forEach(b => b.classList.toggle('active', b.dataset.m === mo));
     document.querySelectorAll('.quality button[data-q]').forEach(b => b.disabled = (mo === 'h264' || isDom));
-    if (mo === 'skiadom') ensureCanvasKit().catch(e => { lastErr = '引擎加载失败: ' + e.message; setStatus('引擎加载失败', false); });
-    if (mo !== 'skiadom' && skiaCv) { try { skiaCv.remove(); skiaCv = null; skiaSurface = null; } catch (e) {} }
     if (mo !== 'h264') resetH264();
-  }
-
-  // ---------- Skia 引擎（CanvasKit/WASM）：文字层由引擎本地绘制 ----------
-  let CK = null, ckFont = null, ckFontBold = null, ckLoading = null, skiaCv = null, skiaSurface = null;
-
-  function ensureCanvasKit() {
-    if (CK) return Promise.resolve(CK);
-    if (ckLoading) return ckLoading;
-    ckLoading = new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = '/ck/canvaskit.js';
-      s.onload = async () => {
-        try {
-          const mod = await CanvasKitInit({ locateFile: f => '/ck/' + f });
-          const buf = await (await fetch('/f/noto')).arrayBuffer();
-          ckFont = mod.Typeface.MakeFreeTypeFaceFromData(buf);
-          try {
-            const bufB = await (await fetch('/f/noto-bold-otf')).arrayBuffer();
-            const tfB = mod.Typeface.MakeFreeTypeFaceFromData(bufB);
-            if (tfB) ckFontBold = tfB; // TTC 首面即 SC Bold；失败则回落合成加粗
-          } catch (e) {}
-          CK = mod;
-          resolve(CK);
-        } catch (e) { reject(e); }
-      };
-      s.onerror = () => reject(new Error('canvaskit.js 下载失败'));
-      document.head.appendChild(s);
-    });
-    return ckLoading;
-  }
-
-  function drawSkiaRuns(runs) {
-    ensureCanvasKit().then((mod) => {
-      const host = document.getElementById('mirrorScroll');
-      const body = document.getElementById('mirrorHost').shadowRoot.querySelector('.xy-body');
-      if (!body) return;
-      const dpr = window.devicePixelRatio || 1;
-      const H = Math.ceil(body.getBoundingClientRect().height);
-      if (!skiaCv || !skiaCv.isConnected) {
-        skiaCv = document.createElement('canvas');
-        skiaCv.id = 'skiaOverlay';
-        skiaCv.style.cssText = 'position:absolute;left:0;top:0;width:100%;pointer-events:none;z-index:9';
-        host.insertBefore(skiaCv, host.firstChild);
-      }
-      skiaCv.style.height = H + 'px';
-      skiaCv.width = Math.round(1280 * dpr);
-      skiaCv.height = Math.round(H * dpr);
-      if (skiaSurface) { try { skiaSurface.dispose(); } catch (e) {} }
-      skiaSurface = mod.MakeSWCanvasSurface(skiaCv);
-      const c = skiaSurface.getCanvas();
-      c.scale(dpr, dpr);
-      const paint = new mod.Paint();
-      paint.setAntiAlias(true);
-      for (const r of runs) {
-        const font = new mod.Font(r.b && ckFontBold ? ckFontBold : ckFont, r.s);
-        if (r.b && !ckFontBold) font.setEmbolden(true);
-        paint.setColor(mod.Color4f(r.c[0], r.c[1], r.c[2], 1));
-        c.drawText(r.t, r.x, r.y + r.a, paint, font);
-        font.delete();
-      }
-      paint.delete();
-      skiaSurface.flush();
-    }).catch(e => { lastErr = '引擎绘制失败: ' + e.message; setStatus('引擎绘制失败', false); });
   }
 
   // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
@@ -440,20 +367,6 @@
     if (!mirrorBody) return;
     for (const p of patches) {
       try {
-        // 位图补丁：元素整块（或仅内容）替换为服务端渲染位图
-        if (p.bitmap || p.bitmapInner) {
-          const el = mirrorFind(p.path);
-          if (!el) throw new Error('path miss');
-          const im = document.createElement('img');
-          im.src = (p.bitmap || p.bitmapInner).url;
-          im.width = (p.bitmap || p.bitmapInner).w;
-          im.height = (p.bitmap || p.bitmapInner).h;
-          im.style.cssText = p.bitmap ? 'display:block' : 'display:inline-block;vertical-align:top';
-          im.setAttribute('data-xy-bitmap', '1');
-          if (p.bitmap) el.replaceWith(im);
-          else el.replaceChildren(im);
-          continue;
-        }
         const el = mirrorFind(p.path);
         if (!el) throw new Error('path miss');
         if (p.inner !== undefined) el.innerHTML = p.inner;
@@ -478,10 +391,6 @@
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       connected = true; lastErr = ''; setStatus('会话在线', true); m('mIdle').textContent = 'waiting frame';
-      // 后台预取 skiadom 引擎资源（wasm+双字重字体）：趁用户还在其他模式时把 HTTP 缓存焐热，切换即秒开
-      ['/ck/canvaskit.js', '/ck/canvaskit.wasm', '/f/noto', '/f/noto-bold-otf'].forEach(u => {
-        try { fetch(u, { cache: 'force-cache' }).catch(() => {}); } catch (e) {}
-      });
     };
     ws.onclose = () => { connected = false; setStatus(lastErr ? ('已断开：' + lastErr) : '已断开', false); m('mIdle').textContent = 'disconnected'; };
     ws.onerror = () => setStatus('连接错误', false);
@@ -507,7 +416,6 @@
             if (j.runs) drawSkiaRuns(j.runs);
           }
           if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); applyPatches(j.patches); }
-          if (j.type === 'skia-runs') { noteBytes(ev.data.length || ev.data.size || 0); drawSkiaRuns(j.runs); }
           if (j.type === 'error') { lastErr = j.msg; setStatus('错误: ' + j.msg, false); }
           if (j.type === 'quality') {
             document.querySelectorAll('.quality button[data-q]').forEach(b => b.classList.toggle('active', +b.dataset.q === j.q));
