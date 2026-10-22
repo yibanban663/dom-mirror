@@ -30,7 +30,7 @@
 - **文字位图补丁（dombitmap 模式）**：`{path, bitmap:{w,h,url}}` 将元素整块替换为服务端渲染位图（PNG dataURL）；`{path, bitmapInner:{w,h,url}}` 仅替换元素内容、保留元素本身（用于按钮/链接等交互元素，保证可点击）。快照阶段文本节点直接以 `<img data-xy-bitmap>` 形式内嵌；不可见文本被剥除。
 - **事件**：客户端在镜像 Shadow DOM 上捕获 click（a/form 之外不阻止默认，a 与表单提交一律 preventDefault）、input、change，携带路径与值上行；服务端定位真实页面元素执行（click() / 设值+dispatchEvent）。
 - **静态资源**：`GET /m/*` 由引擎代理回源（表现层资源；非白名单实现，严格模式自行收敛）。
-- **字体一致性（dom 模式）**：`GET /f/noto-regular|/f/noto-bold` 下发服务端 fontconfig 同款 TTC，客户端以 FontFace API 按字重注册（Shadow DOM 内 `<style>` 的 @font-face 在 Chromium 不生效；单一 Regular 覆盖全字重会导致伪粗体与排版偏移）。`dombitmap` 模式文字为位图，无需字体下发。
+- **字体一致性（dom 模式）**：`GET /f/noto-regular|/f/noto-bold` 下发与服务端渲染同源的 Noto Sans CJK SC 单面字体的 WOFF2（Bold 与 Regular 同覆盖子集），客户端以 FontFace API 按字重注册（Shadow DOM 内 `<style>` 的 @font-face 在 Chromium 不生效；单一 Regular 覆盖全字重会导致伪粗体与排版偏移）。`dombitmap` 模式文字为位图，无需字体下发。
 
 ## H.264 通道要点
 

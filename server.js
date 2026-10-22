@@ -13,6 +13,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
@@ -78,6 +79,10 @@ const PAGE_HELPERS = `(() => {
         const img = document.createElement('img');
         img.src = liveCanvases[i].toDataURL('image/png');
         img.setAttribute('data-xy-canvas', '1');
+        // 关键：源站样式表里的 canvas 选择器（如 canvas{display:block}）在镜像中匹配不到 img，
+        // 不内联保留原盒子的 display/宽高，inline img 的基线空隙会让后续内容整体偏移（实测 +5px）
+        const cs = getComputedStyle(liveCanvases[i]);
+        img.style.cssText = 'display:' + cs.display + ';width:' + cs.width + ';height:' + cs.height;
         c.replaceWith(img);
       } catch (e) {}
     });
@@ -280,7 +285,18 @@ const PAGE_HELPERS = `(() => {
         if (j.skip) continue;
         const r = j.run;
         const sp = document.createElement('span');
-        sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + Math.round(r.w) + 'px;height:' + Math.round(r.h) + 'px';
+        // 占位高度：Chrome 对 button/inline-block 内文字的 range rect 返回字体盒（不含行距半领先导），
+        // 直接用会让行盒塌陷（实测按钮 38→34）；这类父元素改用其内容盒高度，其余用 rect 高 + top 对齐
+        // （v1 实测 12 探针 Δ=0）
+        let spH = Math.round(r.h);
+        try {
+          const pcs = getComputedStyle(r.parent);
+          if (r.parent.tagName === 'BUTTON' || pcs.display === 'inline-block' || pcs.display === 'inline-flex') {
+            const contentH = r.parent.clientHeight - (parseFloat(pcs.paddingTop) + parseFloat(pcs.paddingBottom) || 0);
+            if (contentH > spH && contentH < spH * 3) spH = Math.round(contentH);
+          }
+        } catch (e) {}
+        sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + Math.round(r.w) + 'px;height:' + spH + 'px';
         sp.setAttribute('data-xy-space', '1');
         r.parent.replaceChild(sp, r.node);
         j.sp = sp;
@@ -406,17 +422,35 @@ const MIME = {
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2',
 };
+// 发送静态文件：按 Accept-Encoding 协商 gzip（引擎 wasm/字体/JS 体积大头，实测 wasm 7MB→2.5MB），
+// 压缩结果按路径缓存（容器内文件不可变）；图片本身已压缩不再 gzip
+const gzCache = new Map();
+function sendFile(req, res, file, ctype, cacheCtl) {
+  fs.readFile(file, (err, buf) => {
+    if (err) { res.writeHead(404); res.end(); return; }
+    const accept = req.headers['accept-encoding'] || '';
+    const canGz = accept.includes('gzip') && buf.length > 1024 && !/image\/(png|jpeg|webp)|font\/woff2/.test(ctype);
+    let entry = gzCache.get(file);
+    if (!entry) { entry = {}; gzCache.set(file, entry); }
+    let out = buf, enc;
+    if (canGz) {
+      if (!entry.gz || entry.rawLen !== buf.length) { entry.rawLen = buf.length; entry.gz = zlib.gzipSync(buf, { level: 6 }); }
+      out = entry.gz; enc = 'gzip';
+    }
+    const h = { 'Content-Type': ctype, 'Cache-Control': cacheCtl, 'Content-Length': out.length };
+    if (enc) h['Content-Encoding'] = enc;
+    res.writeHead(200, h);
+    res.end(out);
+  });
+}
 function staticHandler(root) {
   return (req, res) => {
     let p = decodeURIComponent((req.url || '/').split('?')[0]);
     if (p === '/') p = '/index.html';
     const file = path.join(root, path.normalize(p).replace(/^([/\\])+/, ''));
     if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
-    fs.readFile(file, (err, buf) => {
-      if (err) { res.writeHead(404); res.end('404'); return; }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
-      res.end(buf);
-    });
+    sendFile(req, res, file, MIME[path.extname(file)] || 'application/octet-stream',
+      p === '/index.html' ? 'no-store' : 'public, max-age=3600');
   };
 }
 
@@ -464,54 +498,24 @@ const demoSrv = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/ck/')) {
     // CanvasKit(Skia-WASM) 引擎下发
     const file = path.join(__dirname, 'ck', path.basename(req.url));
-    fs.readFile(file, (err, buf) => {
-      if (err) { res.writeHead(404); res.end(); return; }
-      res.writeHead(200, {
-        'content-type': req.url.endsWith('.wasm') ? 'application/wasm' : 'text/javascript; charset=utf-8',
-        'cache-control': 'public, max-age=86400',
-      });
-      res.end(buf);
-    });
+    sendFile(req, res, file, req.url.endsWith('.wasm') ? 'application/wasm' : 'text/javascript; charset=utf-8', 'public, max-age=86400');
     return;
   }
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
-    // 与服务端 fontconfig 完全相同的字体文件原样下发 → 客户端文字度量与像素渲染逐字节一致
-    const f = req.url.endsWith('-bold') ? 'NotoSansCJK-Bold.ttc' : 'NotoSansCJK-Regular.ttc';
-    fs.readFile(path.join('/usr/share/fonts/opentype/noto', f), (err, buf) => {
-      if (err) { res.writeHead(404); res.end(); return; }
-      res.writeHead(200, {
-        'content-type': 'font/collection',
-        'cache-control': 'public, max-age=86400',
-        'content-length': buf.length,
-      });
-      res.end(buf);
-    });
+    // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
+    // 演进：fontconfig TTC(21MB×2) → 提取 SC 单面 OTF → 与 Regular 同覆盖子集 + WOFF2（6.1/10.2MB）
+    sendFile(req, res, path.join(__dirname, 'assets', req.url.endsWith('-bold') ? 'NotoSansSC-Bold.woff2' : 'NotoSansSC-Regular.woff2'),
+      'font/woff2', 'public, max-age=86400, immutable');
     return;
   }
   if (req.url === '/f/noto') {
     // 服务端渲染所用字体的下发：保证镜像端文字与服务端像素渲染一致
-    fs.readFile(path.join(__dirname, 'assets', 'NotoSansSC-Regular.otf'), (err, buf) => {
-      if (err) { res.writeHead(404); res.end(); return; }
-      res.writeHead(200, {
-        'content-type': 'font/otf',
-        'cache-control': 'public, max-age=86400',
-        'content-length': buf.length,
-      });
-      res.end(buf);
-    });
+    sendFile(req, res, path.join(__dirname, 'assets', 'NotoSansSC-Regular.otf'), 'font/otf', 'public, max-age=86400, immutable');
     return;
   }
   if (req.url === '/f/noto-bold-otf') {
-    // 真 Bold 字形（引擎文字模式用，替代合成加粗）
-    fs.readFile('/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc', (err, buf) => {
-      if (err) { res.writeHead(404); res.end(); return; }
-      res.writeHead(200, {
-        'content-type': 'font/collection',
-        'cache-control': 'public, max-age=86400',
-        'content-length': buf.length,
-      });
-      res.end(buf);
-    });
+    // 真 Bold 字形（引擎文字模式用，替代合成加粗）；SC 单面子集，覆盖与 Regular 完全一致
+    sendFile(req, res, path.join(__dirname, 'assets', 'NotoSansSC-Bold.otf'), 'font/otf', 'public, max-age=86400, immutable');
     return;
   }
   return staticHandler(path.join(__dirname, 'client'))(req, res);

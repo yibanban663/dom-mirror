@@ -10,6 +10,15 @@
 - 三个 runs 收集器跳过 SCRIPT/STYLE 等标签时未计数，导致后续兄弟节点路径错位
   （dombitmap 下可能造成个别文本替换静默失败）。
 
+### Fixed
+- 镜像整体布局偏移：canvas→img 兜底未保留原盒子的 display/尺寸，源站 canvas{display:block}
+  等选择器在镜像中匹配不到 img，inline 空隙使后续内容整体偏移（实测 +5px，skiadom 文字与骨架
+  错位）。现在内联保留 display/width/height，元素级实测 dom/skiadom 全部 Δ=0。
+- button/inline-block 内文字的占位高度：Chrome 对其 range rect 返回字体盒而非行盒，
+  占位直接采用会使行盒塌陷（按钮 38→34px）。现改用父元素内容盒高度。
+- 静态资源 gzip（wasm 7→3.3MB）+ Cache-Control + 引擎资源后台预取（切模式即秒开）；
+  字体从 fontconfig TTC（21MB×2）改为 SC 单面提取 + 同覆盖子集 + WOFF2（6.1/10.2MB）。
+
 ## v0.1.0（2026-10-22）
 
 首个发布版本：RBI 引擎 + 五通道演示，Apache-2.0。

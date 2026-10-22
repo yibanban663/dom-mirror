@@ -45,7 +45,7 @@
 </head>
 <body>
 <header>
-  <div class="logo">影</div>
+  <div class="logo">DM</div>
   <div>
     <h1>dom-mirror · RBI 远程浏览器隔离 PoC</h1>
     <div class="sub">左侧画面 = 服务端 Chromium 的实时像素流。你的浏览器里没有该站点的任何 HTML / JS / 数据。</div>
@@ -403,7 +403,7 @@
       FAMS.forEach((fam) => {
         [['400', '/f/noto-regular'], ['700', '/f/noto-bold']].forEach(([w, u]) => {
           try {
-            const ff = new FontFace(fam, `url(${u}) format('collection')`, { weight: w, display: 'swap' });
+            const ff = new FontFace(fam, `url(${u}) format('woff2')`, { weight: w, display: 'swap' });
             document.fonts.add(ff);
             ff.load().catch(() => {});
           } catch (e) {}
@@ -476,7 +476,13 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.binaryType = 'arraybuffer';
-    ws.onopen = () => { connected = true; lastErr = ''; setStatus('会话在线', true); m('mIdle').textContent = 'waiting frame'; };
+    ws.onopen = () => {
+      connected = true; lastErr = ''; setStatus('会话在线', true); m('mIdle').textContent = 'waiting frame';
+      // 后台预取 skiadom 引擎资源（wasm+双字重字体）：趁用户还在其他模式时把 HTTP 缓存焐热，切换即秒开
+      ['/ck/canvaskit.js', '/ck/canvaskit.wasm', '/f/noto', '/f/noto-bold-otf'].forEach(u => {
+        try { fetch(u, { cache: 'force-cache' }).catch(() => {}); } catch (e) {}
+      });
+    };
     ws.onclose = () => { connected = false; setStatus(lastErr ? ('已断开：' + lastErr) : '已断开', false); m('mIdle').textContent = 'disconnected'; };
     ws.onerror = () => setStatus('连接错误', false);
     ws.onmessage = (ev) => {

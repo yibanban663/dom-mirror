@@ -1,4 +1,4 @@
-# 虚影 RBI 帧流 PoC
+# dom-mirror — RBI (remote browser isolation) reference implementation
 # 基础镜像自带 Node + Chromium + puppeteer；再补中文字体与 ws 库
 FROM ghcr.io/puppeteer/puppeteer:24.7.0
 
