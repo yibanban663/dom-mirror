@@ -202,7 +202,9 @@ const PAGE_HELPERS = `(() => {
             // 零宽探针：font:inherit 的 inline-block，其盒高 = 自身行盒 = 所继承字体
             // 的 normal 实际行高。不切换父元素 line-height（会被兄弟元素高度污染，
             // 实测带 beacon 圆点的历史条目测出行高=9px 而非 18.4px），也不扰动布局。
+            // 标记 data-xy-space 让 patchOf 把探针引起的 childList 记录当占位过滤。
             const probe = document.createElement('span');
+            probe.setAttribute('data-xy-space', '1');
             probe.style.cssText = 'font:inherit;line-height:normal;display:inline-block;width:0;overflow:hidden';
             probe.textContent = '国';
             par.appendChild(probe);
@@ -213,6 +215,10 @@ const PAGE_HELPERS = `(() => {
         lhCache.set(par, lh);
         return lh;
       };
+      // ① 只读测量（关键：绝不变更 live DOM）。历史上的"等大占位替换→还原"之舞
+      // 对 React/Vue 等虚拟 DOM 应用是毁灭性的：框架持有的节点引用被换掉再放回，
+      // 渲染中途撞上即崩溃/静默不渲染（实测登录后对话列表永远空白）。文本位置本来
+      // 就由 Range 直接测得，瓦片从预截底板裁——替换步骤完全多余。
       for (const j of jobs) {
         try {
           if (j.kind === 'text') {
@@ -224,7 +230,6 @@ const PAGE_HELPERS = `(() => {
             j.y = Math.min(...rects.map(q => q.top)) + window.scrollY;
             j.w = Math.max(...rects.map(q => q.right)) - Math.min(...rects.map(q => q.left));
             j.h = Math.max(...rects.map(q => q.bottom)) - Math.min(...rects.map(q => q.top));
-            j.lines = rects.length; // 行数：spacer 高度 = 行数 × 行盒高（含行距），墨迹高不含行距
           } else {
             const r = j.node.getBoundingClientRect();
             if (r.width < 1 || r.height < 1) continue;
@@ -234,35 +239,18 @@ const PAGE_HELPERS = `(() => {
           if (j.kind === 'input' && !j.node.value && !j.node.placeholder) { continue; }
           if (j.w <= 0 || j.h <= 0) continue;
           done.add(j);
-          // 注意：live 页只做等大占位（text/canvas/input）；select 绝不动 live——
-          // （透明化/清空选项只发生在 clone；曾把 live select 永久清空，导致第二次快照起底板里下拉框标签消失）
-          if (j.kind !== 'select') {
-            const sp = document.createElement('span');
+          if (j.kind === 'text') {
             const par = j.node.parentElement;
             const lh = usedLineHeight(par);
             if (par) { try { j.parLh = getComputedStyle(par).lineHeight; } catch (e) {} }
             j.lhPin = (j.parLh === 'normal' && lh > 0) ? lh : 0;
-            // spacer 高度用墨迹高：行盒高度由固化的父级行高决定（行数×行高的算法
-            // 会因 getClientRects 折行碎片多计行数，把卡片撑高 100px+，产生幽灵白盒）
-            sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + j.h + 'px';
-            sp.setAttribute('data-xy-space', '1');
-            j.node.replaceWith(sp);
-            j.sp = sp;
           }
         } catch (e) {}
       }
-      // ② 等布局稳定 → 实测偏差归位 → 从 DPR 底板裁瓦片 → 还原 live
-      await new Promise(r2 => requestAnimationFrame(() => requestAnimationFrame(r2)));
+      // ② 从 DPR 底板按测得的精确位置裁瓦片（live 页零扰动，无需等布局稳定）
       for (const j of jobs) {
         if (!done.has(j)) continue;
         try {
-          if (j.sp) {
-            const q = j.sp.getBoundingClientRect();
-            const dx = j.x - window.scrollX - q.left;
-            const dy = j.y - window.scrollY - q.top;
-            if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) { j.sp.style.position = 'relative'; j.sp.style.left = dx + 'px'; j.sp.style.top = dy + 'px'; }
-            j.spHtml = j.sp.outerHTML;
-          }
           if (j.x >= 0 && j.y >= 0 && j.x + j.w <= sheet.width / DPR + 1 && j.y + j.h <= sheet.height / DPR + 1) {
             const sx = Math.round(j.x * DPR), sy = Math.round(j.y * DPR);
             const sw = Math.max(1, Math.round(j.w * DPR)), sh = Math.max(1, Math.round(j.h * DPR));
@@ -273,7 +261,6 @@ const PAGE_HELPERS = `(() => {
             j.tile = { w: sw, h: sh, cssX: sx / DPR, cssY: sy / DPR, cssW: sw / DPR, cssH: sh / DPR, url: c2.toDataURL('image/png') };
           }
         } catch (e) {}
-        try { if (j.sp) j.sp.replaceWith(j.node); } catch (e) {}
       }
       const clone = sanitizeClone(document.body);
       // ③ clone 同路径替换：文本→瓦片 img；select→透明控件+背景瓦片；未覆盖文本剥除（零明文）
@@ -330,19 +317,20 @@ const PAGE_HELPERS = `(() => {
           t.setAttribute('data-xy-inp', '1');
         } catch (e) {}
       }
-      // 占位 span 写回 clone（保持行盒/布局）；文本节点保持空（零明文）
+      // 占位 span 写回 clone（保持行盒/布局）；文本节点保持空（零明文）。
+      // spacer HTML 由测得的墨迹尺寸直接构造（live 页不再替换，无 spHtml 可取）
       for (const j of jobs) {
-        if (j.kind !== 'text' || !j.sp) continue;
+        if (j.kind !== 'text' || !done.has(j)) continue;
         try {
           const t = findInClone(j.path);
           if (!t || t.nodeType !== 3) continue;
           const par = t.parentNode; // replaceChild 之后 t.parentNode 变 null，必须先取
           const tpl = document.createElement('template');
-          tpl.innerHTML = j.spHtml;
+          tpl.innerHTML = '<span data-xy-space="1" style="display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + j.h + 'px"></span>';
           par.replaceChild(tpl.content.firstChild, t);
           // 行高 strut 中和：line-height:normal 的容器行盒高度依赖字体度量
           // （服务端 Noto CJK vs 访客端本地回退字体）。固化为服务端实测行盒高，
-          // 镜像行堆叠与源站一致、与访客字体无关。spacer 自身已按 行数×行盒高 撑起。
+          // 镜像行堆叠与源站一致、与访客字体无关。
           if (j.parLh === 'normal' && par && par.style && j.lhPin) {
             par.style.lineHeight = j.lhPin + 'px';
           }
@@ -418,7 +406,16 @@ const PAGE_HELPERS = `(() => {
       // 补丁模型：childList/characterData → 目标元素 innerHTML 重发；attributes → 元素 outerHTML 重发
       let target = record.target;
       if (target.nodeType === 3) target = target.parentElement;
-      if (!target || target === document.documentElement) return { full: true, why: record.type + ':docEl:' + (record.attributeName || '') + ':' + (target && target.nodeName) };
+      if (!target || target === document.documentElement) {
+        // html 的 class 变更是主题/状态切换（应用会周期性翻转，如在线状态指示）：
+        // 走轻量 docClass 补丁直改镜像根类名。若当 full 处理会形成
+        // "翻转→全量重同步→再翻转" 的重建风暴（实测内页每秒多次全量快照，
+        // 重建窗口吞点击、打断输入）。
+        if (target && record.type === 'attributes' && record.attributeName === 'class') {
+          return { docClass: target.className };
+        }
+        return { full: true, why: record.type + ':docEl:' + (record.attributeName || '') + ':' + (target && target.nodeName) };
+      }
       // 快照占位符(data-xy-space)自身的任何变更（含位置校正的 style 属性）都不是业务变更。
       // 实测：②相位给 spacer 写 style 时它还在树上，flush 时已被还原离树——
       // attributes 记录绕过了下面的 childList spacer 过滤，被当成 noPath→full→重同步→
@@ -799,7 +796,7 @@ wss.on('connection', async (ws, req) => {
                 return true;
               }
               // React/Vue 受控输入：必须用原型原生 setter 改值，否则框架值追踪器忽略
-              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测受控输入登录踩坑）
+              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测生产站点
               // 键入即焦点（仅 input 事件）：真实浏览器里用户在某字段打字，该字段必为焦点；
               // 同步焦点后，后续 CDP 键事件（Enter 发送/提交、Esc、方向键）才落在正确元素上。
               // change 事件在失焦时触发——此刻聚焦等于"用户刚离开又被拉回"，禁止
@@ -816,21 +813,33 @@ wss.on('connection', async (ws, req) => {
               // 防御不变式：失败只做瓦片化全量重同步；明文快照在任何模式下都不下发
               await startDomMirror().catch(() => {});
             }
-            // 受控输入在服务端生效后：空闲防抖 700ms 全量重发瓦片。防抖到"停止输入"
-            // 才触发（逐键重同步是卡顿与闪烁来源）；客户端原子切换使重同步无闪烁。
-            // 输入框自身外观由补丁即时更新，全量快照兜底联动过滤与布局位移。
-            if (ok && mode === 'dom') {
-              if (domResyncTimer) clearTimeout(domResyncTimer);
-              domResyncTimer = setTimeout(() => { domResyncTimer = null; startDomMirror().catch(() => {}); }, 700);
-            }
+            // 输入后不再做防抖全量重发：差分循环（140ms）+ 结构补丁已覆盖一切视觉
+            // 跟进，而全量重建会吞掉重建窗口内的点击（实测登录按钮点击落在 700ms
+            // 防抖重建里被静默丢弃 → 登录"点了没反应"）。结构漂移由元素数指纹兜底。
             break;
           }
           case 'mouse': {
             if (m.action !== 'move') noteInput();
-            const common = { x: m.x, y: m.y, button: m.button || 'left' };
-            if (m.action === 'move') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseMoved' });
-            else if (m.action === 'down') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mousePressed', clickCount: 1 });
-            else if (m.action === 'up') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseReleased', clickCount: 1 });
+            let mx = m.x, my = m.y;
+            // 锚点平移：客户端镜像布局与服务端有偏差（字体度量/宽度差），纯坐标会
+            // 点错位置。以按下时的目标元素为锚：服务端实测该元素矩形，与客户端
+            // 记录的镜像矩形做同一平移——整个手势期间偏移恒定，滑块/拖放语义成立
+            if (m.apath !== undefined && m.apath !== null) {
+              const tr = await page.evaluate((path, ax, ay) => {
+                try {
+                  let el = window.__xy ? window.__xy.find(path) : null;
+                  if (el && el.nodeType === 3) el = el.parentElement;
+                  if (!el || !el.getBoundingClientRect) return null;
+                  const r = el.getBoundingClientRect();
+                  return { dx: r.left - ax, dy: r.top - ay };
+                } catch (e) { return null; }
+              }, m.apath, m.ax, m.ay).catch(() => null);
+              if (tr) { mx += tr.dx; my += tr.dy; }
+            }
+            const common = { x: mx, y: my, button: m.button || 'left' };
+            if (m.action === 'move') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseMoved', buttons: m.buttons || 0 });
+            else if (m.action === 'down') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mousePressed', clickCount: 1, buttons: 1 });
+            else if (m.action === 'up') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseReleased', clickCount: 1, buttons: 1 });
             else if (m.action === 'wheel') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseWheel', deltaX: m.dx || 0, deltaY: m.dy || 0 });
             break;
           }
@@ -943,9 +952,14 @@ wss.on('connection', async (ws, req) => {
       await page.exposeFunction('__xyPatch', (patches) => {
         if (!domActive || ws.readyState !== 1) return;
         // 串行化处理，避免并发截图竞态
-        patchChain = patchChain.then(async () => {
+          patchChain = patchChain.then(async () => {
           try {
-            if (patches.some(p => p && p.full)) {
+            // 轻量主题补丁：html class 变更直改镜像根类名，不进重同步链
+            const dcPatch = patches.find(p => p && p.docClass !== undefined);
+            if (dcPatch) sendJson({ type: 'doc-class', cls: dcPatch.docClass });
+            const rest = patches.filter(p => p && p.docClass === undefined);
+            if (!rest.length) return;
+            if (rest.some(p => p && p.full)) {
               console.log('[dbg] full patch why:', patches.filter(p => p && p.full).map(p => p.why || '?').slice(0, 3).join(' | ').slice(0, 200));
               // 全量重同步也必须走瓦片化路径（明文快照在瓦片模式下是防御漏洞）
               await startDomMirror();
@@ -955,7 +969,7 @@ wss.on('connection', async (ws, req) => {
               // frame 模式：视觉由整页像素条带 + 差分通道负责；结构补丁仅更新
               // 隐形交互代理（保点击路径新鲜），不做元素瓦片重裁（省带宽，画面走差分）
               const structural = [];
-              for (const p of patches) {
+              for (const p of rest) {
                 if (!p) continue;
                 if (p.inner !== undefined) structural.push({ path: p.path, inner: p.inner });
                 else if (p.outer !== undefined) structural.push({ path: p.path, outer: p.outer });
@@ -968,13 +982,13 @@ wss.on('connection', async (ws, req) => {
               }
               return;
             }
-            if (patches.some(p => p && (p.tile || p.selTile))) {
-              const payload = JSON.stringify({ type: 'dom-patches', patches });
+            if (rest.some(p => p && (p.tile || p.selTile))) {
+              const payload = JSON.stringify({ type: 'dom-patches', patches: rest });
               ws.send(payload);
               ws._bytes = (ws._bytes || 0) + payload.length;
               ws._chunks = (ws._chunks || 0) + 1;
             } else {
-              await tilesPatches(patches);
+              await tilesPatches(rest);
             }
           } catch (e) {}
         });
@@ -1173,6 +1187,16 @@ wss.on('connection', async (ws, req) => {
     sessionBrowser = b;
     page = await b.newPage();
     cdp = await page.createCDPSession();
+    // 临时诊断：会话页面的 API 请求状态（定位登录后数据不加载问题）
+    page.on('response', (r) => {
+      try {
+        const u = r.url();
+        if (r.status() >= 300 || /assistant|api|auth/.test(u)) {
+          console.log('[net   ]', r.status(), r.request().method(), u.slice(0, 90));
+        }
+      } catch (e) {}
+    });
+    page.on('pageerror', (e) => { try { console.log('[pageerr]', String(e && e.message).slice(0, 140)); } catch (e2) {} });
 
     cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
       try {
@@ -1202,11 +1226,21 @@ wss.on('connection', async (ws, req) => {
     statTimer = setInterval(() => {
       const now = Date.now();
       frameTimes = frameTimes.filter(t => now - t < 1000);
-      sendJson({ type: 'sstats', fps: frameTimes.length, inLat: inputLatMs, mode });
+      // 结构指纹：SPA 异步渲染会让代理与服务端结构漂移（补丁路径碰撞错位，
+      // 瓦片落到错误元素上）。客户端比对元素数，超阈即请求全量重同步。
+      let elCount = 0;
+      if ((mode === 'dom' || mode === 'frame') && domActive && !domStarting) {
+        page.evaluate(() => document.body ? document.body.querySelectorAll('*').length : 0)
+          .then((n) => { elCount = n; })
+          .catch(() => {});
+      }
+      sendJson({ type: 'sstats', fps: frameTimes.length, inLat: inputLatMs, mode, els: elCount });
     }, 1000);
 
     // 主框架导航（登录跳转/表单提交等）：重新注入镜像管线并全量重发，
-    // 否则登录成功跳转后镜像冻结在旧页面（访客视角=点了没反应）
+    // 否则登录成功跳转后镜像冻结在旧页面（访客视角=点了没反应）。
+    // SPA 登录后是异步引导：立即快照只拍到骨架，内容 1-3 秒后才到——
+    // 补丁路径与骨架代理碰撞错位且不报 miss。导航后 +2.5s/+7s 定时重拍兜底。
     page.on('framenavigated', (frame) => {
       try {
         if (frame !== page.mainFrame()) return;
@@ -1216,6 +1250,12 @@ wss.on('connection', async (ws, req) => {
             await page.evaluate(PAGE_HELPERS).catch(() => {});
             await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
             if (mode === 'dom' || mode === 'frame') await startDomMirror();
+            for (const d of [2500, 7000]) {
+              setTimeout(() => {
+                if (dead || !domActive || ws.readyState !== 1) return;
+                startDomMirror().catch(() => {});
+              }, d);
+            }
           } catch (e) {}
         });
       } catch (e) {}

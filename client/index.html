@@ -303,6 +303,7 @@
   let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
   let snapSelfCheckRetries = 0;
   let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
+  let lastFpResync = 0; // 结构指纹重同步限频
   // 用户在镜像字段里打过的最近值（仅客户端自产数据，非服务端明文）。
   // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
   // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
@@ -333,7 +334,7 @@
     else mirrorRoot = host.shadowRoot;
     // 选择器映射：:root/html/body（含复合选择器 html[data-theme]、html.foo 等）→ .xy-body
     // （Shadow DOM 内 :root/html 匹配不到镜像根；复合形式不映射则按属性切换的主题全部失配，
-    // 实测按 html 属性切换主题的站点亮色变量整组失效——踩过）
+    // 实测生产站点
     const css2 = css
       .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
       .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
@@ -367,16 +368,51 @@
       mirrorWired = true;
       mirrorRoot.addEventListener('click', (e) => {
         // SPA 链接/表单导航一律拦截在本地，真实路由变化由服务端执行后以补丁回来
+        // （点击本身已由 pointer 管线转发，这里只拦本地导航副作用）
         if (e.target.closest && e.target.closest('a, form')) e.preventDefault();
-        // 任意元素都转发：现代 SPA（聊天侧栏菜单/历史项/工具条）大量用裸 div 承接点击，
-        // 白名单漏掉即"点了没反应"（实测模拟工作台 .menu/.hist 全部失灵）。
-        // 真实浏览器里 click 落到哪个元素就派发哪个——这里保持一致。
-        const target = e.target;
-        if (!target || target.classList === undefined) return;
-        if (target.classList && target.classList.contains('xy-tiles')) return;
-        const p = pathOfMirror(target);
-        if (p !== null) send({ type: 'dom', kind: 'click', path: p });
       });
+      // 指针事件输入管线（点击/拖拽的唯一转发通道）：
+      // 1) pointerdown 永远先于一切销毁到达（结构补丁的 innerHTML 替换会让浏览器
+      //    取消 mousedown/click 合成——实测登录按钮点击被静默吞掉），在 pointerdown
+      //    里完成锚定与转发；
+      // 2) 坐标以按下时的目标元素为锚做服务端平移（镜像布局与服务端有字体度量级
+      //    偏差，实测登录表单水平差 125px），整个手势期间偏移恒定；
+      // 3) 服务端用 CDP 真实按压/释放派发——真实点击语义（表单提交/聚焦/滑块
+      //    验证码/拖放全部原生），与 DOM 快照状态完全解耦。
+      {
+        let lastPtAt = 0;
+        const anchorOf = (t) => {
+          const p = (t && t.getBoundingClientRect) ? pathOfMirror(t) : null;
+          const r = (t && t.getBoundingClientRect) ? t.getBoundingClientRect() : null;
+          return (p !== null && r) ? { path: p, x: r.left, y: r.top } : null;
+        };
+        mirrorRoot.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0 || !e.isPrimary) return;
+          window.__xyDrag = anchorOf(e.target);
+          // 客户端输入框聚焦：pointer 事件不触发原生聚焦（mousedown 被吞时），
+          // 键盘输入需要客户端焦点
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) { try { t.focus(); } catch (e2) {} }
+          const a = window.__xyDrag;
+          send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { apath: a.path, ax: a.x, ay: a.y } : {}));
+        }, true);
+        mirrorRoot.addEventListener('pointermove', (e) => {
+          if (!e.isPrimary) return;
+          const a = window.__xyDrag;
+          const now = Date.now();
+          if (!a && now - lastPtAt < 40) return;
+          lastPtAt = now;
+          send(Object.assign({ type: 'mouse', action: 'move', x: e.clientX, y: e.clientY, buttons: a ? 1 : 0 }, a ? { apath: a.path, ax: a.x, ay: a.y } : {}));
+        }, true);
+        const endDrag = (e) => {
+          if (e.button !== 0 || !window.__xyDrag) return;
+          const a = window.__xyDrag;
+          window.__xyDrag = null;
+          send(Object.assign({ type: 'mouse', action: 'up', x: e.clientX, y: e.clientY, button: 'left' }, { apath: a.path, ax: a.x, ay: a.y }));
+        };
+        mirrorRoot.addEventListener('pointerup', endDrag, true);
+        mirrorRoot.addEventListener('pointercancel', endDrag, true);
+      }
       mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
       mirrorRoot.addEventListener('input', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
@@ -422,15 +458,6 @@
           send({ type: 'key', action: 'down', key: k });
           if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
         }
-      }, true);
-      // 悬停跟随：镜像上的 mousemove 转发服务端（:hover 状态由服务端渲染，
-      // 差分循环把高亮区域以瓦片送回）。40ms 节流 ≈ 25 次/秒
-      let lastMoveAt = 0;
-      mirrorRoot.addEventListener('mousemove', (e) => {
-        const now = Date.now();
-        if (now - lastMoveAt < 40) return;
-        lastMoveAt = now;
-        send({ type: 'mouse', action: 'move', x: e.clientX, y: e.clientY });
       }, true);
       mirrorRoot.addEventListener('mouseleave', () => {}, true);
     }
@@ -542,7 +569,7 @@
     if (layer) layer._rects.set(pathKey, { x: t.cssX, y: t.cssY, w: t.cssW, h: t.cssH });
   }
   // 结构补丁（innerHTML/outerHTML 替换）应用前清掉该元素子树的所有旧瓦片：
-  // 子元素增删后布局位移，旧位置瓦片没人清就会留"幽灵"残影（实测对话应用
+  // 子元素增删后布局位移，旧位置瓦片没人清就会留"幽灵"残影（实测生产站点
   // 工作台输入框在旧位置留影）
   function clearSubtreeTiles(pathKey) {
     const layer = tileLayerStore();
@@ -741,6 +768,10 @@
             m('mIdle').textContent = 'mirror';
           }
           if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); applyPatches(j.patches); }
+          if (j.type === 'doc-class' && mirrorBody) {
+            // 主题/状态类切换：直改镜像根类名（轻量，不重建）
+            mirrorBody.className = 'xy-body ' + (j.cls || '');
+          }
           if (j.type === 'error') { lastErr = j.msg; setStatus('错误: ' + j.msg, false); }
           if (j.type === 'quality') {
             document.querySelectorAll('.quality button[data-q]').forEach(b => b.classList.toggle('active', +b.dataset.q === j.q));
@@ -750,6 +781,18 @@
           if (j.type === 'sstats') {
             m('mSrvFps').textContent = j.fps;
             if (j.inLat != null) m('mInLat').textContent = j.inLat;
+            // 结构指纹比对：服务端元素数 vs 代理元素数。SPA 异步渲染后代理结构
+            // 过期，补丁路径会碰撞错位（瓦片落到错误元素）而不报 path miss——
+            // 用元素数漂移检测并请求全量重同步（10s 限频）
+            if (j.els && mirrorBody) {
+              const mine = mirrorBody.querySelectorAll('*').length;
+              const drift = Math.abs(j.els - mine);
+              if (drift > Math.max(8, j.els * 0.05) && Date.now() - lastFpResync > 10000) {
+                lastFpResync = Date.now();
+                console.log('[mirror] structure drift server=' + j.els + ' proxy=' + mine + ', resync');
+                send({ type: 'mode', mode: mode });
+              }
+            }
           }
         } catch {}
       }
