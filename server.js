@@ -25,7 +25,7 @@ const VIEW_H = parseInt(process.env.VIEW_H || '800', 10);
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
 const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
-const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
+const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom', 'frame'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
 const FRAME_MIN_INTERVAL = parseInt(process.env.FRAME_MIN_INTERVAL || '33', 10); // 30fps 上限
 const H264_ARGS = [
   '-hide_banner', '-loglevel', 'error',
@@ -132,7 +132,7 @@ const PAGE_HELPERS = `(() => {
     },
     // 像素瓦片化快照：所有可见文字/画布/下拉框外观 = 服务端按访客 DPR 渲染的原始像素，
     // 客户端 1:1 显示（PNG 无损）→ 构造性 100% 一致；DOM 中零文字明文。布局由等大占位保持。
-    async snapshotTiles(sheetB64) {
+    async snapshotTiles(sheetB64, wantFrame) {
       const DPR = window.__xyDpr || 1;
       window.__xyBusy = true;
       // 占位替换会把 input/textarea 移出再放回 DOM——自动聚焦的输入框因此失焦，
@@ -368,7 +368,26 @@ const PAGE_HELPERS = `(() => {
           docAttrs += ' ' + a.name + '="' + String(a.value).replace(/"/g, '&quot;') + '"';
         }
       }
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles, docClass: docClass.trim(), docAttrs: docAttrs.trim() };
+      // frame 模式：整页底板切竖条带（PNG 无损）随快照下发——客户端视觉的唯一来源。
+      // 客户端 DOM 仅作隐形交互代理（点击路径/输入/焦点），不承担任何视觉，
+      // 从构造上保证与源站像素一致：客户端重排的字体度量/布局差异永远不可见。
+      let frame = null;
+      if (wantFrame) {
+        const CAP = 12000; // beyond-viewport 光栅上限保护；更长页面靠滚动差分补齐
+        const pageH = Math.min(sheet.height / DPR, CAP);
+        const bands = [];
+        const BH = 512;
+        for (let by = 0; by < pageH; by += BH) {
+          const bh = Math.min(BH, pageH - by);
+          if (bh < 2) break;
+          const c3 = document.createElement('canvas');
+          c3.width = sheet.width; c3.height = Math.round(bh * DPR);
+          c3.getContext('2d').drawImage(sheet, 0, Math.round(by * DPR), sheet.width, c3.height, 0, 0, sheet.width, c3.height);
+          bands.push({ w: sheet.width, h: c3.height, cssX: 0, cssY: by, cssW: sheet.width / DPR, cssH: bh, url: c3.toDataURL('image/png') });
+        }
+        frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
+      }
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles, frame, docClass: docClass.trim(), docAttrs: docAttrs.trim() };
     },
     rectOf(path) {
       const el = window.__xy.find(path);
@@ -424,7 +443,7 @@ const PAGE_HELPERS = `(() => {
       // 灰度级，逐帧比对会被噪声阈值吃掉。与参考帧比对让慢变化累积过阈后才发送，
       // 发送后参考帧前移。PNG 截图渲染确定性 → 静止页逐字节一致，低阈值不误报。
       const ref = window.__xyDiffRef;
-      if (!ref || ref.length !== cur.length) { window.__xyDiffRef = cur; return { tiles: [] }; }
+      if (!ref || ref.length !== cur.length) { window.__xyDiffRef = cur; return { tiles: [], sx: window.scrollX, sy: window.scrollY }; }
       const CELL = Math.max(12, Math.round(20 * dpr));
       const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
       const cells = new Uint8Array(cols * rows);
@@ -455,8 +474,24 @@ const PAGE_HELPERS = `(() => {
           c = c2 + 1;
         }
       }
-      // 全屏级变化（翻页/滚动）交给补丁与全量快照，不进差分通道
-      if (rects.length > 40) { window.__xyDiffRef = cur; return { tiles: [] }; }
+      // 全屏级变化（滚动/翻页）：整视口单瓦片直推。frame 模式下这是滚动后新内容
+      // 到达客户端的唯一通道（旧实现直接丢弃 → 滚动后画面停更）；
+      // 坐标必须换算为页面绝对坐标（视口坐标 + scroll 偏移），瓦片才能落在整页图层上。
+      const offX = Math.round(window.scrollX), offY = Math.round(window.scrollY);
+      if (rects.length > 40) {
+        const now = Date.now();
+        // 滚动期节流：客户端基础底板本身就有整页内容，整视口瓦片只需低频校正
+        // （下方变化过的内容 + 固定定位元素），连续滚动 400ms 一张足够。
+        // 关键：跳过发送时绝不推进参考帧——参考帧必须始终等于"客户端当前持有"，
+        // 否则变化被吞掉、画面永久停在旧状态（实测回车发送后输入框占位符不回来）
+        if (now - (window.__xyFullAt || 0) < 400) { return { tiles: [], sx: window.scrollX, sy: window.scrollY }; }
+        window.__xyFullAt = now;
+        const c2w = document.createElement('canvas');
+        c2w.width = W; c2w.height = H;
+        c2w.getContext('2d').drawImage(cv, 0, 0);
+        window.__xyDiffRef = cur;
+        return { tiles: [{ w: W, h: H, cssX: offX, cssY: offY, cssW: W / dpr, cssH: H / dpr, url: c2w.toDataURL('image/png') }], sx: window.scrollX, sy: window.scrollY };
+      }
       const tiles = [];
       for (const rc of rects) {
         const sx = rc.c0 * CELL, sy = rc.r0 * CELL;
@@ -465,10 +500,10 @@ const PAGE_HELPERS = `(() => {
         const c2c = document.createElement('canvas');
         c2c.width = sw; c2c.height = sh;
         c2c.getContext('2d').drawImage(cv, sx, sy, sw, sh, 0, 0, sw, sh);
-        tiles.push({ w: sw, h: sh, cssX: sx / dpr, cssY: sy / dpr, cssW: sw / dpr, cssH: sh / dpr, url: c2c.toDataURL('image/png') });
+        tiles.push({ w: sw, h: sh, cssX: sx / dpr + offX, cssY: sy / dpr + offY, cssW: sw / dpr, cssH: sh / dpr, url: c2c.toDataURL('image/png') });
       }
       if (tiles.length) window.__xyDiffRef = cur;
-      return { tiles };
+      return { tiles, sx: window.scrollX, sy: window.scrollY };
     },
   };
 })();`;
@@ -655,7 +690,7 @@ wss.on('connection', async (ws, req) => {
             if (changed) {
               try {
                 await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
-                if (mode === 'dom') await startDomMirror();
+                if (mode === 'dom' || mode === 'frame') await startDomMirror();
                 sendJson({ type: 'meta', w: viewW, h: viewH, prod: prodMode });
               } catch (e) {}
             }
@@ -669,8 +704,8 @@ wss.on('connection', async (ws, req) => {
             }
             break;
           case 'mode': {
-            const next = ['jpeg', 'webp', 'h264', 'dom'].includes(m.mode) ? m.mode : 'jpeg';
-            const isDomLike = (x) => x === 'dom';
+            const next = ['jpeg', 'webp', 'h264', 'dom', 'frame'].includes(m.mode) ? m.mode : 'jpeg';
+            const isDomLike = (x) => x === 'dom' || x === 'frame';
             if (isDomLike(mode) && !isDomLike(next)) await stopDomMirror();
             mode = next;
             if (mode === 'h264') { quality = 85; startFFmpeg(); } else { stopFFmpeg(); }
@@ -717,9 +752,10 @@ wss.on('connection', async (ws, req) => {
               }
               // React/Vue 受控输入：必须用原型原生 setter 改值，否则框架值追踪器忽略
               // 合成 input 事件，state 不更新 → 表单提交的是空值（实测受控输入登录踩坑）
-              // 键入即焦点：真实浏览器里用户在某字段打字，该字段必为焦点；
-              // 同步焦点后，后续 CDP 键事件（Enter 发送/提交、Esc、方向键）才落在正确元素上
-              try { if (el.focus && !el.disabled) el.focus(); } catch (e) {}
+              // 键入即焦点（仅 input 事件）：真实浏览器里用户在某字段打字，该字段必为焦点；
+              // 同步焦点后，后续 CDP 键事件（Enter 发送/提交、Esc、方向键）才落在正确元素上。
+              // change 事件在失焦时触发——此刻聚焦等于"用户刚离开又被拉回"，禁止
+              if (kind === 'input') { try { if (el.focus && !el.disabled) el.focus(); } catch (e) {} }
               const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype
                 : el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype
                 : window.HTMLInputElement.prototype;
@@ -770,6 +806,13 @@ wss.on('connection', async (ws, req) => {
           case 'scrolltop':
             await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
             break;
+          case 'scroll': {
+            // frame 模式滚动同步：客户端容器滚到哪，服务端页面跟到哪（瞬时），
+            // 差分循环再把视口内真实变化（懒加载/固定元素/动画）补回来
+            noteInput();
+            await page.evaluate((x, y) => { try { window.scrollTo(x, y); } catch (e) {} }, m.x || 0, m.y || 0).catch(() => {});
+            break;
+          }
         }
   };
   const handleRaw = async (raw) => {
@@ -860,6 +903,23 @@ wss.on('connection', async (ws, req) => {
               await startDomMirror();
               return;
             }
+            if (mode === 'frame') {
+              // frame 模式：视觉由整页像素条带 + 差分通道负责；结构补丁仅更新
+              // 隐形交互代理（保点击路径新鲜），不做元素瓦片重裁（省带宽，画面走差分）
+              const structural = [];
+              for (const p of patches) {
+                if (!p) continue;
+                if (p.inner !== undefined) structural.push({ path: p.path, inner: p.inner });
+                else if (p.outer !== undefined) structural.push({ path: p.path, outer: p.outer });
+              }
+              if (structural.length && ws.readyState === 1) {
+                const payloadF = JSON.stringify({ type: 'dom-patches', patches: structural });
+                ws.send(payloadF);
+                ws._bytes = (ws._bytes || 0) + payloadF.length;
+                ws._chunks = (ws._chunks || 0) + 1;
+              }
+              return;
+            }
             if (patches.some(p => p && (p.tile || p.selTile))) {
               const payload = JSON.stringify({ type: 'dom-patches', patches });
               ws.send(payload);
@@ -916,13 +976,13 @@ wss.on('connection', async (ws, req) => {
       shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     }
     await page.evaluate((d) => { window.__xyDpr = d; }, DPR);
-    const snap = await page.evaluate((b64) => window.__xy.snapshotTiles(b64), shot.data);
+    const snap = await page.evaluate((b64, wf) => window.__xy.snapshotTiles(b64, wf), shot.data, mode === 'frame');
     try {
       const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
       console.log('[dom   ] post-snapshot focus:', foc);
     } catch (e) {}
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/');
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [], docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
+    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -1016,13 +1076,14 @@ wss.on('connection', async (ws, req) => {
     // 独立浏览器实例。差分通道恢复启用（动画/悬停/视频跟随）。
     if (diffTimer) return;
     let diffSince = 0;
+    let lastAnnSX = 0, lastAnnSY = 0;
     diffTimer = setInterval(async () => {
       if (diffBusy) {
         // 卡死自愈：截图/evaluate 挂起会让 diffBusy 永真、该会话动画永久停更
         if (Date.now() - diffSince > 5000) { console.log('[diff] stuck tick, self-healing'); diffBusy = false; }
         else return;
       }
-      if (dead || mode !== 'dom' || !domActive || !page || !cdp || ws.readyState !== 1 || domStarting) return;
+      if (dead || (mode !== 'dom' && mode !== 'frame') || !domActive || !page || !cdp || ws.readyState !== 1 || domStarting) return;
       diffBusy = true; diffSince = Date.now();
       try {
         const shot = await Promise.race([
@@ -1040,12 +1101,16 @@ wss.on('connection', async (ws, req) => {
           } catch (e) {}
         }
         if (out === null) { console.log('[diff] diffTiles returned null (err)'); }
-        if (out && out.tiles && out.tiles.length) {
-          const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles });
-          if (ws.readyState === 1) {
-            ws.send(payload);
-            ws._bytes = (ws._bytes || 0) + payload.length;
-            ws._chunks = (ws._chunks || 0) + 1;
+        if (out) {
+          const scrollMoved = out.sx !== undefined && (Math.abs((out.sx || 0) - lastAnnSX) > 1 || Math.abs((out.sy || 0) - lastAnnSY) > 1);
+          if ((out.tiles && out.tiles.length) || scrollMoved) {
+            const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], sx: out.sx || 0, sy: out.sy || 0 });
+            if (ws.readyState === 1) {
+              ws.send(payload);
+              ws._bytes = (ws._bytes || 0) + payload.length;
+              ws._chunks = (ws._chunks || 0) + 1;
+              lastAnnSX = out.sx || 0; lastAnnSY = out.sy || 0;
+            }
           }
         }
       } catch (e) {}
@@ -1100,7 +1165,7 @@ wss.on('connection', async (ws, req) => {
           try {
             await page.evaluate(PAGE_HELPERS).catch(() => {});
             await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
-            if (mode === 'dom') await startDomMirror();
+            if (mode === 'dom' || mode === 'frame') await startDomMirror();
           } catch (e) {}
         });
       } catch (e) {}
@@ -1126,7 +1191,7 @@ wss.on('connection', async (ws, req) => {
     await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
     await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
     sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), url: sessionOrigin, maxSessions: MAX_SESSIONS, mode, prod: prodMode });
-    if (mode === 'dom') await startDomMirror();
+    if (mode === 'dom' || mode === 'frame') await startDomMirror();
     else await startScreencast();
 
     dispatchReady = true;

@@ -282,9 +282,11 @@
 
   function setMode(mo) {
     mode = mo;
-    const isDom = mo === 'dom';
+    const isDom = mo === 'dom' || mo === 'frame';
+    frameMode = mo === 'frame';
     m('mMode').textContent = mo;
     m('spec').textContent = mo === 'dom' ? 'DOM 镜像（本地渲染 + 服务端补丁）'
+      : mo === 'frame' ? '像素直出（服务端整页渲染，本地零重排）'
       : '1280×800 ' + (mo === 'h264' ? 'H.264 (WebCodecs 解码)' : mo.toUpperCase());
     document.getElementById('box').style.display = isDom ? 'none' : '';
     document.getElementById('cur').style.display = 'none';
@@ -300,6 +302,7 @@
   // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
   let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
   let snapSelfCheckRetries = 0;
+  let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
   // 用户在镜像字段里打过的最近值（仅客户端自产数据，非服务端明文）。
   // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
   // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
@@ -411,6 +414,10 @@
             const t = e.target.closest ? e.target.closest('input, textarea') : null;
             const p = t ? pathOfMirror(t) : null;
             if (p !== null) lastTyped.delete(p);
+            // 同步清空本地值：失焦时原生 change 事件会回传当前值，
+            // 残留旧值会把服务端已清空的字段重新写脏（实测聊天发送后点击空白，
+            // change 把旧消息文本塞回服务端输入框并聚焦，画面出现光标残影）
+            if (t) t.value = '';
           }
           send({ type: 'key', action: 'down', key: k });
           if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
@@ -633,6 +640,15 @@
                 drawTileToLayer({ cssX: t.cssX, cssY: t.cssY, cssW: t.cssW, cssH: t.cssH, w: t.w, h: t.h, url: t.url }).catch(() => {});
               }
             }
+            // 服务端页面自身滚动（锚点/JS/内部滚动区联动）→ 跟随到镜像容器
+            if (j.sx !== undefined) {
+              const ms = document.getElementById('mirrorScroll');
+              if (ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) {
+                ms.__xySync = true;
+                ms.scrollLeft = j.sx; ms.scrollTop = j.sy;
+                setTimeout(() => { ms.__xySync = false; }, 80);
+              }
+            }
           }
           if (j.type === 'dom-snapshot') {
             noteBytes(ev.data.length || ev.data.size || 0);
@@ -640,12 +656,24 @@
             // 若先重建后逐张加载，瓦片层会经历"空白→逐张补齐"，交互后每次重同步
             // 都闪一下（用户实测"页面斗来斗去"的直接来源）。
             const tiles = Array.isArray(j.tiles) ? j.tiles : [];
-            Promise.all(tiles.map(t => new Promise(res => {
+            const frame = j.frame; // 像素直出：整页条带（frame 模式视觉唯一来源）
+            const preload = tiles.map(t => new Promise(res => {
               const im = new Image();
               im.onload = im.onerror = () => res();
               im.src = t.url;
               t.img = im;
-            }))).then(() => {
+            }));
+            if (frame && Array.isArray(frame.tiles)) {
+              for (const t of frame.tiles) {
+                preload.push(new Promise(res => {
+                  const im = new Image();
+                  im.onload = im.onerror = () => res();
+                  im.src = t.url;
+                  t.img = im;
+                }));
+              }
+            }
+            Promise.all(preload).then(() => {
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               buildMirror(j.css, j.html, j.docClass, j.docAttrs);
               let maxBottom = 0, maxRight = 0;
@@ -654,16 +682,30 @@
                 maxBottom = Math.max(maxBottom, (t.cssY + t.cssH) * td);
                 maxRight = Math.max(maxRight, (t.cssX + t.cssW) * td);
               }
+              if (frame) {
+                maxBottom = Math.max(maxBottom, Math.round(frame.pageH * td));
+                maxRight = Math.max(maxRight, Math.round(frame.pageW * td));
+              }
               const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
               if (layer) {
-                layer.height = Math.ceil(maxBottom) + 1;
-                if (Math.ceil(maxRight) + 1 > layer.width) layer.width = Math.ceil(maxRight) + 1;
+                layer.height = Math.ceil(maxBottom);
+                if (Math.ceil(maxRight) > layer.width) layer.width = Math.ceil(maxRight);
                 syncLayerCSS(layer);
               }
               for (const t of tiles) drawTileToLayer(t).catch(() => {});
-              // 快照自检：覆盖率异常时请求重同步（原子切换后重同步不闪烁）
+              // 整页条带画在元素瓦片之上：从构造上保证视觉=服务端像素；
+              // 镜像体高度锁定为服务端页高：客户端滚动范围必须与服务端一致，
+              // 否则触底时两边 scrollTop 差 1px，整页内容错位（实测 dy=-1 全屏偏移）
+              if (frame && Array.isArray(frame.tiles)) {
+                for (const t of frame.tiles) drawTileToLayer(t).catch(() => {});
+                // 滚动几何锁定：高度=服务端页高 + overflow:hidden（代理 DOM 自然高度
+                // 与服务端有 1-3px 布局漂移，会撑大 scrollHeight → 触底时客户端
+                // 比服务端多滚 1px，全页内容错位）。代理溢出部分本就被画布盖住不可见
+                if (mirrorBody) { mirrorBody.style.height = frame.pageH + 'px'; mirrorBody.style.overflow = 'hidden'; }
+              }
+              // 快照自检：覆盖率异常时请求重同步（原子切换后重同步不闪烁；frame 模式整页条带必然高覆盖）
               try {
-                if (!layer) return;
+                if (!layer || frame) return;
                 const d2 = layer.getContext('2d').getImageData(0, 0, Math.min(layer.width, 1440), Math.min(layer.height, 900)).data;
                 let ink = 0, tot = 0;
                 for (let i = 3; i < d2.length; i += 397 * 4) { tot++; if (d2[i] !== 0) ink++; }
@@ -742,6 +784,20 @@
     const { x, y } = pageXY(e);
     send({ type: 'mouse', action: 'wheel', x, y, dx: e.deltaX, dy: e.deltaY });
   }, { passive: false });
+  // frame 模式滚动同步：镜像容器原生滚动（零延迟显示基础底板），滚动位置回传服务端，
+  // 差分循环再补齐视口内真实变化（懒加载内容/固定定位元素/动画）。40ms 节流。
+  (function () {
+    const ms = document.getElementById('mirrorScroll');
+    if (!ms) return;
+    let lastAt = 0;
+    ms.addEventListener('scroll', () => {
+      if (ms.__xySync) return; // 服务端反向同步触发的滚动不再回传（防回环）
+      const now = Date.now();
+      if (now - lastAt < 40) return;
+      lastAt = now;
+      send({ type: 'scroll', x: Math.round(ms.scrollLeft), y: Math.round(ms.scrollTop) });
+    }, { passive: true });
+  })();
 
   const SPECIAL = new Set(['Backspace', 'Enter', 'Tab', 'Escape', 'Delete', 'ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown', 'Home', 'End']);
   cv.addEventListener('keydown', (e) => {
