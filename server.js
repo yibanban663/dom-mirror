@@ -482,7 +482,8 @@ wss.on('connection', async (ws, req) => {
       if ((u.protocol === 'http:' || u.protocol === 'https:') && u.hostname) sessionOrigin = u.origin + '/';
     }
   } catch (e) {}
-  console.log('[sess  ] origin =', sessionOrigin);
+    console.log('[sess  ] origin =', sessionOrigin);
+    prodMode = sessionOrigin !== ORIGIN_URL; // 网关模式：访客端隐藏演示壳，只呈现业务页面
 
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
@@ -492,13 +493,17 @@ wss.on('connection', async (ws, req) => {
     switch (m.type) {
           case 'ping': sendJson({ type: 'pong', t: m.t }); break;
           case 'hello': {
-            // 会话中 DPR 变化（浏览器缩放/拖到别的屏）：重新按新 DPR 模拟并全量重发瓦片
+            // 会话中 DPR/视口变化（缩放、跨屏、拉窗口）：重新模拟并全量重发瓦片
             const nd = Math.max(1, Math.min(3, parseFloat(m.dpr) || DPR));
-            if (nd !== DPR && page) {
-              DPR = nd;
+            const nw = Math.max(320, Math.min(2560, parseInt(m.w, 10) || viewW));
+            const nh = Math.max(240, Math.min(1600, parseInt(m.h, 10) || viewH));
+            const changed = (nd !== DPR || nw !== viewW || nh !== viewH) && page;
+            DPR = nd; viewW = nw; viewH = nh;
+            if (changed) {
               try {
-                await cdp.send('Emulation.setDeviceMetricsOverride', { width: VIEW_W, height: VIEW_H, deviceScaleFactor: DPR, mobile: false });
+                await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
                 if (mode === 'dom') await startDomMirror();
+                sendJson({ type: 'meta', w: viewW, h: viewH, prod: prodMode });
               } catch (e) {}
             }
             break;
@@ -635,6 +640,8 @@ wss.on('connection', async (ws, req) => {
   // ---------- DOM 镜像通道 ----------
   let domActive = false, domExposed = false;
   let DPR = 1;
+  let viewW = VIEW_W, viewH = VIEW_H;
+  let prodMode = false;
   let patchChain = Promise.resolve();
 
   let domStarting = null;
@@ -803,10 +810,10 @@ wss.on('connection', async (ws, req) => {
       }, 100);
     });
     DPR = Math.max(1, Math.min(3, parseFloat(hello.dpr) || 1));
-    await cdp.send('Emulation.setDeviceMetricsOverride', { width: VIEW_W, height: VIEW_H, deviceScaleFactor: DPR, mobile: false });
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
     await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
     await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
-    sendJson({ type: 'meta', w: VIEW_W, h: VIEW_H, title: await page.title(), url: sessionOrigin, maxSessions: MAX_SESSIONS, mode });
+    sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), url: sessionOrigin, maxSessions: MAX_SESSIONS, mode, prod: prodMode });
     if (mode === 'dom') await startDomMirror();
     else await startScreencast();
 

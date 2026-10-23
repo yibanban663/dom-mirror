@@ -6,6 +6,14 @@
 <title>dom-mirror RBI PoC — 客户端只有像素</title>
 <style>
   :root { --bg:#0f1420; --panel:#171e2e; --line:#242e44; --txt:#dbe4f3; --dim:#8294b0; --accent:#4f8cff; --ok:#3fce8f; }
+  /* 网关(生产)模式：访客只看到业务页面本身——演示壳全部隐藏，镜像铺满窗口 */
+  body.prod header, body.prod aside, body.prod .stage-hint,
+  body.prod .quality, body.prod .conn-info, body.prod main .panel { display: none !important; }
+  body.prod main { padding: 0; gap: 0; }
+  body.prod .stage { flex: 1 1 auto; width: 100%; }
+  body.prod .canvas-box { position: fixed; inset: 0; border: none; border-radius: 0; background: #fff; z-index: 50; }
+  body.prod #mirrorScroll { width: 100vw !important; height: 100vh !important; }
+  body.prod #rbi { width: 100vw; height: 100vh; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--txt); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; overflow-x:auto; }
   header { display:flex; align-items:center; gap:14px; padding:14px 22px; border-bottom:1px solid var(--line); }
@@ -291,6 +299,7 @@
 
   // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
   let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
+  let viewW = 1280, viewH = 800;
 
   function pathOfMirror(node) {
     const parts = [];
@@ -376,14 +385,23 @@
     } catch (e) {}
   }
   let lastDpr = window.devicePixelRatio || 1;
+  let lastW = window.innerWidth, lastH = window.innerHeight;
+  let vpTimer = null;
   window.addEventListener('resize', () => {
     snapMirrorToDevice();
-    // DPR 变化（浏览器缩放/跨屏拖动）：上报服务端按新 DPR 重渲并全量重发瓦片
+    if (!document.body.classList.contains('prod')) return;
+    // 网关模式：视口/DPR 变化都上报，服务端按新尺寸重渲并全量重发
     const d = window.devicePixelRatio || 1;
-    if (d !== lastDpr && connected && ws && ws.readyState === 1) {
-      lastDpr = d;
-      try { ws.send(JSON.stringify({ type: 'hello', dpr: d })); } catch (e) {}
-    }
+    const w = window.innerWidth, h = window.innerHeight;
+    if (vpTimer) clearTimeout(vpTimer);
+    vpTimer = setTimeout(() => {
+      if (connected && ws && ws.readyState === 1 && (d !== lastDpr || w !== lastW || h !== lastH)) {
+        lastDpr = d; lastW = w; lastH = h;
+        try { ws.send(JSON.stringify({ type: 'hello', dpr: d, w: w, h: h })); } catch (e) {}
+        const ms = document.getElementById('mirrorScroll');
+        if (ms) { ms.style.width = w + 'px'; ms.style.height = h + 'px'; }
+      }
+    }, 250);
   });
   // 把瓦片画到设备分辨率 canvas（整数设备坐标 1:1 blit）
   function drawTileToLayer(tile) {
@@ -480,8 +498,8 @@
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       connected = true; lastErr = ''; setStatus('会话在线', true); m('mIdle').textContent = 'waiting frame';
-      // 上报本机 DPR：服务端按访客 DPR 渲染文字像素瓦片，客户端 1:1 显示 → 构造性一致
-      try { ws.send(JSON.stringify({ type: 'hello', dpr: window.devicePixelRatio || 1 })); } catch (e) {}
+      // 上报本机 DPR 与视口：服务端按访客 DPR+视口渲染像素瓦片，客户端 1:1 显示 → 构造性一致
+      try { ws.send(JSON.stringify({ type: 'hello', dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight })); } catch (e) {}
     };
     ws.onclose = () => { connected = false; setStatus(lastErr ? ('已断开：' + lastErr) : '已断开', false); m('mIdle').textContent = 'disconnected'; };
     ws.onerror = () => setStatus('连接错误', false);
@@ -498,7 +516,17 @@
       } else {
         try {
           const j = JSON.parse(ev.data);
-          if (j.type === 'meta') { m('oTitle').textContent = j.title || '-'; if (j.mode) setMode(j.mode); }
+          if (j.type === 'meta') {
+            m('oTitle').textContent = j.title || '-';
+            if (j.mode) setMode(j.mode);
+            if (j.prod) {
+              document.body.classList.add('prod');
+              viewW = j.w || window.innerWidth; viewH = j.h || window.innerHeight;
+              const ms = document.getElementById('mirrorScroll');
+              if (ms) { ms.style.width = viewW + 'px'; ms.style.height = viewH + 'px'; }
+              snapMirrorToDevice();
+            }
+          }
           if (j.type === 'dom-snapshot') {
             noteBytes(ev.data.length || ev.data.size || 0);
             buildMirror(j.css, j.html);
