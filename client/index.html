@@ -649,6 +649,16 @@
                 setTimeout(() => { ms.__xySync = false; }, 80);
               }
             }
+            // 内部滚动容器跟随（源站 JS 自动滚动，如聊天滚到底）
+            if (Array.isArray(j.scrolls)) {
+              for (const s of j.scrolls) {
+                try {
+                  const el = mirrorFind(s[0]);
+                  if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - s[1]) > 1) el.scrollTop = s[1];
+                  if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - s[2]) > 1) el.scrollLeft = s[2];
+                } catch (e) {}
+              }
+            }
           }
           if (j.type === 'dom-snapshot') {
             noteBytes(ev.data.length || ev.data.size || 0);
@@ -702,6 +712,15 @@
                 // 与服务端有 1-3px 布局漂移，会撑大 scrollHeight → 触底时客户端
                 // 比服务端多滚 1px，全页内容错位）。代理溢出部分本就被画布盖住不可见
                 if (mirrorBody) { mirrorBody.style.height = frame.pageH + 'px'; mirrorBody.style.overflow = 'hidden'; }
+              }
+              // 内部滚动容器初始位置对齐（快照时的服务端滚动状态）
+              if (Array.isArray(j.scrollers)) {
+                for (const s of j.scrollers) {
+                  try {
+                    const el = mirrorFind(s[0]);
+                    if (el && el.scrollTop !== undefined) { el.scrollTop = s[1]; el.scrollLeft = s[2]; }
+                  } catch (e) {}
+                }
               }
               // 快照自检：覆盖率异常时请求重同步（原子切换后重同步不闪烁；frame 模式整页条带必然高覆盖）
               try {

@@ -110,6 +110,22 @@ const PAGE_HELPERS = `(() => {
   }
   window.__xy = {
     sanitizeClone, pathOf,
+    // 内部滚动容器收集：可滚动且 scrollTop/Left>0 的元素（path+偏移）。
+    // 源站 JS 自动滚动（如聊天自动滚到底）必须同步到代理，否则代理盒子
+    // 停在未滚动位置，与瓦片/源站错位（实测流式后气泡整体低 4px）
+    scrollers() {
+      const out = [];
+      try {
+        for (const el of document.body.querySelectorAll('*')) {
+          if ((el.scrollTop > 0 || el.scrollLeft > 0) && el.scrollHeight > el.clientHeight + 1) {
+            const p = pathOf(el);
+            if (p !== null) out.push([p, Math.round(el.scrollTop), Math.round(el.scrollLeft)]);
+            if (out.length > 12) break;
+          }
+        }
+      } catch (e) {}
+      return out;
+    },
     find(path) {
       if (path === '') return document.body;
       let n = document.body;
@@ -226,10 +242,9 @@ const PAGE_HELPERS = `(() => {
             const lh = usedLineHeight(par);
             if (par) { try { j.parLh = getComputedStyle(par).lineHeight; } catch (e) {} }
             j.lhPin = (j.parLh === 'normal' && lh > 0) ? lh : 0;
-            // 高度优先用 行数×行盒高（与服务端行堆叠一致）；测不到时退回墨迹高
-            const sh = (lh > 0 && j.lines > 0) ? Math.round(j.lines * lh * 100) / 100 : j.h;
-            j.sh = sh;
-            sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + sh + 'px';
+            // spacer 高度用墨迹高：行盒高度由固化的父级行高决定（行数×行高的算法
+            // 会因 getClientRects 折行碎片多计行数，把卡片撑高 100px+，产生幽灵白盒）
+            sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + j.h + 'px';
             sp.setAttribute('data-xy-space', '1');
             j.node.replaceWith(sp);
             j.sp = sp;
@@ -387,7 +402,7 @@ const PAGE_HELPERS = `(() => {
         }
         frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
       }
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles, frame, docClass: docClass.trim(), docAttrs: docAttrs.trim() };
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles, frame, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim() };
     },
     rectOf(path) {
       const el = window.__xy.find(path);
@@ -429,7 +444,11 @@ const PAGE_HELPERS = `(() => {
     // 动画/悬停跟随：当前视口底板与上一帧做网格差分，仅变化区域重裁瓦片。
     // CSS 动画、JS 特效、canvas 重绘、视频、:hover 反馈——任何像素变化通用覆盖，
     // 无变化时零下发。瓦片为底板不透明裁片，含新旧位置（位移动画旧影自动覆盖）。
-    async diffTiles(b64, dpr) {
+    // dom 模式下客户端持有整份 CSS、可原生渲染动画：正在运行的 CSS 动画/过渡区域
+    // 从差分中掩蔽（getAnimations），让客户端 60fps 原生跑（瓦片随代理布局联动），
+    // 差分通道只覆盖客户端渲染不了的 canvas/视频/JS 像素变化——否则服务端 140ms
+    // 一帧的瓦片会盖住客户端的 60fps 原生动画，看起来卡成幻灯片。
+    async diffTiles(b64, dpr, maskAnims) {
       const img = new Image();
       img.src = 'data:image/png;base64,' + b64;
       await img.decode();
@@ -444,6 +463,34 @@ const PAGE_HELPERS = `(() => {
       // 发送后参考帧前移。PNG 截图渲染确定性 → 静止页逐字节一致，低阈值不误报。
       const ref = window.__xyDiffRef;
       if (!ref || ref.length !== cur.length) { window.__xyDiffRef = cur; return { tiles: [], sx: window.scrollX, sy: window.scrollY }; }
+      // CSS 动画掩蔽区（视口坐标，设备像素）。动画元素在客户端原生渲染，
+      // 参考帧按"该区域未变化"维护（每帧写回 cur），掩蔽结束后自然恢复差分。
+      let animMask = null;
+      if (maskAnims) {
+        try {
+          let area = 0;
+          animMask = [];
+          for (const a of document.getAnimations()) {
+            if (a.playState !== 'running') continue;
+            const el = a.effect && a.effect.target;
+            if (!el || !el.getBoundingClientRect) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width < 2 || r.height < 2) continue;
+            const x0 = Math.max(0, Math.floor(r.left * dpr)), y0 = Math.max(0, Math.floor(r.top * dpr));
+            const x1 = Math.min(W, Math.ceil((r.left + r.width) * dpr)), y1 = Math.min(H, Math.ceil((r.top + r.height) * dpr));
+            if (x1 <= x0 || y1 <= y0) continue;
+            animMask.push([x0, y0, x1, y1]);
+            area += (x1 - x0) * (y1 - y0);
+          }
+          // 掩蔽区过大（近乎全屏动画的站点）时放弃掩蔽，退回差分兜底
+          if (area > W * H * 0.8 || !animMask.length) animMask = animMask && animMask.length ? animMask : null;
+        } catch (e) { animMask = null; }
+      }
+      const inMask = (x, y) => {
+        if (!animMask) return false;
+        for (const m of animMask) { if (x >= m[0] && x < m[2] && y >= m[1] && y < m[3]) return true; }
+        return false;
+      };
       const CELL = Math.max(12, Math.round(20 * dpr));
       const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
       const cells = new Uint8Array(cols * rows);
@@ -453,6 +500,7 @@ const PAGE_HELPERS = `(() => {
         for (let x = 0; x < W; x += 2) {
           const ci = (x / CELL) | 0;
           if (cells[ri * cols + ci]) continue;
+          if (inMask(x, y)) continue;
           const p = (y * W + x) * 4;
           if (Math.abs(cur[p] - ref[p]) > TH || Math.abs(cur[p + 1] - ref[p + 1]) > TH || Math.abs(cur[p + 2] - ref[p + 2]) > TH) cells[ri * cols + ci] = 1;
         }
@@ -1076,7 +1124,7 @@ wss.on('connection', async (ws, req) => {
     // 独立浏览器实例。差分通道恢复启用（动画/悬停/视频跟随）。
     if (diffTimer) return;
     let diffSince = 0;
-    let lastAnnSX = 0, lastAnnSY = 0;
+    let lastAnnSX = 0, lastAnnSY = 0, lastScrolls = '[]';
     diffTimer = setInterval(async () => {
       if (diffBusy) {
         // 卡死自愈：截图/evaluate 挂起会让 diffBusy 永真、该会话动画永久停更
@@ -1091,7 +1139,7 @@ wss.on('connection', async (ws, req) => {
           new Promise((_, rej) => setTimeout(() => rej(new Error('shot timeout')), 2500)),
         ]);
         const out = await Promise.race([
-          page.evaluate((b64, d) => window.__xy.diffTiles(b64, d), shot.data, DPR),
+          page.evaluate((b64, d, ma) => { const r = window.__xy.diffTiles(b64, d, ma); try { r.scrollers = window.__xy.scrollers(); } catch (e) {} return r; }, shot.data, DPR, mode === 'dom'),
           new Promise((_, rej) => setTimeout(() => rej(new Error('diff timeout')), 2500)),
         ]).catch((e) => { console.log('[diff] eval err:', e && e.message); return null; });
         if (!(diffTick = (diffTick + 1) % 20)) {
@@ -1103,13 +1151,15 @@ wss.on('connection', async (ws, req) => {
         if (out === null) { console.log('[diff] diffTiles returned null (err)'); }
         if (out) {
           const scrollMoved = out.sx !== undefined && (Math.abs((out.sx || 0) - lastAnnSX) > 1 || Math.abs((out.sy || 0) - lastAnnSY) > 1);
-          if ((out.tiles && out.tiles.length) || scrollMoved) {
-            const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], sx: out.sx || 0, sy: out.sy || 0 });
+          const scrollsNow = JSON.stringify(out.scrollers || []);
+          const innerMoved = scrollsNow !== lastScrolls;
+          if ((out.tiles && out.tiles.length) || scrollMoved || innerMoved) {
+            const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], sx: out.sx || 0, sy: out.sy || 0, scrolls: out.scrollers || [] });
             if (ws.readyState === 1) {
               ws.send(payload);
               ws._bytes = (ws._bytes || 0) + payload.length;
               ws._chunks = (ws._chunks || 0) + 1;
-              lastAnnSX = out.sx || 0; lastAnnSY = out.sy || 0;
+              lastAnnSX = out.sx || 0; lastAnnSY = out.sy || 0; lastScrolls = scrollsNow;
             }
           }
         }
