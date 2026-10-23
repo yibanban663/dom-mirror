@@ -299,6 +299,11 @@
 
   // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
   let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
+  let snapSelfCheckRetries = 0;
+  // 用户在镜像字段里打过的最近值（仅客户端自产数据，非服务端明文）。
+  // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
+  // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
+  const lastTyped = new Map();
   let viewW = 1280, viewH = 800;
 
   function pathOfMirror(node) {
@@ -319,19 +324,29 @@
     for (const i of String(path).split('/')) { n = n.childNodes[+i]; if (!n) return null; }
     return n;
   }
-  function buildMirror(css, html) {
+  function buildMirror(css, html, docClass, docAttrs) {
     const host = document.getElementById('mirrorHost');
     if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
     else mirrorRoot = host.shadowRoot;
-    // 选择器映射：:root/html/body → .xy-body（Shadow DOM 内 :root 与 html 匹配不到镜像根，
-    // 不映射则整组 CSS 变量/主题/基础字体失效——灵袭的主题全在 :root 上，实测踩过）
+    // 选择器映射：:root/html/body（含复合选择器 html[data-theme]、html.foo 等）→ .xy-body
+    // （Shadow DOM 内 :root/html 匹配不到镜像根；复合形式不映射则按属性切换的主题全部失配，
+    // 实测按 html 属性切换主题的站点亮色变量整组失效——踩过）
     const css2 = css
-      .replace(/:root\s*(?=[,{])/g, '.xy-body')
-      .replace(/(^|[\s,{}])html(?=\s*[,{])/g, '$1.xy-body')
-      .replace(/(^|[\s,{}])body(?=\s*[,{])/g, '$1.xy-body');
+      .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
+      .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
+      .replace(/(^|[\s,{}>+~])body(?=[\[{.,:\s)])/g, '$1.xy-body');
     // 像素瓦片模式：镜像内零文字明文 → 客户端无需任何字体下发（省 16MB），
     // 所有可见文字/图表 = 服务端按本机 DPR 渲染的原始像素瓦片，1:1 显示
-    mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body" style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
+    // html/body 的类与属性（主题载体）挂到镜像根上
+    // 重建会销毁焦点元素（焦点回落到 body，之后 Enter/快捷键落在镜像外不再被转发）——
+    // 先记住焦点路径与选区，重建完成后还原，打字→回车链路不被 700ms 重同步打断。
+    let keepFocus = null;
+    const ae = mirrorRoot.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
+      const fp = pathOfMirror(ae);
+      if (fp !== null) keepFocus = { path: fp, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
+    }
+    mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     mirrorBody = mirrorRoot.querySelector('.xy-body');
     snapMirrorToDevice();
     // 瓦片图层：设备分辨率 canvas。drawImage 一律用整数设备坐标做 1:1 位块拷贝，
@@ -339,8 +354,9 @@
     const layer = document.createElement('canvas');
     layer.className = 'xy-tiles';
     const tdpr = window.devicePixelRatio || 1;
-    layer.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:0;overflow:visible;pointer-events:none;z-index:5';
-    layer.width = Math.round(1280 * tdpr);
+    layer.style.cssText = 'position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:2147483647';
+    layer.width = Math.round((viewW || 1280) * tdpr);
+    syncLayerCSS(layer);
     layer.height = 1;
     layer.tdpr = tdpr;
     mirrorBody.appendChild(layer);
@@ -348,10 +364,13 @@
       mirrorWired = true;
       mirrorRoot.addEventListener('click', (e) => {
         // SPA 链接/表单导航一律拦截在本地，真实路由变化由服务端执行后以补丁回来
-        if (e.target.closest('a, form')) e.preventDefault();
-        const el = e.target.closest('button, a, input, select, label, tr, li');
-        const target = e.target.closest('button, a') || (el && el.tagName !== 'INPUT' && el.tagName !== 'SELECT' ? el : null);
-        if (!target) return;
+        if (e.target.closest && e.target.closest('a, form')) e.preventDefault();
+        // 任意元素都转发：现代 SPA（聊天侧栏菜单/历史项/工具条）大量用裸 div 承接点击，
+        // 白名单漏掉即"点了没反应"（实测模拟工作台 .menu/.hist 全部失灵）。
+        // 真实浏览器里 click 落到哪个元素就派发哪个——这里保持一致。
+        const target = e.target;
+        if (!target || target.classList === undefined) return;
+        if (target.classList && target.classList.contains('xy-tiles')) return;
         const p = pathOfMirror(target);
         if (p !== null) send({ type: 'dom', kind: 'click', path: p });
       });
@@ -363,13 +382,62 @@
           e.target.style.backgroundImage = e.target.value ? 'none' : '';
         }
         const p = pathOfMirror(e.target);
-        if (p !== null) send({ type: 'dom', kind: 'input', path: p, value: e.target.value });
+        if (p !== null) { lastTyped.set(p, e.target.value); send({ type: 'dom', kind: 'input', path: p, value: e.target.value }); }
       });
       mirrorRoot.addEventListener('change', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
         const p = pathOfMirror(e.target);
-        if (p !== null) send({ type: 'dom', kind: 'change', path: p, value: e.target.value });
+        if (p !== null) { lastTyped.set(p, e.target.value); send({ type: 'dom', kind: 'change', path: p, value: e.target.value }); }
       });
+      // 焦点落进输入字段时找回重建前的已键入值（重同步重建会清掉克隆里的当前值）
+      mirrorRoot.addEventListener('focusin', (e) => {
+        const t = e.target;
+        if (!t.matches || !t.matches('input, textarea') || t.value !== '' || t.isContentEditable) return;
+        const p = pathOfMirror(t);
+        if (p === null || !lastTyped.has(p)) return;
+        const v = lastTyped.get(p);
+        t.value = v;
+        try { t.setSelectionRange(v.length, v.length); } catch (err) {}
+      });
+      // 功能键转发：Enter 发送、Escape 关闭、方向键导航等快捷键由服务端页面响应。
+      // 字符输入不走这里（由 input 事件整体同步 value），否则会双输入。
+      mirrorRoot.addEventListener('keydown', (e) => {
+        if (e.isComposing || e.keyCode === 229) return; // 输入法组合中的 Enter 是"上屏"，不是发送
+        const k = e.key;
+        if (k === 'Enter' || k === 'Escape' || k === 'Tab' || k.indexOf('Arrow') === 0 || k === 'Backspace' || k === 'Delete') {
+          if (k === 'Enter') {
+            // Enter 通常是提交/发送：服务端会清空字段。忘掉本地已键入值，
+            // 否则重同步后 focusin 会把已发送的文字塞回输入框。
+            const t = e.target.closest ? e.target.closest('input, textarea') : null;
+            const p = t ? pathOfMirror(t) : null;
+            if (p !== null) lastTyped.delete(p);
+          }
+          send({ type: 'key', action: 'down', key: k });
+          if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
+        }
+      }, true);
+      // 悬停跟随：镜像上的 mousemove 转发服务端（:hover 状态由服务端渲染，
+      // 差分循环把高亮区域以瓦片送回）。40ms 节流 ≈ 25 次/秒
+      let lastMoveAt = 0;
+      mirrorRoot.addEventListener('mousemove', (e) => {
+        const now = Date.now();
+        if (now - lastMoveAt < 40) return;
+        lastMoveAt = now;
+        send({ type: 'mouse', action: 'move', x: e.clientX, y: e.clientY });
+      }, true);
+      mirrorRoot.addEventListener('mouseleave', () => {}, true);
+    }
+    // 还原重建前的焦点（打字→重同步→回车链路不断）
+    if (keepFocus) {
+      try {
+        const el = mirrorFind(keepFocus.path);
+        if (el && el.focus) {
+          el.focus();
+          if (keepFocus.sel && el.setSelectionRange && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value.length) {
+            el.setSelectionRange(Math.min(keepFocus.sel[0], el.value.length), Math.min(keepFocus.sel[1], el.value.length));
+          }
+        }
+      } catch (e) {}
     }
   }
   // 把镜像容器吸附到整数设备像素：DPR≠1 时 CSS 整数位置可能是半个设备像素（如 22px×1.25=27.5），
@@ -403,32 +471,48 @@
       }
     }, 250);
   });
-  // 把瓦片画到设备分辨率 canvas（整数设备坐标 1:1 blit）
+  // canvas 是替换元素：CSS 尺寸为 0 时位图再大也不显示。位图与 CSS 尺寸必须同步（CSS=位图/tdpr，保证 1:1）
+  function syncLayerCSS(layer) {
+    const td = layer.tdpr || window.devicePixelRatio || 1;
+    layer.style.width = (layer.width / td) + 'px';
+    layer.style.height = (layer.height / td) + 'px';
+  }
+  // 把瓦片画到设备分辨率 canvas（整数设备坐标 1:1 blit）。
+  // 全部绘制严格串行：canvas 尺寸重设会清空整幅画面，任何并发交错（快照瓦片、
+  // 补丁瓦片、动画差分瓦片同时到达）都可能用"半清空"状态覆盖已画内容——
+  // 实测表现为间歇性镜像瓦片大面积缺失。排队执行 + 执行时再解析 layer，
+  // 保证快照重建（innerHTML 替换）后旧闭包不会再画到已脱离的画布上。
+  const tileDrawChain = { p: Promise.resolve() };
   function drawTileToLayer(tile) {
-    const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
-    if (!layer) return Promise.reject(new Error('no layer'));
-    const dpr = layer.tdpr || window.devicePixelRatio || 1;
-    const dh = Math.ceil((tile.cssY + tile.cssH) * dpr) + 1;
-    const doResize = dh > layer.height;
-    const draw = () => {
-      if (doResize) {
-        // canvas.height 重设会清空已画内容：先拷贝到临时画布再回填
-        const old = document.createElement('canvas');
-        old.width = layer.width; old.height = layer.height;
-        old.getContext('2d').drawImage(layer, 0, 0);
-        layer.height = dh;
-        layer.getContext('2d').drawImage(old, 0, 0);
-      }
-      const ctx = layer.getContext('2d');
-      ctx.drawImage(tile.img, Math.round(tile.cssX * dpr), Math.round(tile.cssY * dpr), tile.w, tile.h);
-    };
-    if (tile.img && tile.img.complete) { draw(); return Promise.resolve(); }
-    return new Promise((res, rej) => {
+    const run = () => new Promise((resolve, reject) => {
+      const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
+      if (!layer) return reject(new Error('no layer'));
+      const dpr = layer.tdpr || window.devicePixelRatio || 1;
+      const dh = Math.ceil((tile.cssY + tile.cssH) * dpr) + 1;
+      const dw = Math.ceil((tile.cssX + tile.cssW) * dpr) + 1;
+      const doResize = dh > layer.height || dw > layer.width;
+      const draw = () => {
+        if (doResize) {
+          const old = document.createElement('canvas');
+          old.width = layer.width; old.height = layer.height;
+          old.getContext('2d').drawImage(layer, 0, 0);
+          if (dw > layer.width) layer.width = dw;
+          if (dh > layer.height) layer.height = dh;
+          syncLayerCSS(layer);
+          layer.getContext('2d').drawImage(old, 0, 0);
+        }
+        layer.getContext('2d').drawImage(tile.img, Math.round(tile.cssX * dpr), Math.round(tile.cssY * dpr), tile.w, tile.h);
+        resolve();
+      };
+      if (tile.img && tile.img.complete) { try { draw(); } catch (e) { reject(e); } return; }
       const im = tile.img || new Image();
       if (!tile.img) { tile.img = im; im.src = tile.url; }
-      im.onload = () => { try { draw(); res(); } catch (e) { rej(e); } };
-      im.onerror = rej;
+      im.onload = () => { try { draw(); } catch (e) { reject(e); } };
+      im.onerror = () => reject(new Error('img load'));
     });
+    const p = tileDrawChain.p.then(run, run);
+    tileDrawChain.p = p.catch(() => {});
+    return p;
   }
   // 瓦片矩形登记：补丁替换同路径瓦片前先清旧区域（否则内容上移后旧像素留影）
   function tileLayerStore() {
@@ -449,6 +533,17 @@
   function noteTileRect(pathKey, t) {
     const layer = tileLayerStore();
     if (layer) layer._rects.set(pathKey, { x: t.cssX, y: t.cssY, w: t.cssW, h: t.cssH });
+  }
+  // 结构补丁（innerHTML/outerHTML 替换）应用前清掉该元素子树的所有旧瓦片：
+  // 子元素增删后布局位移，旧位置瓦片没人清就会留"幽灵"残影（实测对话应用
+  // 工作台输入框在旧位置留影）
+  function clearSubtreeTiles(pathKey) {
+    const layer = tileLayerStore();
+    if (!layer || !layer._rects) return;
+    const pre = pathKey + '/';
+    for (const k of [...layer._rects.keys()]) {
+      if (k === pathKey || k.startsWith(pre)) clearTileRect(k);
+    }
   }
   function applyPatches(patches) {
     if (!mirrorBody) return;
@@ -476,6 +571,8 @@
         }
         const el = mirrorFind(p.path);
         if (!el) throw new Error('path miss');
+        // 结构替换前清子树旧瓦片，防幽灵残影
+        clearSubtreeTiles(p.path);
         if (p.inner !== undefined) el.innerHTML = p.inner;
         else if (p.outer !== undefined) {
           const tpl = document.createElement('template');
@@ -483,6 +580,7 @@
           el.replaceWith(tpl.content.firstChild);
         }
       } catch (e) {
+        console.log('[patch-miss]', p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'));
         if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 请求全量重同步
         return;
       }
@@ -527,17 +625,57 @@
               snapMirrorToDevice();
             }
           }
+          if (j.type === 'anim-tiles') {
+            // 动画/悬停跟随：服务端差分出的变化区域（不透明底板裁片，直接覆盖）
+            noteBytes(ev.data.length || ev.data.size || 0);
+            if (Array.isArray(j.tiles)) {
+              for (const t of j.tiles) {
+                drawTileToLayer({ cssX: t.cssX, cssY: t.cssY, cssW: t.cssW, cssH: t.cssH, w: t.w, h: t.h, url: t.url }).catch(() => {});
+              }
+            }
+          }
           if (j.type === 'dom-snapshot') {
             noteBytes(ev.data.length || ev.data.size || 0);
-            buildMirror(j.css, j.html);
-            if (Array.isArray(j.tiles)) {
-              // 先把页面撑到内容高度（snapshotTiles 的 tiles 覆盖整页），再统一 blit
-              let maxBottom = 0;
-              for (const t of j.tiles) maxBottom = Math.max(maxBottom, (t.cssY + t.cssH) * (window.devicePixelRatio || 1));
-              const layer = mirrorBody.querySelector('.xy-tiles');
-              if (layer) layer.height = Math.ceil(maxBottom) + 1;
-              for (const t of j.tiles) drawTileToLayer(t).catch(() => {});
-            }
+            // 原子切换：先预载全部瓦片位图，再一次性重建镜像并同步绘制。
+            // 若先重建后逐张加载，瓦片层会经历"空白→逐张补齐"，交互后每次重同步
+            // 都闪一下（用户实测"页面斗来斗去"的直接来源）。
+            const tiles = Array.isArray(j.tiles) ? j.tiles : [];
+            Promise.all(tiles.map(t => new Promise(res => {
+              const im = new Image();
+              im.onload = im.onerror = () => res();
+              im.src = t.url;
+              t.img = im;
+            }))).then(() => {
+              if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
+              buildMirror(j.css, j.html, j.docClass, j.docAttrs);
+              let maxBottom = 0, maxRight = 0;
+              const td = window.devicePixelRatio || 1;
+              for (const t of tiles) {
+                maxBottom = Math.max(maxBottom, (t.cssY + t.cssH) * td);
+                maxRight = Math.max(maxRight, (t.cssX + t.cssW) * td);
+              }
+              const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
+              if (layer) {
+                layer.height = Math.ceil(maxBottom) + 1;
+                if (Math.ceil(maxRight) + 1 > layer.width) layer.width = Math.ceil(maxRight) + 1;
+                syncLayerCSS(layer);
+              }
+              for (const t of tiles) drawTileToLayer(t).catch(() => {});
+              // 快照自检：覆盖率异常时请求重同步（原子切换后重同步不闪烁）
+              try {
+                if (!layer) return;
+                const d2 = layer.getContext('2d').getImageData(0, 0, Math.min(layer.width, 1440), Math.min(layer.height, 900)).data;
+                let ink = 0, tot = 0;
+                for (let i = 3; i < d2.length; i += 397 * 4) { tot++; if (d2[i] !== 0) ink++; }
+                if (tiles.length >= 6 && ink / tot < 0.02 && snapSelfCheckRetries < 3) {
+                  snapSelfCheckRetries++;
+                  console.log('[mirror] snapshot low coverage, requesting resync');
+                  send({ type: 'mode', mode: mode });
+                } else if (ink / tot >= 0.02) {
+                  snapSelfCheckRetries = 0;
+                }
+              } catch (e) {}
+            });
             m('oTitle').textContent = j.title || '-';
             m('mIdle').textContent = 'mirror';
           }

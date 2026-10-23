@@ -135,6 +135,15 @@ const PAGE_HELPERS = `(() => {
     async snapshotTiles(sheetB64) {
       const DPR = window.__xyDpr || 1;
       window.__xyBusy = true;
+      // 占位替换会把 input/textarea 移出再放回 DOM——自动聚焦的输入框因此失焦，
+      // 光标闪烁等"活动感"全部消失（页面看起来被冻住）。快照后恢复焦点与光标位。
+      const focusSave = document.activeElement;
+      let selS = null, selE = null;
+      try {
+        if (focusSave && (focusSave.tagName === 'INPUT' || focusSave.tagName === 'TEXTAREA')) {
+          selS = focusSave.selectionStart; selE = focusSave.selectionEnd;
+        }
+      } catch (e) {}
       const img = new Image();
       img.src = 'data:image/png;base64,' + sheetB64;
       await img.decode();
@@ -163,6 +172,31 @@ const PAGE_HELPERS = `(() => {
       const done = new Set();
       // ① live 就地替换为等大占位（布局零扰动）
       // 注意：文本节点没有 getBoundingClientRect，必须用 Range 的 client rects
+      // 行盒高度实测缓存：line-height:normal 的实际行高取决于字体度量（服务端 Noto CJK
+      // vs 访客端回退字体），不固化的话镜像行堆叠与服务端累计偏差 1-4px（实测按钮矮 4px）。
+      // 测法：把父元素 line-height 在 0/normal 间切换，高度差 = 单行行盒高。
+      const lhCache = new Map();
+      const usedLineHeight = (par) => {
+        if (!par || lhCache.has(par)) return lhCache.get(par) || 0;
+        let lh = 0;
+        try {
+          const clh = getComputedStyle(par).lineHeight;
+          if (clh !== 'normal') { const v = parseFloat(clh); lh = isFinite(v) ? v : 0; }
+          else {
+            // 零宽探针：font:inherit 的 inline-block，其盒高 = 自身行盒 = 所继承字体
+            // 的 normal 实际行高。不切换父元素 line-height（会被兄弟元素高度污染，
+            // 实测带 beacon 圆点的历史条目测出行高=9px 而非 18.4px），也不扰动布局。
+            const probe = document.createElement('span');
+            probe.style.cssText = 'font:inherit;line-height:normal;display:inline-block;width:0;overflow:hidden';
+            probe.textContent = '国';
+            par.appendChild(probe);
+            lh = Math.max(0, Math.round(probe.getBoundingClientRect().height * 100) / 100);
+            probe.remove();
+          }
+        } catch (e) {}
+        lhCache.set(par, lh);
+        return lh;
+      };
       for (const j of jobs) {
         try {
           if (j.kind === 'text') {
@@ -174,6 +208,7 @@ const PAGE_HELPERS = `(() => {
             j.y = Math.min(...rects.map(q => q.top)) + window.scrollY;
             j.w = Math.max(...rects.map(q => q.right)) - Math.min(...rects.map(q => q.left));
             j.h = Math.max(...rects.map(q => q.bottom)) - Math.min(...rects.map(q => q.top));
+            j.lines = rects.length; // 行数：spacer 高度 = 行数 × 行盒高（含行距），墨迹高不含行距
           } else {
             const r = j.node.getBoundingClientRect();
             if (r.width < 1 || r.height < 1) continue;
@@ -187,7 +222,14 @@ const PAGE_HELPERS = `(() => {
           // （透明化/清空选项只发生在 clone；曾把 live select 永久清空，导致第二次快照起底板里下拉框标签消失）
           if (j.kind !== 'select') {
             const sp = document.createElement('span');
-            sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + Math.round(j.w) + 'px;height:' + Math.round(j.h) + 'px';
+            const par = j.node.parentElement;
+            const lh = usedLineHeight(par);
+            if (par) { try { j.parLh = getComputedStyle(par).lineHeight; } catch (e) {} }
+            j.lhPin = (j.parLh === 'normal' && lh > 0) ? lh : 0;
+            // 高度优先用 行数×行盒高（与服务端行堆叠一致）；测不到时退回墨迹高
+            const sh = (lh > 0 && j.lines > 0) ? Math.round(j.lines * lh * 100) / 100 : j.h;
+            j.sh = sh;
+            sp.style.cssText = 'display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + sh + 'px';
             sp.setAttribute('data-xy-space', '1');
             j.node.replaceWith(sp);
             j.sp = sp;
@@ -201,9 +243,9 @@ const PAGE_HELPERS = `(() => {
         try {
           if (j.sp) {
             const q = j.sp.getBoundingClientRect();
-            const dx = Math.round((j.x - window.scrollX - q.left) * 2) / 2;
-            const dy = Math.round((j.y - window.scrollY - q.top) * 2) / 2;
-            if (dx || dy) { j.sp.style.position = 'relative'; j.sp.style.left = dx + 'px'; j.sp.style.top = dy + 'px'; }
+            const dx = j.x - window.scrollX - q.left;
+            const dy = j.y - window.scrollY - q.top;
+            if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) { j.sp.style.position = 'relative'; j.sp.style.left = dx + 'px'; j.sp.style.top = dy + 'px'; }
             j.spHtml = j.sp.outerHTML;
           }
           if (j.x >= 0 && j.y >= 0 && j.x + j.w <= sheet.width / DPR + 1 && j.y + j.h <= sheet.height / DPR + 1) {
@@ -266,7 +308,9 @@ const PAGE_HELPERS = `(() => {
           const t = findInClone(j.path);
           if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) continue;
           t.style.backgroundImage = 'url("' + j.tile.url + '")';
-          t.style.backgroundSize = '100% 100%';
+          // 设备像素精确尺寸：100% 拉伸会按元素分数尺寸重采样整块文字瓦片
+          t.style.backgroundSize = j.tile.cssW + 'px ' + j.tile.cssH + 'px';
+          t.style.backgroundPosition = '0 0';
           t.style.backgroundRepeat = 'no-repeat';
           t.setAttribute('data-xy-inp', '1');
         } catch (e) {}
@@ -277,9 +321,16 @@ const PAGE_HELPERS = `(() => {
         try {
           const t = findInClone(j.path);
           if (!t || t.nodeType !== 3) continue;
+          const par = t.parentNode; // replaceChild 之后 t.parentNode 变 null，必须先取
           const tpl = document.createElement('template');
           tpl.innerHTML = j.spHtml;
-          t.parentNode.replaceChild(tpl.content.firstChild, t);
+          par.replaceChild(tpl.content.firstChild, t);
+          // 行高 strut 中和：line-height:normal 的容器行盒高度依赖字体度量
+          // （服务端 Noto CJK vs 访客端本地回退字体）。固化为服务端实测行盒高，
+          // 镜像行堆叠与源站一致、与访客字体无关。spacer 自身已按 行数×行盒高 撑起。
+          if (j.parLh === 'normal' && par && par.style && j.lhPin) {
+            par.style.lineHeight = j.lhPin + 'px';
+          }
         } catch (e) {}
       }
       // ④ 兜底剥除：任何未被瓦片覆盖的可见文本一律清空（零明文保证）
@@ -298,7 +349,26 @@ const PAGE_HELPERS = `(() => {
         const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
         linkCss = texts.join('\\n');
       } catch (e) {}
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles };
+      // 恢复快照前的焦点（占位替换导致失焦 → 光标闪烁消失）
+      try {
+        if (focusSave && focusSave.isConnected && document.activeElement !== focusSave &&
+            (focusSave.tagName === 'INPUT' || focusSave.tagName === 'TEXTAREA')) {
+          focusSave.focus();
+          if (selS !== null) { try { focusSave.setSelectionRange(selS, selE); } catch (e2) {} }
+        }
+      } catch (e) {}
+      // html/body 的类与属性决定主题（如 data-theme/class 切换亮暗色变量）——
+      // 镜像根 .xy-body 必须原样携带，否则复合选择器 html[data-theme=...] 全部失配
+      let docClass = '', docAttrs = '';
+      for (const root of [document.documentElement, document.body]) {
+        if (!root) continue;
+        for (const a of root.attributes || []) {
+          if (/^on/i.test(a.name) || a.name === 'style' || a.name === 'id') continue;
+          if (a.name === 'class') { docClass += ' ' + a.value; continue; }
+          docAttrs += ' ' + a.name + '="' + String(a.value).replace(/"/g, '&quot;') + '"';
+        }
+      }
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles, docClass: docClass.trim(), docAttrs: docAttrs.trim() };
     },
     rectOf(path) {
       const el = window.__xy.find(path);
@@ -314,11 +384,91 @@ const PAGE_HELPERS = `(() => {
       // 补丁模型：childList/characterData → 目标元素 innerHTML 重发；attributes → 元素 outerHTML 重发
       let target = record.target;
       if (target.nodeType === 3) target = target.parentElement;
-      if (!target || target === document.documentElement) return { full: true };
+      if (!target || target === document.documentElement) return { full: true, why: record.type + ':docEl:' + (record.attributeName || '') + ':' + (target && target.nodeName) };
+      // 快照占位符(data-xy-space)自身的任何变更（含位置校正的 style 属性）都不是业务变更。
+      // 实测：②相位给 spacer 写 style 时它还在树上，flush 时已被还原离树——
+      // attributes 记录绕过了下面的 childList spacer 过滤，被当成 noPath→full→重同步→
+      // 新一轮占位替换又产生同类记录 → 每 tick 自触发全量重同步的死循环（resync 风暴）。
+      const isSpacerEl = (n) => n.nodeType === 1 && n.hasAttribute && n.hasAttribute('data-xy-space');
+      if (isSpacerEl(target)) return null;
+      // 已离树的目标无补丁意义（真实的节点增删走父容器 childList 记录，不会丢）
+      if (!target.isConnected) return null;
+      // 快照自身的占位替换/还原不是业务变更：跳过。否则会用父容器矩形重裁瓦片，
+      // 覆盖掉刚下发快照里的正确瓦片（实测 KPI 增量被 88px 裁成 243px、图表面板被重裁覆盖）
+      if (record.type === 'childList') {
+        const rel = [...(record.addedNodes || []), ...(record.removedNodes || [])];
+        const isSpacer = (n) => n && n.nodeType === 1 && n.hasAttribute && n.hasAttribute('data-xy-space');
+        // 占位替换(text↔span)与还原(span↔原节点)两侧都可能出现 spacer，命中即跳过；
+        // 业务真实变更绝不会包含 spacer 节点
+        if (rel.length && rel.some(isSpacer)) return null;
+      }
       const path = pathOf(target);
-      if (path === null) return { full: true };
+      if (path === null) return { full: true, why: record.type + ':noPath:' + target.nodeName + (target.isConnected ? '' : ':DETACHED') };
       if (record.type === 'attributes') return { path, outer: sanitizeClone(target).outerHTML };
       return { path, inner: sanitizeClone(target).innerHTML };
+    },
+    // 动画/悬停跟随：当前视口底板与上一帧做网格差分，仅变化区域重裁瓦片。
+    // CSS 动画、JS 特效、canvas 重绘、视频、:hover 反馈——任何像素变化通用覆盖，
+    // 无变化时零下发。瓦片为底板不透明裁片，含新旧位置（位移动画旧影自动覆盖）。
+    async diffTiles(b64, dpr) {
+      const img = new Image();
+      img.src = 'data:image/png;base64,' + b64;
+      await img.decode();
+      const W = img.width, H = img.height;
+      const cv = document.createElement('canvas');
+      cv.width = W; cv.height = H;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      const cur = ctx.getImageData(0, 0, W, H).data;
+      // 参考帧 = 客户端当前持有的画面（而非上一 tick）：慢速辉光每 tick 只漂移约 1 个
+      // 灰度级，逐帧比对会被噪声阈值吃掉。与参考帧比对让慢变化累积过阈后才发送，
+      // 发送后参考帧前移。PNG 截图渲染确定性 → 静止页逐字节一致，低阈值不误报。
+      const ref = window.__xyDiffRef;
+      if (!ref || ref.length !== cur.length) { window.__xyDiffRef = cur; return { tiles: [] }; }
+      const CELL = Math.max(12, Math.round(20 * dpr));
+      const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
+      const cells = new Uint8Array(cols * rows);
+      const TH = 4;
+      for (let y = 0; y < H; y += 2) {
+        const ri = (y / CELL) | 0;
+        for (let x = 0; x < W; x += 2) {
+          const ci = (x / CELL) | 0;
+          if (cells[ri * cols + ci]) continue;
+          const p = (y * W + x) * 4;
+          if (Math.abs(cur[p] - ref[p]) > TH || Math.abs(cur[p + 1] - ref[p + 1]) > TH || Math.abs(cur[p + 2] - ref[p + 2]) > TH) cells[ri * cols + ci] = 1;
+        }
+      }
+      const rects = [];
+      for (let r = 0; r < rows; r++) {
+        let c = 0;
+        while (c < cols) {
+          if (!cells[r * cols + c]) { c++; continue; }
+          let c2 = c;
+          while (c2 + 1 < cols && cells[r * cols + c2 + 1]) c2++;
+          let merged = false;
+          for (const rc of rects) {
+            if (rc.r1 === r - 1 && c <= rc.c1 + 1 && c2 >= rc.c0 - 1) {
+              rc.c0 = Math.min(rc.c0, c); rc.c1 = Math.max(rc.c1, c2); rc.r1 = r; merged = true; break;
+            }
+          }
+          if (!merged) rects.push({ c0: c, c1: c2, r0: r, r1: r });
+          c = c2 + 1;
+        }
+      }
+      // 全屏级变化（翻页/滚动）交给补丁与全量快照，不进差分通道
+      if (rects.length > 40) { window.__xyDiffRef = cur; return { tiles: [] }; }
+      const tiles = [];
+      for (const rc of rects) {
+        const sx = rc.c0 * CELL, sy = rc.r0 * CELL;
+        const sw = Math.min(W - sx, (rc.c1 - rc.c0 + 1) * CELL), sh = Math.min(H - sy, (rc.r1 - rc.r0 + 1) * CELL);
+        if (sw < 2 || sh < 2) continue;
+        const c2c = document.createElement('canvas');
+        c2c.width = sw; c2c.height = sh;
+        c2c.getContext('2d').drawImage(cv, sx, sy, sw, sh, 0, 0, sw, sh);
+        tiles.push({ w: sw, h: sh, cssX: sx / dpr, cssY: sy / dpr, cssW: sw / dpr, cssH: sh / dpr, url: c2c.toDataURL('image/png') });
+      }
+      if (tiles.length) window.__xyDiffRef = cur;
+      return { tiles };
     },
   };
 })();`;
@@ -363,22 +513,18 @@ function staticHandler(root) {
   };
 }
 
-// ---------- Chromium 单例 ----------
-let browser = null, launching = null;
-async function getBrowser() {
-  if (browser && browser.connected) return browser;
-  if (launching) return launching;
-  launching = (async () => {
-    const b = await puppeteer.launch({
-      headless: true,
-      args: CHROME_ARGS,
-      defaultViewport: { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 },
-    });
-    b.on('disconnected', () => { console.log('[chrome] disconnected, will relaunch on demand'); browser = null; });
-    console.log('[chrome] launched:', await b.version());
-    return (browser = b);
-  })();
-  try { return await launching; } finally { launching = null; }
+// ---------- Chromium：每会话独立实例 ----------
+// 共享单例下多标签并发截图会间歇产出错位/幽灵瓦片（像素级实测：瓦片内容与坐标
+// 张冠李戴）。独立实例彻底隔离，8 会话上限下内存可承受。
+async function launchSessionBrowser() {
+  const b = await puppeteer.launch({
+    headless: true,
+    args: CHROME_ARGS,
+    defaultViewport: { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 },
+  });
+  b.on('disconnected', () => console.log('[chrome] session browser disconnected'));
+  console.log('[chrome] per-session launched:', await b.version());
+  return b;
 }
 
 const KEYMAP = {
@@ -450,6 +596,7 @@ wss.on('connection', async (ws, req) => {
   console.log(`[sess  ] open (${sessions}/${MAX_SESSIONS})`);
 
   let page = null, cdp = null, quality = 60, mode = DEFAULT_MODE;
+  let sessionBrowser = null;
   let ffmpeg = null, fedFrames = 0, fedBytes = 0;
   let lastAckAt = 0, lastInputAt = 0, inputLatMs = null, frameTimes = [], statTimer = null;
 
@@ -465,9 +612,11 @@ wss.on('connection', async (ws, req) => {
     sessions--;
     if (statTimer) clearInterval(statTimer);
     if (helloIv) clearInterval(helloIv);
+    if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
     stopFFmpeg();
     try { await stopDomMirror(); } catch {}
     try { if (page) await page.close(); } catch {}
+    try { if (sessionBrowser) await sessionBrowser.close(); } catch {}
     console.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
   };
   ws.on('close', cleanup);
@@ -485,6 +634,10 @@ wss.on('connection', async (ws, req) => {
     console.log('[sess  ] origin =', sessionOrigin);
     let prodMode = (sessionOrigin !== ORIGIN_URL) || process.env.PROD_PRESENTATION === '1'; // 网关模式/专用实例：访客端隐藏演示壳，只呈现业务页面
 
+  // 交互后的节流全量重同步定时器
+  let domResyncTimer = null;
+  // 动画/悬停跟随：脏区域差分循环
+  let diffTimer = null, diffBusy = false, diffTick = 0;
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
   const queue = [];
@@ -540,12 +693,33 @@ wss.on('connection', async (ws, req) => {
           case 'dom': {
             // 客户端镜像 DOM 上的真实交互 → 服务端真实页面元素
             noteInput();
+            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);
             const ok = await page.evaluate((kind, path, value) => {
-              const el = window.__xy.find(path);
+              let el = window.__xy.find(path);
+              // 镜像里的文字占位符(data-xy-space)与源站文本节点同位：文本节点不能 click，
+              // 映射到父元素——真实浏览器里文本上的点击本来就落在父元素
+              if (el && el.nodeType === 3) el = el.parentElement;
               if (!el) return false;
-              if (kind === 'click') { el.click(); return true; }
+              if (kind === 'click') {
+                el.click();
+                // 真实用户点击会移动焦点；合成 el.click() 不会。不聚焦的话，
+                // 后续 CDP 键事件（Enter 发送/提交、Esc、方向键）会落到 body 上，
+                // 页面自身的 keydown 监听（如聊天框回车发送）永远收不到。
+                // 点击非可聚焦元素时，真实浏览器会把焦点移回 body（原焦点元素失焦）。
+                const t = el.tagName;
+                const focusable = el.focus && !el.disabled && (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || t === 'BUTTON' || t === 'A' || el.isContentEditable);
+                if (focusable) {
+                  try { el.focus(); } catch (e) {}
+                } else {
+                  try { const ae = document.activeElement; if (ae && ae !== document.body && ae.blur) ae.blur(); } catch (e) {}
+                }
+                return true;
+              }
               // React/Vue 受控输入：必须用原型原生 setter 改值，否则框架值追踪器忽略
-              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测灵袭登录踩坑）
+              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测受控输入登录踩坑）
+              // 键入即焦点：真实浏览器里用户在某字段打字，该字段必为焦点；
+              // 同步焦点后，后续 CDP 键事件（Enter 发送/提交、Esc、方向键）才落在正确元素上
+              try { if (el.focus && !el.disabled) el.focus(); } catch (e) {}
               const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype
                 : el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype
                 : window.HTMLInputElement.prototype;
@@ -557,6 +731,13 @@ wss.on('connection', async (ws, req) => {
             if (!ok && mode === 'dom') {
               // 防御不变式：失败只做瓦片化全量重同步；明文快照在任何模式下都不下发
               await startDomMirror().catch(() => {});
+            }
+            // 受控输入在服务端生效后：空闲防抖 700ms 全量重发瓦片。防抖到"停止输入"
+            // 才触发（逐键重同步是卡顿与闪烁来源）；客户端原子切换使重同步无闪烁。
+            // 输入框自身外观由补丁即时更新，全量快照兜底联动过滤与布局位移。
+            if (ok && mode === 'dom') {
+              if (domResyncTimer) clearTimeout(domResyncTimer);
+              domResyncTimer = setTimeout(() => { domResyncTimer = null; startDomMirror().catch(() => {}); }, 700);
             }
             break;
           }
@@ -571,6 +752,10 @@ wss.on('connection', async (ws, req) => {
           }
           case 'key': {
             noteInput();
+            if (m.key === 'Enter') {
+              const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + document.activeElement.id + ' val="' + String(document.activeElement.value || '').slice(0, 30) + '"') : 'null').catch(() => 'eval-fail');
+              console.log('[dbg] Enter arrived, server focus=' + foc);
+            }
             const k = m.key;
             if (KEYMAP[k]) {
               const args = { type: m.action === 'up' ? 'keyUp' : 'keyDown', key: k, code: k, windowsVirtualKeyCode: KEYMAP[k], nativeVirtualKeyCode: KEYMAP[k] };
@@ -654,6 +839,7 @@ wss.on('connection', async (ws, req) => {
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
     // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白
     if (domStarting) return domStarting;
+    console.log('[dbg] startDomMirror <- ' + (new Error().stack.split('\n')[2] || '?').trim().replace(/^at /, ''));
     domStarting = (async () => {
       try { await doStartDomMirror(); }
       finally { domStarting = null; }
@@ -669,6 +855,7 @@ wss.on('connection', async (ws, req) => {
         patchChain = patchChain.then(async () => {
           try {
             if (patches.some(p => p && p.full)) {
+              console.log('[dbg] full patch why:', patches.filter(p => p && p.full).map(p => p.why || '?').slice(0, 3).join(' | ').slice(0, 200));
               // 全量重同步也必须走瓦片化路径（明文快照在瓦片模式下是防御漏洞）
               await startDomMirror();
               return;
@@ -691,11 +878,51 @@ wss.on('connection', async (ws, req) => {
     // 字重文件（10MB 级）加载完成前文字隐身——过早截图会产出空白文字瓦片（实测 Bold 全缺）
     await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())).catch(() => {});
     await new Promise(r => setTimeout(r, 150));
-    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    // 底板健康检查：共享 Chrome 偶发产出空白/未完成合成的截图，直接用会把全批瓦片
+    // 裁成空白。解码采样判空，坏帧等待 500ms 重拍一次。
+    let shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    const sheetHealthy = async (b64) => {
+      try {
+        return await page.evaluate((d) => {
+          return new Promise((res) => {
+            const im = new Image();
+            im.onload = () => {
+              try {
+                const c = document.createElement('canvas');
+                c.width = Math.min(im.width, 400); c.height = Math.min(im.height, 300);
+                const x = c.getContext('2d');
+                x.drawImage(im, 0, 0, c.width, c.height);
+                const dd = x.getImageData(0, 0, c.width, c.height).data;
+                const colors = new Map();
+                let n = 0;
+                for (let i = 0; i < dd.length; i += 4 * 13) {
+                  const k = (dd[i] >> 3) + ',' + (dd[i + 1] >> 3) + ',' + (dd[i + 2] >> 3);
+                  colors.set(k, (colors.get(k) || 0) + 1);
+                  n++;
+                }
+                const dominant = Math.max(...colors.values());
+                res(dominant / n < 0.995); // 单一颜色占绝大面积 = 空白帧
+              } catch (e) { res(true); }
+            };
+            im.onerror = () => res(false);
+            im.src = 'data:image/png;base64,' + d;
+          });
+        }, b64);
+      } catch (e) { return true; }
+    };
+    if (!(await sheetHealthy(shot.data))) {
+      console.log('[dom   ] blank sheet detected, recapturing');
+      await new Promise(r => setTimeout(r, 500));
+      shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    }
     await page.evaluate((d) => { window.__xyDpr = d; }, DPR);
     const snap = await page.evaluate((b64) => window.__xy.snapshotTiles(b64), shot.data);
+    try {
+      const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
+      console.log('[dom   ] post-snapshot focus:', foc);
+    } catch (e) {}
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/');
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [] });
+    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [], docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -707,29 +934,31 @@ wss.on('connection', async (ws, req) => {
           // 自我延续的风暴，实测 15s 内 24 次全量快照）：记录下来，快照完成后按常规
           // 补丁链补发（瓦片重裁的是最新像素）
           const pend = window.__xyPending || (window.__xyPending = []);
-          for (const r of recs) { try { pend.push(window.__xy.patchOf(r)); } catch (e) {} }
+          for (const r of recs) { try { const p2 = window.__xy.patchOf(r); if (p2) pend.push(p2); } catch (e) {} }
           if (pend.length > 200) pend.splice(0, pend.length - 200);
           return;
         }
         const out = [];
-        for (const r of recs) out.push(window.__xy.patchOf(r));
-        window.__xyPatch(out);
+        for (const r of recs) { const p2 = window.__xy.patchOf(r); if (p2) out.push(p2); }
+        if (out.length) window.__xyPatch(out);
       });
       window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
       // 快照期间发生的变更补发（常规补丁链；不触发全量重同步）
-      const pending = window.__xyPending || [];
+      const pending = (window.__xyPending || []).filter(Boolean);
       window.__xyPending = null;
       if (pending.length) window.__xyPatch(pending);
     });
     console.log('[dom   ] mirror started');
+    startDiffLoop();
   }
 
-  // 变化补丁：对每个变化元素按当前 DPR 重裁瓦片，整块替换（文字/外观均为服务端像素）
+  // 变化补丁：一批变更合并为一次整页截图、页面内统一裁剪（流式回复逐字变更时，
+  // 逐元素 clip 截图会把 CPU 打满并造成会话级卡顿）。文字/外观均为服务端像素。
   async function tilesPatches(patches) {
     if (patches.some(p => p && p.full)) { await startDomMirror(); return; }
     // 与全量快照同理：font-display:block 窗口内截图会得到空白文字瓦片
     await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())).catch(() => {});
-    const out = [];
+    const items = [];
     for (const p of patches) {
       if (!p || p.path === undefined) continue;
       try {
@@ -741,22 +970,34 @@ wss.on('connection', async (ws, req) => {
           return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height,
                    isSel: el.tagName === 'SELECT' };
         }, p.path);
-        if (!rect) continue;
-        const shot = await cdp.send('Page.captureScreenshot', {
-          format: 'png',
-          clip: { x: Math.round(rect.x * DPR) / DPR, y: Math.round(rect.y * DPR) / DPR, width: rect.w, height: rect.h, scale: DPR },
-          captureBeyondViewport: true,
-        });
-        const sw = Math.max(1, Math.round(rect.w * DPR)), sh = Math.max(1, Math.round(rect.h * DPR));
-        if (rect.isSel) {
-          out.push({ path: p.path, selTile: { w: sw, h: sh, url: 'data:image/png;base64,' + shot.data } });
-        } else {
-          out.push({ path: p.path, tile: { w: sw, h: sh, cssX: Math.round(rect.x * DPR) / DPR, cssY: Math.round(rect.y * DPR) / DPR, cssW: sw / DPR, cssH: sh / DPR, url: 'data:image/png;base64,' + shot.data } });
-        }
+        if (rect) items.push({ path: p.path, ...rect });
       } catch (e) {}
     }
-    if (!out.length) return;
+    if (!items.length) return;
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    const out = await page.evaluate(async (b64, list, dpr) => {
+      const img = new Image();
+      img.src = 'data:image/png;base64,' + b64;
+      await img.decode();
+      const sheet = document.createElement('canvas');
+      sheet.width = img.width; sheet.height = img.height;
+      sheet.getContext('2d').drawImage(img, 0, 0);
+      const out2 = [];
+      for (const it of list) {
+        const sx = Math.round(it.x * dpr), sy = Math.round(it.y * dpr);
+        const sw = Math.max(1, Math.round(it.w * dpr)), sh = Math.max(1, Math.round(it.h * dpr));
+        if (sx < 0 || sy < 0 || sx + sw > sheet.width + 2 || sy + sh > sheet.height + 2) continue;
+        const c2 = document.createElement('canvas');
+        c2.width = sw; c2.height = sh;
+        c2.getContext('2d').drawImage(sheet, sx, sy, sw, sh, 0, 0, sw, sh);
+        const tile = { w: sw, h: sh, cssX: sx / dpr, cssY: sy / dpr, cssW: sw / dpr, cssH: sh / dpr, url: c2.toDataURL('image/png') };
+        out2.push(it.isSel ? { path: it.path, selTile: tile } : { path: it.path, tile });
+      }
+      return out2;
+    }, shot.data, items, DPR).catch(() => null);
+    if (!out || !out.length) return;
     const payload = JSON.stringify({ type: 'dom-patches', patches: out });
+    if (ws.readyState !== 1) return;
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -767,8 +1008,54 @@ wss.on('connection', async (ws, req) => {
     try { await page.evaluate(() => { if (window.__xyObs) { window.__xyObs.disconnect(); window.__xyObs = null; } }); } catch {}
   }
 
+  // 动画/悬停跟随：视口差分循环（dom 模式）。全量快照/交互重同步期间跳过，
+  // 首帧只建基准；无变化零下发。瓦片为不透明底板裁片，位移动画的新旧位置都在
+  // 差分区域内，客户端直接覆盖即可，无需清理旧瓦片。
+  function startDiffLoop() {
+    // 重启：错位瓦片根因定位为共享 Chrome 单例的多标签截图不一致，已改为每会话
+    // 独立浏览器实例。差分通道恢复启用（动画/悬停/视频跟随）。
+    if (diffTimer) return;
+    let diffSince = 0;
+    diffTimer = setInterval(async () => {
+      if (diffBusy) {
+        // 卡死自愈：截图/evaluate 挂起会让 diffBusy 永真、该会话动画永久停更
+        if (Date.now() - diffSince > 5000) { console.log('[diff] stuck tick, self-healing'); diffBusy = false; }
+        else return;
+      }
+      if (dead || mode !== 'dom' || !domActive || !page || !cdp || ws.readyState !== 1 || domStarting) return;
+      diffBusy = true; diffSince = Date.now();
+      try {
+        const shot = await Promise.race([
+          cdp.send('Page.captureScreenshot', { format: 'png' }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('shot timeout')), 2500)),
+        ]);
+        const out = await Promise.race([
+          page.evaluate((b64, d) => window.__xy.diffTiles(b64, d), shot.data, DPR),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('diff timeout')), 2500)),
+        ]).catch((e) => { console.log('[diff] eval err:', e && e.message); return null; });
+        if (!(diffTick = (diffTick + 1) % 20)) {
+          try {
+            const vis = await page.evaluate(() => document.visibilityState + ' focus=' + document.hasFocus());
+            console.log('[diff] tick20 visibility:', vis);
+          } catch (e) {}
+        }
+        if (out === null) { console.log('[diff] diffTiles returned null (err)'); }
+        if (out && out.tiles && out.tiles.length) {
+          const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles });
+          if (ws.readyState === 1) {
+            ws.send(payload);
+            ws._bytes = (ws._bytes || 0) + payload.length;
+            ws._chunks = (ws._chunks || 0) + 1;
+          }
+        }
+      } catch (e) {}
+      finally { diffBusy = false; }
+    }, 140);
+  }
+
   try {
-    const b = await getBrowser();
+    const b = await launchSessionBrowser();
+    sessionBrowser = b;
     page = await b.newPage();
     cdp = await page.createCDPSession();
 
@@ -832,6 +1119,9 @@ wss.on('connection', async (ws, req) => {
       }, 100);
     });
     DPR = Math.max(1, Math.min(3, parseFloat(hello.dpr) || 1));
+    // 首次 hello 同时带回访客视口：服务端按访客真实视口渲染，镜像才与直连构图一致
+    if (hello.w) viewW = Math.max(320, Math.min(2560, parseInt(hello.w, 10) || viewW));
+    if (hello.h) viewH = Math.max(240, Math.min(1600, parseInt(hello.h, 10) || viewH));
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
     await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
     await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
@@ -851,6 +1141,5 @@ wss.on('connection', async (ws, req) => {
 
 process.on('SIGTERM', async () => {
   console.log('[main  ] SIGTERM, shutting down');
-  try { if (browser) await browser.close(); } catch {}
   process.exit(0);
 });
