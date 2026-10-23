@@ -483,7 +483,7 @@ wss.on('connection', async (ws, req) => {
     }
   } catch (e) {}
     console.log('[sess  ] origin =', sessionOrigin);
-    prodMode = sessionOrigin !== ORIGIN_URL; // 网关模式：访客端隐藏演示壳，只呈现业务页面
+    let prodMode = (sessionOrigin !== ORIGIN_URL) || process.env.PROD_PRESENTATION === '1'; // 网关模式/专用实例：访客端隐藏演示壳，只呈现业务页面
 
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
@@ -641,7 +641,6 @@ wss.on('connection', async (ws, req) => {
   let domActive = false, domExposed = false;
   let DPR = 1;
   let viewW = VIEW_W, viewH = VIEW_H;
-  let prodMode = false;
   let patchChain = Promise.resolve();
 
   let domStarting = null;
