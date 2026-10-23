@@ -544,7 +544,13 @@ wss.on('connection', async (ws, req) => {
               const el = window.__xy.find(path);
               if (!el) return false;
               if (kind === 'click') { el.click(); return true; }
-              el.value = value;
+              // React/Vue 受控输入：必须用原型原生 setter 改值，否则框架值追踪器忽略
+              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测灵袭登录踩坑）
+              const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype
+                : el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype
+                : window.HTMLInputElement.prototype;
+              const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+              if (desc && desc.set) desc.set.call(el, value); else el.value = value;
               el.dispatchEvent(new Event(kind, { bubbles: true }));
               return true;
             }, m.kind, m.path, m.value);
@@ -796,6 +802,23 @@ wss.on('connection', async (ws, req) => {
       frameTimes = frameTimes.filter(t => now - t < 1000);
       sendJson({ type: 'sstats', fps: frameTimes.length, inLat: inputLatMs, mode });
     }, 1000);
+
+    // 主框架导航（登录跳转/表单提交等）：重新注入镜像管线并全量重发，
+    // 否则登录成功跳转后镜像冻结在旧页面（访客视角=点了没反应）
+    page.on('framenavigated', (frame) => {
+      try {
+        if (frame !== page.mainFrame()) return;
+        if (!domActive || ws.readyState !== 1) return;
+        navChain = navChain.then(async () => {
+          try {
+            await page.evaluate(PAGE_HELPERS).catch(() => {});
+            await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
+            if (mode === 'dom') await startDomMirror();
+          } catch (e) {}
+        });
+      } catch (e) {}
+    });
+    let navChain = Promise.resolve();
 
     // 等客户端上报 DPR（超时回落 1）：服务端按访客 DPR 渲染 → 瓦片 1:1 显示 → 构造性一致
     const hello = await new Promise((res) => {
