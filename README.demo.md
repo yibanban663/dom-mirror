@@ -1,4 +1,4 @@
-# 虚影 RBI 帧流 PoC（dynamicdefend-v2 实验环境）
+# WAF RBI 帧流 PoC（WAF 实验环境）
 
 > 独立实验容器，与机器上现有 DynamicDefend 业务栈（26 容器）**完全隔离**：
 > 独立目录 `/opt/rbi-demo`、独立容器 `rbi-demo`、默认 bridge 网络、仅发布 18088 端口、
@@ -12,7 +12,7 @@
 ## 架构
 
 ```
-访客浏览器                         dynamicdefend-v2 (10.1.1.32)
+访客浏览器                         WAF (10.1.1.32)
 ┌──────────────┐    WS(JPEG帧/事件JSON)    ┌─────────────────────────────┐
 │ 演示壳页面    │◄────────────────────────► │ 容器 rbi-demo :18088→8088   │
 │ canvas+指标   │                           │  ├ Node(server.js)          │
@@ -68,4 +68,4 @@ docker rm -f rbi-demo && docker rmi rbi-demo:poc && rm -rf /opt/rbi-demo
 | IME 中文输入 | ❌ 需本地合成框 |
 | vector 指令流（省带宽演进） | ❌ Cloudflare 路线，另立项 |
 | 浏览器集群/会话调度 | ❌ 生产需 K8s/池化 |
-| 与虚影 Proxy/WAF 管理面集成 | ❌ 验收后按 PR 方案做 |
+| 与WAF Proxy/WAF 管理面集成 | ❌ 验收后按 PR 方案做 |

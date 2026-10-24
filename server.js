@@ -14,6 +14,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
@@ -105,6 +106,19 @@ const PAGE_HELPERS = `(() => {
     if (v.startsWith(ORIGIN_PREFIX)) return '/m' + v.slice(ORIGIN_PREFIX.length);
     return v;
   }
+  // 防抓取编码：文本码点 -> 会话 PUA 置换码点（混淆字体双映射回原字形渲染）。
+  // 目标码点在补充平面（0xF0000+），源域全 BMP；域外字符原样透传。
+  function encStr(s) {
+    const M = window.__xyObfMap;
+    if (!M || !s) return s;
+    let out = '', hit = false;
+    for (let i = 0; i < s.length; i++) {
+      const t = M[s.charCodeAt(i)];
+      if (t !== undefined) { out += String.fromCodePoint(t); hit = true; }
+      else out += s[i];
+    }
+    return hit ? out : s;
+  }
   function sanitizeClone(root) {
     const clone = root.cloneNode(true);
     const strip = (el) => {
@@ -112,6 +126,10 @@ const PAGE_HELPERS = `(() => {
         if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction') { el.removeAttribute(a.name); continue; }
         // 零明文收口：aria-*/title/alt 是纯文本载体（无视觉作用），一并剥离
         if (/^(aria-(label|placeholder|description|roledescription|valuetext)|title|alt)$/i.test(a.name)) { el.removeAttribute(a.name); continue; }
+        if (a.name === 'placeholder' && window.__xyObfMap && a.value) {
+          try { el.setAttribute('placeholder', encStr(a.value)); } catch (e) {}
+          continue;
+        }
         if (a.name === 'href' || a.name === 'src' || a.name === 'action' || a.name === 'poster' || a.name === 'srcset') {
           try { el.setAttribute(a.name, fixUrl(a.value)); } catch (e) {}
         }
@@ -122,6 +140,20 @@ const PAGE_HELPERS = `(() => {
       clone.querySelectorAll('*').forEach(strip);
     }
     if (clone.nodeType === 1) strip(clone);
+    // 文本节点编码。TEXTAREA 跳过：输入框值是明文（客户端原样回传源站，编码会污染
+    // 输入链路），靠字体端原码点保留渲染照常；STYLE 跳过：CSS 不可编码。
+    if (window.__xyObfMap) {
+      const walk = (node) => {
+        for (const c of node.childNodes) {
+          if (c.nodeType === 3) {
+            if (node.tagName !== 'TEXTAREA' && node.tagName !== 'STYLE' && c.nodeValue && /[\\u3000-\\u9fff\\uff00-\\uffef]/.test(c.nodeValue)) c.nodeValue = encStr(c.nodeValue);
+          } else if (c.nodeType === 1 && c.tagName !== 'TEXTAREA' && c.tagName !== 'STYLE') {
+            walk(c);
+          }
+        }
+      };
+      walk(clone);
+    }
     const liveCanvases = root.nodeType === 1 && root.querySelectorAll ? (root.tagName === 'CANVAS' ? [root] : [...root.querySelectorAll('canvas')]) : [];
     const cloneCanvases = clone.querySelectorAll ? [...clone.querySelectorAll('canvas')] : [];
     cloneCanvases.forEach((c, i) => {
@@ -194,192 +226,13 @@ const PAGE_HELPERS = `(() => {
       }
       return n;
     },
-    // 像素瓦片化（v3 元素锚定）：live 子树的可见文字/输入框/下拉框外观 = 服务端像素，
-    // 以内联 background-image 锚定进克隆树的同位元素——瓦片随镜像文档流排版，
-    // 滚动/悬停/动画全部由客户端原生渲染，不存在任何坐标/帧率同步通道。
-    // DOM 中零文字明文。liveRoot/cloneRoot 参数化：全量快照传 body，增量补丁传任意子树。
-    tileize(liveRoot, cloneRoot, sheet, ox, oy) {
+    // v4 真文本快照：镜像 DOM 携带真实文本，客户端用源站同款 CSS/字体本地渲染
+    // ——布局/动画/悬停/打字/图标全部原生，与服务端渲染零耦合（构造性一致）。
+    // 快照零截图：开销与页面复杂度解耦（此前 4000 元素页瓦片级联 3 秒的根源）。
+    // 防抓取不靠像素化：由编码层（字体混淆，后续挂载）承担。
+    async snapshotReal(wantFrame) {
       const DPR = window.__xyDpr || 1;
-      const skipTags = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE']);
-      const jobs = [];
-      const walk = (node, path) => {
-        let idx = 0;
-        for (const ch of node.childNodes) {
-          if (ch.nodeType === 8) continue; // 注释不入克隆树，编号跳过
-          if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { idx++; continue; }
-          const p = path === '' ? String(idx) : path + '/' + idx;
-          if (ch.nodeType === 3) { if (ch.textContent.trim()) jobs.push({ kind: 'text', node: ch, path: p }); }
-          else if (ch.nodeType === 1) {
-            if (ch.tagName === 'SELECT') { jobs.push({ kind: 'select', node: ch, path: p }); }
-            else if (ch.tagName === 'INPUT' || ch.tagName === 'TEXTAREA') { jobs.push({ kind: 'input', node: ch, path: p }); }
-            else walk(ch, p);
-          }
-          idx++;
-        }
-      };
-      walk(liveRoot, '');
-      const done = new Set();
-      // 行盒高度实测缓存：line-height:normal 的实际行高取决于字体度量（服务端 Noto CJK
-      // vs 访客端回退字体），不固化的话镜像行堆叠与服务端累计偏差 1-4px（实测按钮矮 4px）。
-      const lhCache = new Map();
-      const usedLineHeight = (par) => {
-        if (!par || lhCache.has(par)) return lhCache.get(par) || 0;
-        let lh = 0;
-        try {
-          const clh = getComputedStyle(par).lineHeight;
-          if (clh !== 'normal') { const v = parseFloat(clh); lh = isFinite(v) ? v : 0; }
-          else {
-            // 零宽探针：font:inherit 的 inline-block，其盒高 = 所继承字体的 normal 实际行高。
-            // 不切换父元素 line-height（会被兄弟元素高度污染），也不扰动布局。
-            const probe = document.createElement('span');
-            probe.setAttribute('data-xy-space', '1');
-            probe.style.cssText = 'font:inherit;line-height:normal;display:inline-block;width:0;overflow:hidden';
-            probe.textContent = '国';
-            par.appendChild(probe);
-            lh = Math.max(0, Math.round(probe.getBoundingClientRect().height * 100) / 100);
-            probe.remove();
-          }
-        } catch (e) {}
-        lhCache.set(par, lh);
-        return lh;
-      };
-      // ① 只读测量（绝不变更 live DOM——React/Vue 持有的节点引用一旦被换掉，
-      // 渲染中途撞上即崩溃/静默不渲染）。文本节点用 Range 的 client rects 测墨迹。
-      for (const j of jobs) {
-        try {
-          if (j.kind === 'text') {
-            const rng = document.createRange();
-            rng.selectNodeContents(j.node);
-            const rects = [...rng.getClientRects()];
-            if (!rects.length) continue;
-            j.x = Math.min(...rects.map(q => q.left)) + window.scrollX;
-            j.y = Math.min(...rects.map(q => q.top)) + window.scrollY;
-            j.w = Math.max(...rects.map(q => q.right)) - Math.min(...rects.map(q => q.left));
-            j.h = Math.max(...rects.map(q => q.bottom)) - Math.min(...rects.map(q => q.top));
-          } else {
-            const r = j.node.getBoundingClientRect();
-            if (r.width < 1 || r.height < 1) continue;
-            j.x = r.left + window.scrollX; j.y = r.top + window.scrollY;
-            j.w = r.width; j.h = r.height;
-          }
-          if (j.kind === 'input' && !j.node.value && !j.node.placeholder) { continue; }
-          if (j.w <= 0 || j.h <= 0) continue;
-          done.add(j);
-          if (j.kind === 'text') {
-            const par = j.node.parentElement;
-            const lh = usedLineHeight(par);
-            if (par) { try { j.parLh = getComputedStyle(par).lineHeight; } catch (e) {} }
-            j.lhPin = (j.parLh === 'normal' && lh > 0) ? lh : 0;
-          }
-        } catch (e) {}
-      }
-      // ② 从 DPR 底板按测得的精确位置裁瓦片（设备像素对齐 → 客户端 1:1 落位零重采样）
-      for (const j of jobs) {
-        if (!done.has(j)) continue;
-        try {
-          const lx = j.x - (ox || 0), ly = j.y - (oy || 0);
-          if (lx >= 0 && ly >= 0 && lx + j.w <= sheet.width / DPR + 1 && ly + j.h <= sheet.height / DPR + 1) {
-            const sx = Math.round(lx * DPR), sy = Math.round(ly * DPR);
-            const sw = Math.max(1, Math.round(j.w * DPR)), sh = Math.max(1, Math.round(j.h * DPR));
-            const c2 = document.createElement('canvas');
-            c2.width = sw; c2.height = sh;
-            c2.getContext('2d').drawImage(sheet, sx, sy, sw, sh, 0, 0, sw, sh);
-            j.tile = { w: sw, h: sh, cssX: sx / DPR, cssY: sy / DPR, cssW: sw / DPR, cssH: sh / DPR, url: c2.toDataURL('image/png') };
-          }
-        } catch (e) {}
-      }
-      // 补丁根自身是表单控件时（depth-1 无父容器可上移）：根元素属性同样剥明文
-      try {
-        if (cloneRoot.nodeType === 1 && (cloneRoot.tagName === 'INPUT' || cloneRoot.tagName === 'TEXTAREA')) {
-          cloneRoot.removeAttribute('placeholder');
-          if (cloneRoot.tagName === 'INPUT' && cloneRoot.type !== 'checkbox' && cloneRoot.type !== 'radio') cloneRoot.removeAttribute('value');
-          cloneRoot.removeAttribute('alt');
-          cloneRoot.removeAttribute('title');
-        }
-      } catch (e) {}
-      // ③ clone 同路径替换：文本→带瓦片背景的等大占位；select→透明控件+背景瓦片
-      const findInClone = (path) => {
-        const parts = path.split('/');
-        let cn = cloneRoot;
-        for (const i of parts) { cn = cn.childNodes ? cn.childNodes[+i] : null; if (!cn) return null; }
-        return cn;
-      };
-      for (const j of jobs) {
-        if (!done.has(j) || !j.tile || j.kind !== 'select') continue;
-        try {
-          const t = findInClone(j.path);
-          if (!t) continue;
-          t.style.appearance = 'none';
-          t.style.color = 'transparent';
-          t.style.background = 'transparent none';
-          t.style.backgroundImage = 'url("' + j.tile.url + '")';
-          t.style.backgroundSize = '100% 100%';
-          t.style.backgroundRepeat = 'no-repeat';
-          for (const op of t.querySelectorAll('option')) { op.textContent = ''; op.removeAttribute('value'); }
-        } catch (e) {}
-      }
-      // 输入类属性剥离：placeholder/value 默认值/隐藏域/alt/title 均属静态明文（视觉已由瓦片承载）
-      try {
-        cloneRoot.querySelectorAll('input[placeholder], textarea[placeholder]').forEach(el => el.removeAttribute('placeholder'));
-        cloneRoot.querySelectorAll('input[type="hidden"]').forEach(el => el.remove());
-        cloneRoot.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])').forEach(el => el.removeAttribute('value'));
-        cloneRoot.querySelectorAll('[alt]').forEach(el => el.removeAttribute('alt'));
-        cloneRoot.querySelectorAll('[title]').forEach(el => el.removeAttribute('title'));
-      } catch (e) {}
-      // 输入框：服务端像素背景 + data-xy-bg 存底（客户端键入时隐藏、清空/失焦时恢复）
-      for (const j of jobs) {
-        if (j.kind !== 'input' || !j.tile) continue;
-        try {
-          const t = findInClone(j.path);
-          if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) continue;
-          const bg = 'url("' + j.tile.url + '")';
-          t.style.backgroundImage = bg;
-          t.style.backgroundSize = j.tile.cssW + 'px ' + j.tile.cssH + 'px';
-          t.style.backgroundPosition = '0 0';
-          t.style.backgroundRepeat = 'no-repeat';
-          t.setAttribute('data-xy-inp', '1');
-          t.setAttribute('data-xy-bg', bg);
-        } catch (e) {}
-      }
-      // 文本→等大 inline-block 占位 + 墨迹瓦片背景（元素锚定：瓦片随文档流排版/滚动）。
-      // 行高 strut 中和：line-height:normal 的容器行盒高固化为服务端实测值。
-      for (const j of jobs) {
-        if (j.kind !== 'text' || !done.has(j)) continue;
-        try {
-          const t = findInClone(j.path);
-          if (!t || t.nodeType !== 3) continue;
-          const par = t.parentNode;
-          const tpl = document.createElement('template');
-          const bg = j.tile ? ('background:url(' + j.tile.url + ') 0 0 no-repeat;background-size:' + j.tile.cssW + 'px ' + j.tile.cssH + 'px;') : '';
-          tpl.innerHTML = '<span data-xy-space="1" style="display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + j.h + 'px;' + bg + '"></span>';
-          par.replaceChild(tpl.content.firstChild, t);
-          if (j.parLh === 'normal' && par && par.style && j.lhPin) {
-            par.style.lineHeight = j.lhPin + 'px';
-          }
-        } catch (e) {}
-      }
-      // ④ 兜底剥除：任何未被瓦片覆盖的可见文本一律清空（零明文保证）
-      const stripAll = (node) => {
-        for (const ch of [...node.childNodes]) {
-          if (ch.nodeType === 8) { ch.remove(); continue; } // HTML 注释是明文载体（模板调试/隐藏块）
-          if (ch.nodeType === 3) { if (ch.textContent.trim()) ch.textContent = ''; }
-          else if (ch.nodeType === 1 && !skipTags.has(ch.tagName)) stripAll(ch);
-        }
-      };
-      stripAll(cloneRoot);
-    },
-    async snapshotTiles(sheetB64, wantFrame) {
-      const DPR = window.__xyDpr || 1;
-      window.__xyBusy = true;
-      const img = new Image();
-      img.src = 'data:image/png;base64,' + sheetB64;
-      await img.decode();
-      const sheet = document.createElement('canvas');
-      sheet.width = img.width; sheet.height = img.height;
-      sheet.getContext('2d').drawImage(img, 0, 0);
       const clone = sanitizeClone(document.body);
-      window.__xy.tileize(document.body, clone, sheet);
-      window.__xyBusy = false;
       const styleCss = [...document.querySelectorAll('style')].map(s2 => s2.textContent).join('\\n');
       const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
       let linkCss = '';
@@ -387,8 +240,6 @@ const PAGE_HELPERS = `(() => {
         const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
         linkCss = texts.join('\\n');
       } catch (e) {}
-      // html/body 的类与属性决定主题（如 data-theme/class 切换亮暗色变量）——
-      // 镜像根 .xy-body 必须原样携带，否则复合选择器 html[data-theme=...] 全部失配
       let docClass = '', docAttrs = '';
       for (const root of [document.documentElement, document.body]) {
         if (!root) continue;
@@ -398,26 +249,35 @@ const PAGE_HELPERS = `(() => {
           docAttrs += ' ' + a.name + '="' + String(a.value).replace(/"/g, '&quot;') + '"';
         }
       }
-      // frame 模式（显式像素直出）：整页底板切竖条带（PNG 无损）随快照下发——
-      // 客户端视觉的唯一来源，DOM 仅作隐形交互代理。
+      // frame（显式像素直出）模式：唯一保留截图的地方——整页 PNG 条带
       let frame = null;
       if (wantFrame) {
-        const CAP = 12000;
-        const pageH = Math.min(sheet.height / DPR, CAP);
-        const bands = [];
-        const BH = 512;
-        for (let by = 0; by < pageH; by += BH) {
-          const bh = Math.min(BH, pageH - by);
-          if (bh < 2) break;
-          const c3 = document.createElement('canvas');
-          c3.width = sheet.width; c3.height = Math.round(bh * DPR);
-          c3.getContext('2d').drawImage(sheet, 0, Math.round(by * DPR), sheet.width, c3.height, 0, 0, sheet.width, c3.height);
-          bands.push({ w: sheet.width, h: c3.height, cssX: 0, cssY: by, cssW: sheet.width / DPR, cssH: bh, url: c3.toDataURL('image/png') });
+        const shotB64 = window.__xyFrameShot;
+        if (shotB64) {
+          const img = new Image();
+          img.src = 'data:image/png;base64,' + shotB64;
+          await img.decode();
+          const sheet = document.createElement('canvas');
+          sheet.width = img.width; sheet.height = img.height;
+          sheet.getContext('2d').drawImage(img, 0, 0);
+          const CAP = 12000;
+          const pageH = Math.min(sheet.height / DPR, CAP);
+          const bands = [];
+          const BH = 512;
+          for (let by = 0; by < pageH; by += BH) {
+            const bh = Math.min(BH, pageH - by);
+            if (bh < 2) break;
+            const c3 = document.createElement('canvas');
+            c3.width = sheet.width; c3.height = Math.round(bh * DPR);
+            c3.getContext('2d').drawImage(sheet, 0, Math.round(by * DPR), sheet.width, c3.height, 0, 0, sheet.width, c3.height);
+            bands.push({ w: sheet.width, h: c3.height, cssX: 0, cssY: by, cssW: sheet.width / DPR, cssH: bh, url: c3.toDataURL('image/png') });
+          }
+          frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
         }
-        frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
       }
       return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim() };
     },
+
     // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
     // （runs: 文本/坐标/字号/颜色）下发，客户端 CanvasKit(Skia-WASM) 本地任意 DPR 清晰绘制。
     // 零截图：服务端只做 DOM 测量，资源开销与纯 DOM 镜像同级。
@@ -548,7 +408,58 @@ function proxyAsset(req, res) {
   upstream.on('error', () => { res.writeHead(502); res.end('bad gateway'); });
 }
 
+// ---------- 防抓取编码层：字体混淆（会话种子池轮换） ----------
+// 原理：镜像文本以 PUA 码点（0xF0000+，随会话种子置换）下发；混淆字体的 cmap 把
+// PUA 码点双映射回原字形（原码点保留）——渲染与原生逐位一致（CFF 轮廓原样），
+// 但 DOM 文本/复制/爬虫拿到的是乱码。ASCII/西文不混淆（等宽代码块、数字原样），
+// 域=CJK 标点(3000-303F)+基本区(4E00-9FFF)+全角(FF00-FFEF)。
+// 字体由 tools/build_obf_font.py 在构建期烘焙（种子池 assets/obf/），会话创建即生效
+// （零预热）；种子池可扩容，动态按会话构建走同脚本（python3-fonttools）。
+const OBF_ON = process.env.OBFUSCATE !== '0';
+const OBF_POOL_DIR = path.join(__dirname, 'assets', 'obf');
+const OBF_FAMILIES = ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans SC'];
+const obfPool = [];
+try {
+  for (const f of fs.readdirSync(OBF_POOL_DIR).filter(x => /^reg-s\d+\.json$/.test(x)).sort()) {
+    const seed = f.match(/s(\d+)\./)[1];
+    const permRaw = JSON.parse(fs.readFileSync(path.join(OBF_POOL_DIR, f), 'utf8'));
+    const plain = {};
+    for (const k of Object.keys(permRaw)) plain[parseInt(k, 16)] = parseInt(permRaw[k], 16);
+    obfPool.push({ seed, plain, reg: path.join(OBF_POOL_DIR, f.replace('.json', '.woff2')), bold: path.join(OBF_POOL_DIR, 'bold-s' + seed + '.woff2') });
+  }
+  console.log(`[obf   ] pool: ${obfPool.length} seeds ${OBF_ON ? 'ON' : 'OFF'}${obfPool.length ? '' : '（assets/obf 缺失）'}`);
+} catch (e) { console.log('[obf   ] pool unavailable:', e.message); }
+let obfRR = 0;
+const obfSessions = new Map();   // sid -> pool entry
+const obfFontCache = new Map();  // 文件路径 -> Buffer（LRU≤8，~8MB/项）
+function nextObfSession() {
+  if (!OBF_ON || !obfPool.length) return null;
+  const sid = crypto.randomUUID().slice(0, 8);
+  const ent = obfPool[obfRR++ % obfPool.length];
+  obfSessions.set(sid, ent);
+  const faces = OBF_FAMILIES.map(f =>
+    '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/reg.woff2) format("woff2");font-weight:400;font-display:block}'
+    + '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/bold.woff2) format("woff2");font-weight:700;font-display:block}').join('');
+  return { sid, plain: ent.plain, css: faces };
+}
+
 const demoSrv = http.createServer((req, res) => {
+  if (req.url && req.url.startsWith('/m/obf/')) {
+    // 会话混淆字体（池内种子轮换；URL 含会话 id，跨会话不可互换）
+    const m2 = String(req.url).match(/^\/m\/obf\/([0-9a-z-]{4,40})\/(reg|bold)\.woff2$/);
+    const ent = m2 && obfSessions.get(m2[1]);
+    if (!ent) { res.writeHead(404); res.end(); return; }
+    let buf = obfFontCache.get(m2[2] === 'bold' ? ent.bold : ent.reg);
+    if (!buf) {
+      try { buf = fs.readFileSync(m2[2] === 'bold' ? ent.bold : ent.reg); }
+      catch (e) { res.writeHead(404); res.end(); return; }
+      if (obfFontCache.size >= 8) obfFontCache.delete(obfFontCache.keys().next().value);
+      obfFontCache.set(m2[2] === 'bold' ? ent.bold : ent.reg, buf);
+    }
+    res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=86400, immutable' });
+    res.end(buf);
+    return;
+  }
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
     // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
@@ -586,6 +497,7 @@ wss.on('connection', async (ws, req) => {
 
   let page = null, cdp = null, quality = 60, mode = DEFAULT_MODE;
   let sessionBrowser = null;
+  const obfSess = nextObfSession(); // 防抓取字体混淆（dom 模式启用；无池则 null 透明降级）
   let ffmpeg = null, fedFrames = 0, fedBytes = 0;
   let lastAckAt = 0, lastInputAt = 0, inputLatMs = null, frameTimes = [], statTimer = null;
 
@@ -599,6 +511,7 @@ wss.on('connection', async (ws, req) => {
     if (dead) return;
     dead = true;
     sessions--;
+    if (obfSess) obfSessions.delete(obfSess.sid);
     if (statTimer) clearInterval(statTimer);
     if (helloIv) clearInterval(helloIv);
     if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
@@ -700,44 +613,7 @@ wss.on('connection', async (ws, req) => {
           case 'dom': {
             // 客户端镜像 DOM 上的真实交互 → 服务端真实页面元素
             noteInput();
-            if (m.kind === 'inptile') {
-              // 输入框服务端真相回填：Enter 清空/失焦后客户端隐藏了像素背景，
-              // 服务端按当前画面重裁该字段瓦片（含 placeholder/空态）
-              try {
-                const rect = await page.evaluate((path) => {
-                  const el = window.__xy.find(path);
-                  if (el && el.nodeType === 3) el = el.parentElement;
-                  if (!el || !el.getBoundingClientRect) return null;
-                  const r = el.getBoundingClientRect();
-                  if (r.width < 1 || r.height < 1) return null;
-                  return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
-                }, m.path).catch(() => null);
-                if (rect) {
-                  const shot2 = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
-                  const tile = await page.evaluate((b64, x, y, w, h, d) => {
-                    return new Promise((res) => {
-                      const im = new Image();
-                      im.onload = () => {
-                        const sx = Math.round(x * d), sy = Math.round(y * d);
-                        const sw = Math.max(1, Math.round(w * d)), sh = Math.max(1, Math.round(h * d));
-                        if (sx < 0 || sy < 0 || sx + sw > im.width + 2 || sy + sh > im.height + 2) { res(null); return; }
-                        const c = document.createElement('canvas');
-                        c.width = sw; c.height = sh;
-                        c.getContext('2d').drawImage(im, sx, sy, sw, sh, 0, 0, sw, sh);
-                        res({ cssW: sw / d, cssH: sh / d, url: c.toDataURL('image/png') });
-                      };
-                      im.onerror = () => res(null);
-                      im.src = 'data:image/png;base64,' + b64;
-                    });
-                  }, shot2.data, rect.x, rect.y, rect.w, rect.h, DPR).catch(() => null);
-                  if (tile && ws.readyState === 1) {
-                    sendJson({ type: 'dom-patches', patches: [{ path: m.path, tile, inp: 1 }] });
-                  }
-                }
-              } catch (e) {}
-              break;
-            }
-            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);
+            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);
             const ok = await page.evaluate((kind, path, value) => {
               let el = window.__xy.find(path);
               // 镜像里的文字占位符(data-xy-space)与源站文本节点同位：文本节点不能 click，
@@ -760,7 +636,7 @@ wss.on('connection', async (ws, req) => {
                 return true;
               }
               // React/Vue 受控输入：必须用原型原生 setter 改值，否则框架值追踪器忽略
-              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测站点
+              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测生产站点
               // 键入即焦点（仅 input 事件）：真实浏览器里用户在某字段打字，该字段必为焦点；
               // 同步焦点后，后续 CDP 键事件（Enter 发送/提交、Esc、方向键）才落在正确元素上。
               // change 事件在失焦时触发——此刻聚焦等于"用户刚离开又被拉回"，禁止
@@ -983,6 +859,10 @@ wss.on('connection', async (ws, req) => {
   }
   async function doStartDomMirror() {
     await page.evaluate(PAGE_HELPERS);
+    if (obfSess && mode === 'dom') {
+      // 编码表注入源站页（sanitizeClone 序列化时置换文本码点）
+      await page.evaluate((m) => { window.__xyObfMap = m; }, obfSess.plain).catch(() => {});
+    }
     if (!domExposed) {
       await page.exposeFunction('__xyPatch', (patches) => {
         if (!domActive || ws.readyState !== 1) return;
@@ -1035,54 +915,21 @@ wss.on('connection', async (ws, req) => {
       domExposed = true;
     }
     domActive = true;
-    // 关键：等 webfonts 就绪再截底板。源站注入的 @font-face 用 font-display:block，
-    // 字重文件（10MB 级）加载完成前文字隐身——过早截图会产出空白文字瓦片（实测 Bold 全缺）
-    await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())).catch(() => {});
-    await new Promise(r => setTimeout(r, 150));
-    // 底板健康检查：共享 Chrome 偶发产出空白/未完成合成的截图，直接用会把全批瓦片
-    // 裁成空白。解码采样判空，坏帧等待 500ms 重拍一次。
-    let shot = await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'sheet');
-    const sheetHealthy = async (b64) => {
-      try {
-        return await page.evaluate((d) => {
-          return new Promise((res) => {
-            const im = new Image();
-            im.onload = () => {
-              try {
-                const c = document.createElement('canvas');
-                c.width = Math.min(im.width, 400); c.height = Math.min(im.height, 300);
-                const x = c.getContext('2d');
-                x.drawImage(im, 0, 0, c.width, c.height);
-                const dd = x.getImageData(0, 0, c.width, c.height).data;
-                const colors = new Map();
-                let n = 0;
-                for (let i = 0; i < dd.length; i += 4 * 13) {
-                  const k = (dd[i] >> 3) + ',' + (dd[i + 1] >> 3) + ',' + (dd[i + 2] >> 3);
-                  colors.set(k, (colors.get(k) || 0) + 1);
-                  n++;
-                }
-                const dominant = Math.max(...colors.values());
-                res(dominant / n < 0.995); // 单一颜色占绝大面积 = 空白帧
-              } catch (e) { res(true); }
-            };
-            im.onerror = () => res(false);
-            im.src = 'data:image/png;base64,' + d;
-          });
-        }, b64);
-      } catch (e) { return true; }
-    };
-    if (!(await sheetHealthy(shot.data))) {
-      console.log('[dom   ] blank sheet detected, recapturing');
-      await new Promise(r => setTimeout(r, 500));
-      shot = await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'sheet2');
-    }
+    // v4：dom 快照零截图（文本/输入框外观由客户端原生渲染，字体由源站 CSS 自带）。
+    // frame 模式仍需整页截图作条带底板。
     await page.evaluate((d) => { window.__xyDpr = d; }, DPR);
-    const snap = await withTimeout(page.evaluate((b64, wf) => window.__xy.snapshotTiles(b64, wf), shot.data, mode === 'frame'), 10000, 'snapshot');
+    if (mode === 'frame') {
+      try {
+        const shotF = await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'frameSheet');
+        await page.evaluate((b64) => { window.__xyFrameShot = b64; }, shotF.data);
+      } catch (e) { window.__xyFrameShot = null; }
+    }
+    const snap = await withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot');
     try {
       const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
       console.log('[dom   ] post-snapshot focus:', foc);
     } catch (e) {}
-    const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/');
+    const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + (obfSess && mode === 'dom' ? obfSess.css : '');
     const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
@@ -1142,61 +989,21 @@ wss.on('connection', async (ws, req) => {
       items.push({ path: pp, outer: p.outer !== undefined ? 1 : undefined, inner: p.outer !== undefined ? undefined : 1 });
     }
     if (!items.length) return;
-    await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())).catch(() => {});
-    // 只截补丁目标的联合矩形（页面绝对坐标）：受保护应用常见 ~2Hz 轮询自更新
-    // （时间戳/状态点），逐批整页截图会把 CPU 吃满；clip 截图开销 O(变更) 而非 O(页)
-    const geo = await withTimeout(page.evaluate((paths) => {
-      const rects = [];
-      for (const p of paths) {
-        try {
-          const el = window.__xy.find(p);
-          if (!el || !el.getBoundingClientRect) continue;
-          const r = el.getBoundingClientRect();
-          if (r.width < 1 || r.height < 1) continue;
-          rects.push({ x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
-        } catch (e) {}
-      }
-      if (!rects.length) return null;
-      const x0 = Math.min(...rects.map(r => r.x)), y0 = Math.min(...rects.map(r => r.y));
-      const x1 = Math.max(...rects.map(r => r.x + r.w)), y1 = Math.max(...rects.map(r => r.y + r.h));
-      return { x: Math.max(0, Math.floor(x0) - 4), y: Math.max(0, Math.floor(y0) - 4), w: Math.ceil(x1 - x0) + 8, h: Math.ceil(y1 - y0) + 8 };
-    }, items.map(i => i.path)), 3000, 'patchGeo').catch(() => null);
-    if (!geo) return;
-    const shot = await withTimeout(cdp.send('Page.captureScreenshot', {
-      format: 'png',
-      clip: { x: geo.x, y: geo.y, width: Math.min(geo.w, 4000), height: Math.min(geo.h, 8000), scale: DPR },
-      captureBeyondViewport: true,
-    }), 8000, 'patchShot');
-    const out = await withTimeout(page.evaluate(async (b64, list, dpr, ox, oy) => {
-      const img = new Image();
-      img.src = 'data:image/png;base64,' + b64;
-      await img.decode();
-      const sheet = document.createElement('canvas');
-      sheet.width = img.width; sheet.height = img.height;
-      sheet.getContext('2d').drawImage(img, 0, 0);
-      window.__xyDpr = dpr;
+    const out = await withTimeout(page.evaluate((list) => {
       const out2 = [];
-      for (let it of list) {
+      for (const it of list) {
         try {
           let live = window.__xy.find(it.path);
           if (!live) continue;
           if (live.nodeType === 3) live = live.parentElement;
           if (!live || live.nodeType !== 1) continue;
-          // 表单控件自身作补丁目标时：改裁其父容器（控件外观瓦片只在父级
-          // 上下文里才会生成），inner 替换后控件带背景瓦片一起回来
-          if ((live.tagName === 'INPUT' || live.tagName === 'TEXTAREA' || live.tagName === 'SELECT') && it.path.includes('/')) {
-            const parentPath = it.path.split('/').slice(0, -1).join('/');
-            const par = window.__xy.find(parentPath);
-            if (par && par.nodeType === 1) { live = par; it = { path: parentPath, inner: 1 }; }
-          }
-          const clone = window.__xy.sanitizeClone(live);
-          window.__xy.tileize(live, clone, sheet, ox, oy);
-          const html = (it.outer !== undefined) ? clone.outerHTML : clone.innerHTML;
+          const cl = window.__xy.sanitizeClone(live);
+          const html = (it.outer !== undefined) ? cl.outerHTML : cl.innerHTML;
           if (html) out2.push((it.outer !== undefined) ? { path: it.path, outer: html } : { path: it.path, inner: html });
         } catch (e) {}
       }
       return out2;
-    }, shot.data, items, DPR, geo.x, geo.y), 8000, 'patchTile').catch((e) => { console.log('[patch] tileize err:', e && e.message); return null; });
+    }, items), 5000, 'patchReal').catch((e) => { console.log('[patch] real err:', e && e.message); return null; });
     if (!out || !out.length) return;
     if (ws.readyState !== 1) return;
     // 轮询自更新常产生逐字节相同的结果（像素一致 → data URL 一致）：

@@ -457,11 +457,7 @@
       mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
       mirrorRoot.addEventListener('input', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
-        // 输入瓦片：键入时隐藏服务端像素背景（本地真实控件渲染打字回显），
-        // 清空后按存底恢复服务端像素
-        if (e.target.matches('input[data-xy-inp], textarea[data-xy-inp]')) {
-          e.target.style.backgroundImage = e.target.value ? 'none' : (e.target.getAttribute('data-xy-bg') || '');
-        }
+        // v4：输入框是真实控件，打字回显原生；值同步服务端
         const p = pathOfMirror(e.target);
         if (p !== null) { lastTyped.set(p, e.target.value); send({ type: 'dom', kind: 'input', path: p, value: e.target.value }); }
       });
@@ -478,17 +474,10 @@
         if (p === null || !lastTyped.has(p)) return;
         const v = lastTyped.get(p);
         t.value = v;
-        if (v) t.style.backgroundImage = 'none'; // 本地值可见时服务端像素背景必须让位（防双文字）
         try { t.setSelectionRange(v.length, v.length); } catch (err) {}
       });
-      // 失焦：统一补挂聚焦期间挂起的补丁；离开的字段若有过本地键入，
-      // 请求服务端真相瓦片回填（含已提交值/placeholder，回填时清本地值防双文字）
-      mirrorRoot.addEventListener('focusout', (e) => {
-        const t = e.target;
-        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
-          const fp = pathOfMirror(t);
-          if (fp !== null && lastTyped.has(fp)) send({ type: 'dom', kind: 'inptile', path: fp });
-        }
+      // 失焦：统一补挂聚焦期间挂起的补丁
+      mirrorRoot.addEventListener('focusout', () => {
         if (!pendingFocusPatches.length) return;
         const q = pendingFocusPatches;
         pendingFocusPatches = [];
@@ -507,14 +496,8 @@
             const p = t ? pathOfMirror(t) : null;
             if (p !== null) lastTyped.delete(p);
             // 同步清空本地值：失焦时原生 change 事件会回传当前值，
-            // 残留旧值会把服务端已清空的字段重新写脏（实测聊天发送后点击空白，
-            // change 把旧消息文本塞回服务端输入框并聚焦，画面出现光标残影）。
-            // 清空后请求服务端真相瓦片回填（placeholder/空态像素）
-            if (t) {
-              t.value = '';
-              t.style.backgroundImage = t.getAttribute('data-xy-bg') || '';
-              if (p !== null) send({ type: 'dom', kind: 'inptile', path: p });
-            }
+            // 残留旧值会把服务端已清空的字段重新写脏
+            if (t) t.value = '';
           }
           send({ type: 'key', action: 'down', key: k });
           if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
