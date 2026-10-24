@@ -69,6 +69,33 @@ function originFontCssFor() {
   return FONT_FAMS.map(f => face(f, 400, '/f/noto-regular') + face(f, 700, '/f/noto-bold')).join('');
 }
 const PAGE_HELPERS = `(() => {
+  // 滚动同步钩子（v3 事件驱动，替代帧差分通道）：页面/内部容器的任何滚动
+  // 都以 80ms 节流上报（capture 能收到不冒泡的内层滚动）。必须放在 __xy 守卫
+  // 之前——导航后重注入helpers时 __xy 已存在会提前 return，钩子会丢。
+  if (!window.__xyScrollHooked) {
+    window.__xyScrollHooked = true;
+    let __xyLastPing = 0;
+    const ping = (force) => {
+      const now = Date.now();
+      if (!force && now - __xyLastPing < 80) return;
+      // 回声抑制：服务端镜像客户端上报的滚动时（__xyMirroring 窗口内），
+      // 镜像写入触发的滚动事件不再回推（否则 ~RTT 后把自己拽回旧位置）
+      if (!force && Date.now() - (window.__xyMirroring || 0) < 250) return;
+      __xyLastPing = now;
+      try { window.__xyScrollPing({ sx: Math.round(window.scrollX), sy: Math.round(window.scrollY), scrollers: (window.__xy ? window.__xy.scrollers() : []) }); } catch (e) {}
+    };
+    window.addEventListener('scroll', () => ping(false), true);
+    window.__xyScrollPingNow = ping;
+  }
+  // rAF 活动计数（canvas 捕获门）：动画循环完全停转 = 页面静止，
+  // canvas 不可能变化 → 零捕获。典型渲染循环即使画面不变也持续 rAF，
+  // 计数只作"完全停转"的判零依据（不停转的静止画面走指数退避）。
+  if (!window.__xyRafWrapped) {
+    window.__xyRafWrapped = true;
+    window.__xyRafCount = 0;
+    const origRaf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb) => origRaf((t) => { window.__xyRafCount++; try { cb(t); } catch (e) {} });
+  }
   if (window.__xy) return;
   const ORIGIN_PREFIX = ${JSON.stringify(ORIGIN_BASE.origin)};
   function fixUrl(v) {
@@ -83,6 +110,8 @@ const PAGE_HELPERS = `(() => {
     const strip = (el) => {
       for (const a of [...el.attributes]) {
         if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction') { el.removeAttribute(a.name); continue; }
+        // 零明文收口：aria-*/title/alt 是纯文本载体（无视觉作用），一并剥离
+        if (/^(aria-(label|placeholder|description|roledescription|valuetext)|title|alt)$/i.test(a.name)) { el.removeAttribute(a.name); continue; }
         if (a.name === 'href' || a.name === 'src' || a.name === 'action' || a.name === 'poster' || a.name === 'srcset') {
           try { el.setAttribute(a.name, fixUrl(a.value)); } catch (e) {}
         }
@@ -109,13 +138,24 @@ const PAGE_HELPERS = `(() => {
     });
     return clone;
   }
+  // 路径编号与镜像树对齐：script/noscript/template 在克隆里被删除，
+  // live 编号必须同样跳过，否则内容前有内联脚本的站点补丁路径全部错位
+  const XY_SKIP = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE']);
   function pathOf(node) {
     const parts = [];
     let n = node;
     while (n && n !== document.body) {
       const p = n.parentNode;
       if (!p) return null;
-      parts.unshift([...p.childNodes].indexOf(n));
+      let idx = 0, hit = false;
+      for (const c of p.childNodes) {
+        if (c === n) { hit = true; break; }
+        // 注释在镜像里被剥除（零明文），live 编号必须同样跳过
+        if (c.nodeType === 8) continue;
+        if (!(c.nodeType === 1 && XY_SKIP.has(c.tagName))) idx++;
+      }
+      if (!hit) return null;
+      parts.unshift(idx);
       n = p;
     }
     return n === document.body ? parts.join('/') : null;
@@ -141,68 +181,46 @@ const PAGE_HELPERS = `(() => {
     find(path) {
       if (path === '') return document.body;
       let n = document.body;
-      for (const i of path.split('/')) { n = n.childNodes[+i]; if (!n) return null; }
+      for (const i of path.split('/')) {
+        let k = +i, m = null;
+        for (const c of n.childNodes) {
+          if (c.nodeType === 8) continue; // 注释已从镜像剥除，编号跳过
+          if (c.nodeType === 1 && XY_SKIP.has(c.tagName)) continue;
+          if (k === 0) { m = c; break; }
+          k--;
+        }
+        n = m;
+        if (!n) return null;
+      }
       return n;
     },
-    async snapshot() {
-      const styleCss = [...document.querySelectorAll('style')].map(s => s.textContent).join('\\n');
-      const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
-      let linkCss = '';
-      try {
-        const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
-        linkCss = texts.join('\\n');
-      } catch (e) {}
-      return {
-        css: styleCss + '\\n' + linkCss,
-        html: sanitizeClone(document.body).innerHTML,
-        title: document.title,
-      };
-    },
-    // 像素瓦片化快照：所有可见文字/画布/下拉框外观 = 服务端按访客 DPR 渲染的原始像素，
-    // 客户端 1:1 显示（PNG 无损）→ 构造性 100% 一致；DOM 中零文字明文。布局由等大占位保持。
-    async snapshotTiles(sheetB64, wantFrame) {
+    // 像素瓦片化（v3 元素锚定）：live 子树的可见文字/输入框/下拉框外观 = 服务端像素，
+    // 以内联 background-image 锚定进克隆树的同位元素——瓦片随镜像文档流排版，
+    // 滚动/悬停/动画全部由客户端原生渲染，不存在任何坐标/帧率同步通道。
+    // DOM 中零文字明文。liveRoot/cloneRoot 参数化：全量快照传 body，增量补丁传任意子树。
+    tileize(liveRoot, cloneRoot, sheet, ox, oy) {
       const DPR = window.__xyDpr || 1;
-      window.__xyBusy = true;
-      // 占位替换会把 input/textarea 移出再放回 DOM——自动聚焦的输入框因此失焦，
-      // 光标闪烁等"活动感"全部消失（页面看起来被冻住）。快照后恢复焦点与光标位。
-      const focusSave = document.activeElement;
-      let selS = null, selE = null;
-      try {
-        if (focusSave && (focusSave.tagName === 'INPUT' || focusSave.tagName === 'TEXTAREA')) {
-          selS = focusSave.selectionStart; selE = focusSave.selectionEnd;
-        }
-      } catch (e) {}
-      const img = new Image();
-      img.src = 'data:image/png;base64,' + sheetB64;
-      await img.decode();
-      const sheet = document.createElement('canvas');
-      sheet.width = img.width; sheet.height = img.height;
-      sheet.getContext('2d').drawImage(img, 0, 0);
       const skipTags = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE']);
       const jobs = [];
-      // 收集：文本节点 + SELECT（原生控件外观走瓦片，选项文字全部不出站）
       const walk = (node, path) => {
         let idx = 0;
         for (const ch of node.childNodes) {
+          if (ch.nodeType === 8) continue; // 注释不入克隆树，编号跳过
           if (ch.nodeType === 1 && skipTags.has(ch.tagName)) { idx++; continue; }
           const p = path === '' ? String(idx) : path + '/' + idx;
           if (ch.nodeType === 3) { if (ch.textContent.trim()) jobs.push({ kind: 'text', node: ch, path: p }); }
           else if (ch.nodeType === 1) {
             if (ch.tagName === 'SELECT') { jobs.push({ kind: 'select', node: ch, path: p }); }
             else if (ch.tagName === 'INPUT' || ch.tagName === 'TEXTAREA') { jobs.push({ kind: 'input', node: ch, path: p }); }
-            else if (ch.tagName === 'CANVAS') { jobs.push({ kind: 'canvas', node: ch, path: p }); }
             else walk(ch, p);
           }
           idx++;
         }
       };
-      walk(document.body, '');
+      walk(liveRoot, '');
       const done = new Set();
-      // ① live 就地替换为等大占位（布局零扰动）
-      // 注意：文本节点没有 getBoundingClientRect，必须用 Range 的 client rects
       // 行盒高度实测缓存：line-height:normal 的实际行高取决于字体度量（服务端 Noto CJK
       // vs 访客端回退字体），不固化的话镜像行堆叠与服务端累计偏差 1-4px（实测按钮矮 4px）。
-      // 测法：把父元素 line-height 在 0/normal 间切换，高度差 = 单行行盒高。
       const lhCache = new Map();
       const usedLineHeight = (par) => {
         if (!par || lhCache.has(par)) return lhCache.get(par) || 0;
@@ -211,10 +229,8 @@ const PAGE_HELPERS = `(() => {
           const clh = getComputedStyle(par).lineHeight;
           if (clh !== 'normal') { const v = parseFloat(clh); lh = isFinite(v) ? v : 0; }
           else {
-            // 零宽探针：font:inherit 的 inline-block，其盒高 = 自身行盒 = 所继承字体
-            // 的 normal 实际行高。不切换父元素 line-height（会被兄弟元素高度污染，
-            // 实测带 beacon 圆点的历史条目测出行高=9px 而非 18.4px），也不扰动布局。
-            // 标记 data-xy-space 让 patchOf 把探针引起的 childList 记录当占位过滤。
+            // 零宽探针：font:inherit 的 inline-block，其盒高 = 所继承字体的 normal 实际行高。
+            // 不切换父元素 line-height（会被兄弟元素高度污染），也不扰动布局。
             const probe = document.createElement('span');
             probe.setAttribute('data-xy-space', '1');
             probe.style.cssText = 'font:inherit;line-height:normal;display:inline-block;width:0;overflow:hidden';
@@ -227,10 +243,8 @@ const PAGE_HELPERS = `(() => {
         lhCache.set(par, lh);
         return lh;
       };
-      // ① 只读测量（关键：绝不变更 live DOM）。历史上的"等大占位替换→还原"之舞
-      // 对 React/Vue 等虚拟 DOM 应用是毁灭性的：框架持有的节点引用被换掉再放回，
-      // 渲染中途撞上即崩溃/静默不渲染（实测登录后对话列表永远空白）。文本位置本来
-      // 就由 Range 直接测得，瓦片从预截底板裁——替换步骤完全多余。
+      // ① 只读测量（绝不变更 live DOM——React/Vue 持有的节点引用一旦被换掉，
+      // 渲染中途撞上即崩溃/静默不渲染）。文本节点用 Range 的 client rects 测墨迹。
       for (const j of jobs) {
         try {
           if (j.kind === 'text') {
@@ -259,34 +273,39 @@ const PAGE_HELPERS = `(() => {
           }
         } catch (e) {}
       }
-      // ② 从 DPR 底板按测得的精确位置裁瓦片（live 页零扰动，无需等布局稳定）
+      // ② 从 DPR 底板按测得的精确位置裁瓦片（设备像素对齐 → 客户端 1:1 落位零重采样）
       for (const j of jobs) {
         if (!done.has(j)) continue;
         try {
-          if (j.x >= 0 && j.y >= 0 && j.x + j.w <= sheet.width / DPR + 1 && j.y + j.h <= sheet.height / DPR + 1) {
-            const sx = Math.round(j.x * DPR), sy = Math.round(j.y * DPR);
+          const lx = j.x - (ox || 0), ly = j.y - (oy || 0);
+          if (lx >= 0 && ly >= 0 && lx + j.w <= sheet.width / DPR + 1 && ly + j.h <= sheet.height / DPR + 1) {
+            const sx = Math.round(lx * DPR), sy = Math.round(ly * DPR);
             const sw = Math.max(1, Math.round(j.w * DPR)), sh = Math.max(1, Math.round(j.h * DPR));
             const c2 = document.createElement('canvas');
             c2.width = sw; c2.height = sh;
             c2.getContext('2d').drawImage(sheet, sx, sy, sw, sh, 0, 0, sw, sh);
-            // 设备像素精确的 CSS 坐标：round(devicePx)/DPR → 瓦片在访客端 1:1 落位，零重采样
             j.tile = { w: sw, h: sh, cssX: sx / DPR, cssY: sy / DPR, cssW: sw / DPR, cssH: sh / DPR, url: c2.toDataURL('image/png') };
           }
         } catch (e) {}
       }
-      const clone = sanitizeClone(document.body);
-      // ③ clone 同路径替换：文本→瓦片 img；select→透明控件+背景瓦片；未覆盖文本剥除（零明文）
+      // 补丁根自身是表单控件时（depth-1 无父容器可上移）：根元素属性同样剥明文
+      try {
+        if (cloneRoot.nodeType === 1 && (cloneRoot.tagName === 'INPUT' || cloneRoot.tagName === 'TEXTAREA')) {
+          cloneRoot.removeAttribute('placeholder');
+          if (cloneRoot.tagName === 'INPUT' && cloneRoot.type !== 'checkbox' && cloneRoot.type !== 'radio') cloneRoot.removeAttribute('value');
+          cloneRoot.removeAttribute('alt');
+          cloneRoot.removeAttribute('title');
+        }
+      } catch (e) {}
+      // ③ clone 同路径替换：文本→带瓦片背景的等大占位；select→透明控件+背景瓦片
       const findInClone = (path) => {
         const parts = path.split('/');
-        let cn = clone;
+        let cn = cloneRoot;
         for (const i of parts) { cn = cn.childNodes ? cn.childNodes[+i] : null; if (!cn) return null; }
         return cn;
       };
-      const tiles = [];
       for (const j of jobs) {
-        if (!done.has(j)) continue;
-        if (j.tile) tiles.push(j.tile);
-        if (j.kind !== 'select' || !j.tile) continue;
+        if (!done.has(j) || !j.tile || j.kind !== 'select') continue;
         try {
           const t = findInClone(j.path);
           if (!t) continue;
@@ -296,53 +315,44 @@ const PAGE_HELPERS = `(() => {
           t.style.backgroundImage = 'url("' + j.tile.url + '")';
           t.style.backgroundSize = '100% 100%';
           t.style.backgroundRepeat = 'no-repeat';
-          for (const op of t.querySelectorAll('option')) op.textContent = '';
+          for (const op of t.querySelectorAll('option')) { op.textContent = ''; op.removeAttribute('value'); }
         } catch (e) {}
       }
       // 输入类属性剥离：placeholder/value 默认值/隐藏域/alt/title 均属静态明文（视觉已由瓦片承载）
       try {
-        clone.querySelectorAll('input[placeholder], textarea[placeholder]').forEach(el => el.removeAttribute('placeholder'));
-        clone.querySelectorAll('input[type="hidden"]').forEach(el => el.remove());
-        clone.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])').forEach(el => el.removeAttribute('value'));
-        clone.querySelectorAll('[alt]').forEach(el => el.removeAttribute('alt'));
-        clone.querySelectorAll('[title]').forEach(el => el.removeAttribute('title'));
+        cloneRoot.querySelectorAll('input[placeholder], textarea[placeholder]').forEach(el => el.removeAttribute('placeholder'));
+        cloneRoot.querySelectorAll('input[type="hidden"]').forEach(el => el.remove());
+        cloneRoot.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])').forEach(el => el.removeAttribute('value'));
+        cloneRoot.querySelectorAll('[alt]').forEach(el => el.removeAttribute('alt'));
+        cloneRoot.querySelectorAll('[title]').forEach(el => el.removeAttribute('title'));
       } catch (e) {}
-      // canvas 的 clone img → 透明占位（真像素走图层瓦片）
-      for (const j of jobs) {
-        if (j.kind !== 'canvas' || !j.tile) continue;
-        try {
-          const t = findInClone(j.path);
-          if (!t || t.tagName !== 'IMG') continue;
-          t.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-        } catch (e) {}
-      }
+      // 输入框：服务端像素背景 + data-xy-bg 存底（客户端键入时隐藏、清空/失焦时恢复）
       for (const j of jobs) {
         if (j.kind !== 'input' || !j.tile) continue;
         try {
           const t = findInClone(j.path);
           if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) continue;
-          t.style.backgroundImage = 'url("' + j.tile.url + '")';
-          // 设备像素精确尺寸：100% 拉伸会按元素分数尺寸重采样整块文字瓦片
+          const bg = 'url("' + j.tile.url + '")';
+          t.style.backgroundImage = bg;
           t.style.backgroundSize = j.tile.cssW + 'px ' + j.tile.cssH + 'px';
           t.style.backgroundPosition = '0 0';
           t.style.backgroundRepeat = 'no-repeat';
           t.setAttribute('data-xy-inp', '1');
+          t.setAttribute('data-xy-bg', bg);
         } catch (e) {}
       }
-      // 占位 span 写回 clone（保持行盒/布局）；文本节点保持空（零明文）。
-      // spacer HTML 由测得的墨迹尺寸直接构造（live 页不再替换，无 spHtml 可取）
+      // 文本→等大 inline-block 占位 + 墨迹瓦片背景（元素锚定：瓦片随文档流排版/滚动）。
+      // 行高 strut 中和：line-height:normal 的容器行盒高固化为服务端实测值。
       for (const j of jobs) {
         if (j.kind !== 'text' || !done.has(j)) continue;
         try {
           const t = findInClone(j.path);
           if (!t || t.nodeType !== 3) continue;
-          const par = t.parentNode; // replaceChild 之后 t.parentNode 变 null，必须先取
+          const par = t.parentNode;
           const tpl = document.createElement('template');
-          tpl.innerHTML = '<span data-xy-space="1" style="display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + j.h + 'px"></span>';
+          const bg = j.tile ? ('background:url(' + j.tile.url + ') 0 0 no-repeat;background-size:' + j.tile.cssW + 'px ' + j.tile.cssH + 'px;') : '';
+          tpl.innerHTML = '<span data-xy-space="1" style="display:inline-block;vertical-align:top;width:' + j.w + 'px;height:' + j.h + 'px;' + bg + '"></span>';
           par.replaceChild(tpl.content.firstChild, t);
-          // 行高 strut 中和：line-height:normal 的容器行盒高度依赖字体度量
-          // （服务端 Noto CJK vs 访客端本地回退字体）。固化为服务端实测行盒高，
-          // 镜像行堆叠与源站一致、与访客字体无关。
           if (j.parLh === 'normal' && par && par.style && j.lhPin) {
             par.style.lineHeight = j.lhPin + 'px';
           }
@@ -351,11 +361,24 @@ const PAGE_HELPERS = `(() => {
       // ④ 兜底剥除：任何未被瓦片覆盖的可见文本一律清空（零明文保证）
       const stripAll = (node) => {
         for (const ch of [...node.childNodes]) {
+          if (ch.nodeType === 8) { ch.remove(); continue; } // HTML 注释是明文载体（模板调试/隐藏块）
           if (ch.nodeType === 3) { if (ch.textContent.trim()) ch.textContent = ''; }
           else if (ch.nodeType === 1 && !skipTags.has(ch.tagName)) stripAll(ch);
         }
       };
-      stripAll(clone);
+      stripAll(cloneRoot);
+    },
+    async snapshotTiles(sheetB64, wantFrame) {
+      const DPR = window.__xyDpr || 1;
+      window.__xyBusy = true;
+      const img = new Image();
+      img.src = 'data:image/png;base64,' + sheetB64;
+      await img.decode();
+      const sheet = document.createElement('canvas');
+      sheet.width = img.width; sheet.height = img.height;
+      sheet.getContext('2d').drawImage(img, 0, 0);
+      const clone = sanitizeClone(document.body);
+      window.__xy.tileize(document.body, clone, sheet);
       window.__xyBusy = false;
       const styleCss = [...document.querySelectorAll('style')].map(s2 => s2.textContent).join('\\n');
       const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
@@ -363,14 +386,6 @@ const PAGE_HELPERS = `(() => {
       try {
         const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
         linkCss = texts.join('\\n');
-      } catch (e) {}
-      // 恢复快照前的焦点（占位替换导致失焦 → 光标闪烁消失）
-      try {
-        if (focusSave && focusSave.isConnected && document.activeElement !== focusSave &&
-            (focusSave.tagName === 'INPUT' || focusSave.tagName === 'TEXTAREA')) {
-          focusSave.focus();
-          if (selS !== null) { try { focusSave.setSelectionRange(selS, selE); } catch (e2) {} }
-        }
       } catch (e) {}
       // html/body 的类与属性决定主题（如 data-theme/class 切换亮暗色变量）——
       // 镜像根 .xy-body 必须原样携带，否则复合选择器 html[data-theme=...] 全部失配
@@ -383,12 +398,11 @@ const PAGE_HELPERS = `(() => {
           docAttrs += ' ' + a.name + '="' + String(a.value).replace(/"/g, '&quot;') + '"';
         }
       }
-      // frame 模式：整页底板切竖条带（PNG 无损）随快照下发——客户端视觉的唯一来源。
-      // 客户端 DOM 仅作隐形交互代理（点击路径/输入/焦点），不承担任何视觉，
-      // 从构造上保证与源站像素一致：客户端重排的字体度量/布局差异永远不可见。
+      // frame 模式（显式像素直出）：整页底板切竖条带（PNG 无损）随快照下发——
+      // 客户端视觉的唯一来源，DOM 仅作隐形交互代理。
       let frame = null;
       if (wantFrame) {
-        const CAP = 12000; // beyond-viewport 光栅上限保护；更长页面靠滚动差分补齐
+        const CAP = 12000;
         const pageH = Math.min(sheet.height / DPR, CAP);
         const bands = [];
         const BH = 512;
@@ -402,14 +416,7 @@ const PAGE_HELPERS = `(() => {
         }
         frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
       }
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles, frame, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim() };
-    },
-    rectOf(path) {
-      const el = window.__xy.find(path);
-      if (!el || !el.getBoundingClientRect) return null;
-      const r = el.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) return null;
-      return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim() };
     },
     // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
     // （runs: 文本/坐标/字号/颜色）下发，客户端 CanvasKit(Skia-WASM) 本地任意 DPR 清晰绘制。
@@ -447,171 +454,10 @@ const PAGE_HELPERS = `(() => {
       }
       const path = pathOf(target);
       if (path === null) return { full: true, why: record.type + ':noPath:' + target.nodeName + (target.isConnected ? '' : ':DETACHED') };
-      if (record.type === 'attributes') return { path, outer: sanitizeClone(target).outerHTML };
-      return { path, inner: sanitizeClone(target).innerHTML };
-    },
-    // 动画/悬停跟随：当前视口底板与上一帧做网格差分，仅变化区域重裁瓦片。
-    // CSS 动画、JS 特效、canvas 重绘、视频、:hover 反馈——任何像素变化通用覆盖，
-    // 无变化时零下发。瓦片为底板不透明裁片，含新旧位置（位移动画旧影自动覆盖）。
-    // dom 模式下客户端持有整份 CSS、可原生渲染动画：正在运行的 CSS 动画/过渡区域
-    // 从差分中掩蔽（getAnimations），让客户端 60fps 原生跑（瓦片随代理布局联动），
-    // 差分通道只覆盖客户端渲染不了的 canvas/视频/JS 像素变化——否则服务端 140ms
-    // 一帧的瓦片会盖住客户端的 60fps 原生动画，看起来卡成幻灯片。
-    async diffTiles(b64, dpr, maskAnims) {
-      const img = new Image();
-      img.src = 'data:image/png;base64,' + b64;
-      await img.decode();
-      const W = img.width, H = img.height;
-      const cv = document.createElement('canvas');
-      cv.width = W; cv.height = H;
-      const ctx = cv.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0);
-      const cur = ctx.getImageData(0, 0, W, H).data;
-      void cur;
-      // 参考帧 = 客户端当前持有的画面（而非上一 tick）：慢速辉光每 tick 只漂移约 1 个
-      // 灰度级，逐帧比对会被噪声阈值吃掉。与参考帧比对让慢变化累积过阈后才发送，
-      // 发送后参考帧前移。PNG 截图渲染确定性 → 静止页逐字节一致，低阈值不误报。
-      const ref = window.__xyDiffRef;
-      if (!ref || ref.length !== cur.length) {
-        window.__xyDiffRef = cur;
-        window.__xyDiffRefCv = cv;
-        return { tiles: [], sx: window.scrollX, sy: window.scrollY };
-      }
-      // GPU 差异检测（1/4 降采样）：difference 混合在 360x225 上做——两次 getImageData
-      // 从 5MB 降到 0.3MB，缩放由 GPU 完成。变化定位精度 = 4px 网格（CELL 本来就是
-      // 12-20px），足够精确。全分辨率画布只用于变化区域的 PNG 裁剪编码。
-      // 这是把单次差分从 ~60ms 压到 ~15ms、通道从 11msg/s 提到 30fps+ 的关键。
-      if (!window.__xyDiffCv) { window.__xyDiffCv = document.createElement('canvas'); }
-      const dcv = window.__xyDiffCv;
-      const SW = Math.max(1, W >> 2), SH = Math.max(1, H >> 2);
-      if (dcv.width !== SW || dcv.height !== SH) { dcv.width = SW; dcv.height = SH; }
-      const dctx = dcv.getContext('2d', { willReadFrequently: true });
-      const refCv = window.__xyDiffRefCv;
-      dctx.globalCompositeOperation = 'source-over';
-      dctx.clearRect(0, 0, SW, SH);
-      dctx.drawImage(refCv, 0, 0, SW, SH);
-      dctx.globalCompositeOperation = 'difference';
-      dctx.drawImage(cv, 0, 0, SW, SH);
-      dctx.globalCompositeOperation = 'source-over';
-      const dImg = dctx.getImageData(0, 0, SW, SH).data;
-      window.__xyDiffRef = cur;
-      window.__xyDiffRefCv = cv;
-      const S = 4; // 降采样倍数
-      // CSS 动画掩蔽/穿孔区（视口坐标，设备像素）+ 聚焦输入框（原生输入回显与光标）。
-      // 无文字的动画才掩蔽：代理里文字是占位符，穿孔会露出空字。
-      // frame 模式下掩蔽区同时作为"穿孔"下发——客户端 clearRect 露出代理层
-      // 同 CSS 的原生 60fps 渲染；静态内容仍构造性位图一致。
-      let animMask = null;
-      if (maskAnims) {
-        try {
-          let area = 0;
-          animMask = [];
-          const push = (r, allowText, el) => {
-            if (r.width < 2 || r.height < 2) return;
-            if (!allowText && el && (el.textContent || '').trim()) return;
-            const x0 = Math.max(0, Math.floor(r.left * dpr)), y0 = Math.max(0, Math.floor(r.top * dpr));
-            const x1 = Math.min(W, Math.ceil((r.left + r.width) * dpr)), y1 = Math.min(H, Math.ceil((r.top + r.height) * dpr));
-            if (x1 <= x0 || y1 <= y0) return;
-            animMask.push([x0, y0, x1, y1]);
-            area += (x1 - x0) * (y1 - y0);
-          };
-          // 动态媒体挖除：canvas/svg/video/iframe 区域从掩蔽中排除——它们的内容
-          // 变化必须走差分（父容器带 CSS 动画时整块掩蔽会把 canvas 动画冻住，
-          // 实测雷达扫描图 4.6s 静止）。挖除后再与动画矩形求差太重，这里反向：
-          // 掩蔽只保留动画元素矩形减去媒体矩形后的部分（简化为：动画元素若包含
-          // 媒体后代则整块不掩蔽，由差分兜底其视觉）
-          const hasMedia = (el) => { try { return !!el.querySelector('canvas, svg, video, iframe'); } catch (e) { return false; } };
-          for (const a of document.getAnimations()) {
-            if (a.playState !== 'running') continue;
-            const el = a.effect && a.effect.target;
-            if (!el || !el.getBoundingClientRect) continue;
-            if (hasMedia(el)) continue;
-            push(el.getBoundingClientRect(), false, el);
-          }
-          try {
-            const ae = document.activeElement;
-            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && !ae.disabled) {
-              push(ae.getBoundingClientRect(), true, null);
-            }
-          } catch (e2) {}
-          if (area > W * H * 0.8 || !animMask.length) animMask = animMask && animMask.length ? animMask : null;
-        } catch (e) { animMask = null; }
-      }
-      const inMask = (x, y) => {
-        if (!animMask) return false;
-        for (const m of animMask) { if (x >= m[0] && x < m[2] && y >= m[1] && y < m[3]) return true; }
-        return false;
-      };
-      // 穿孔（CSS 页面坐标）：frame 模式下掩蔽区=穿孔区
-      const holesOf = () => {
-        if (!animMask) return [];
-        const ox = Math.round(window.scrollX), oy = Math.round(window.scrollY);
-        return animMask.map((m) => [Math.round(m[0] / dpr) + ox, Math.round(m[1] / dpr) + oy, Math.round((m[2] - m[0]) / dpr), Math.round((m[3] - m[1]) / dpr)]);
-      };
-      const CELL = Math.max(3, Math.round(5 * dpr)); // 降采样坐标下的网格（≈全分辨率 12-20px）
-      const cols = Math.ceil(SW / CELL), rows = Math.ceil(SH / CELL);
-      const cells = new Uint8Array(cols * rows);
-      const TH = 2;
-      for (let y = 0; y < SH; y += 1) {
-        const ri = (y / CELL) | 0;
-        for (let x = 0; x < SW; x += 1) {
-          const ci = (x / CELL) | 0;
-          if (cells[ri * cols + ci]) continue;
-          if (inMask(x * S, y * S)) continue;
-          const p = (y * SW + x) * 4;
-          if (dImg[p] > TH || dImg[p + 1] > TH || dImg[p + 2] > TH) cells[ri * cols + ci] = 1;
-        }
-      }
-      const rects = [];
-      for (let r = 0; r < rows; r++) {
-        void S;
-        let c = 0;
-        while (c < cols) {
-          if (!cells[r * cols + c]) { c++; continue; }
-          let c2 = c;
-          while (c2 + 1 < cols && cells[r * cols + c2 + 1]) c2++;
-          let merged = false;
-          for (const rc of rects) {
-            if (rc.r1 === r - 1 && c <= rc.c1 + 1 && c2 >= rc.c0 - 1) {
-              rc.c0 = Math.min(rc.c0, c); rc.c1 = Math.max(rc.c1, c2); rc.r1 = r; merged = true; break;
-            }
-          }
-          if (!merged) rects.push({ c0: c, c1: c2, r0: r, r1: r });
-          c = c2 + 1;
-        }
-      }
-      // 还原到全分辨率坐标（裁剪/编码坐标系）
-      for (const rc of rects) { rc.c0 *= S; rc.c1 = (rc.c1 + 1) * S - 1; rc.r0 *= S; rc.r1 = (rc.r1 + 1) * S - 1; }
-      // 全屏级变化（滚动/翻页）：整视口单瓦片直推。frame 模式下这是滚动后新内容
-      // 到达客户端的唯一通道（旧实现直接丢弃 → 滚动后画面停更）；
-      // 坐标必须换算为页面绝对坐标（视口坐标 + scroll 偏移），瓦片才能落在整页图层上。
-      const offX = Math.round(window.scrollX), offY = Math.round(window.scrollY);
-      if (rects.length > 40) {
-        const now = Date.now();
-        // 滚动期节流：客户端基础底板本身就有整页内容，整视口瓦片只需低频校正
-        // （下方变化过的内容 + 固定定位元素），连续滚动 400ms 一张足够。
-        // 关键：跳过发送时绝不推进参考帧——参考帧必须始终等于"客户端当前持有"，
-        // 否则变化被吞掉、画面永久停在旧状态（实测回车发送后输入框占位符不回来）
-        if (now - (window.__xyFullAt || 0) < 400) { return { tiles: [], holes: holesOf(), sx: window.scrollX, sy: window.scrollY }; }
-        window.__xyFullAt = now;
-        const c2w = document.createElement('canvas');
-        c2w.width = W; c2w.height = H;
-        c2w.getContext('2d').drawImage(cv, 0, 0);
-        window.__xyDiffRef = cur;
-        return { tiles: [{ w: W, h: H, cssX: offX, cssY: offY, cssW: W / dpr, cssH: H / dpr, url: c2w.toDataURL('image/png') }], holes: holesOf(), sx: window.scrollX, sy: window.scrollY };
-      }
-      const tiles = [];
-      for (const rc of rects) {
-        const sx = rc.c0 * CELL, sy = rc.r0 * CELL;
-        const sw = Math.min(W - sx, (rc.c1 - rc.c0 + 1) * CELL), sh = Math.min(H - sy, (rc.r1 - rc.r0 + 1) * CELL);
-        if (sw < 2 || sh < 2) continue;
-        const c2c = document.createElement('canvas');
-        c2c.width = sw; c2c.height = sh;
-        c2c.getContext('2d').drawImage(cv, sx, sy, sw, sh, 0, 0, sw, sh);
-        tiles.push({ w: sw, h: sh, cssX: sx / dpr + offX, cssY: sy / dpr + offY, cssW: sw / dpr, cssH: sh / dpr, url: c2c.toDataURL('image/png') });
-      }
-      if (tiles.length) window.__xyDiffRef = cur;
-      return { tiles, holes: holesOf(), sx: window.scrollX, sy: window.scrollY };
+      // v3：inner/outer 仅作标记（内容由 tilesPatches 在整页截图后统一 tileize，
+      // 此处克隆整段再丢弃是纯浪费）；客户端按 p.inner/p.outer !== undefined 分派
+      if (record.type === 'attributes') return { path, outer: 1 };
+      return { path, inner: 1 };
     },
   };
 })();`;
@@ -756,6 +602,8 @@ wss.on('connection', async (ws, req) => {
     if (statTimer) clearInterval(statTimer);
     if (helloIv) clearInterval(helloIv);
     if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
+    if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
+    if (structTimer) { clearTimeout(structTimer); structTimer = null; }
     stopFFmpeg();
     try { await stopDomMirror(); } catch {}
     try { if (page) await page.close(); } catch {}
@@ -765,7 +613,7 @@ wss.on('connection', async (ws, req) => {
   ws.on('close', cleanup);
   ws.on('error', () => {});
 
-  // 会话源站：虚影 proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
+  // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
   let sessionOrigin = ORIGIN_URL;
   try {
     const hOrigin = req && req.headers['x-rbi-origin'];
@@ -779,8 +627,15 @@ wss.on('connection', async (ws, req) => {
 
   // 交互后的节流全量重同步定时器
   let domResyncTimer = null;
-  // 动画/悬停跟随：脏区域差分循环
+  // 动画/悬停跟随：脏区域差分循环（仅 frame 模式）
   let diffTimer = null, diffBusy = false, diffTick = 0;
+  // v3 dom 模式：canvas 元素按需捕获 / 结构补丁合并窗 / 滚动同步去重
+  let canvasTimer = null;
+  let structTimer = null; const structBuf = new Map();
+  const lastPatchSent = new Map();
+  let lastScrollKey = '';
+  let statLastChunks = 0;
+  let canvasSigsReset = null; // 全量重同步后 canvas 捕获基准失效（画面已变）
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
   const queue = [];
@@ -814,7 +669,16 @@ wss.on('connection', async (ws, req) => {
           case 'mode': {
             const next = ['jpeg', 'webp', 'h264', 'dom', 'frame'].includes(m.mode) ? m.mode : 'jpeg';
             const isDomLike = (x) => x === 'dom' || x === 'frame';
-            if (isDomLike(mode) && !isDomLike(next)) await stopDomMirror();
+            if (isDomLike(mode) && !isDomLike(next)) {
+              await stopDomMirror();
+              if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
+              if (structTimer) { clearTimeout(structTimer); structTimer = null; structBuf.clear(); }
+            }
+            // frame → 其它模式：帧差分循环与帧流必须死亡（dom 无帧率不变式）
+            if (mode === 'frame' && next !== 'frame') {
+              if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
+              cdp.send('Page.stopScreencast').catch(() => {});
+            }
             mode = next;
             if (mode === 'h264') { quality = 85; startFFmpeg(); } else { stopFFmpeg(); }
             try {
@@ -836,6 +700,43 @@ wss.on('connection', async (ws, req) => {
           case 'dom': {
             // 客户端镜像 DOM 上的真实交互 → 服务端真实页面元素
             noteInput();
+            if (m.kind === 'inptile') {
+              // 输入框服务端真相回填：Enter 清空/失焦后客户端隐藏了像素背景，
+              // 服务端按当前画面重裁该字段瓦片（含 placeholder/空态）
+              try {
+                const rect = await page.evaluate((path) => {
+                  const el = window.__xy.find(path);
+                  if (el && el.nodeType === 3) el = el.parentElement;
+                  if (!el || !el.getBoundingClientRect) return null;
+                  const r = el.getBoundingClientRect();
+                  if (r.width < 1 || r.height < 1) return null;
+                  return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
+                }, m.path).catch(() => null);
+                if (rect) {
+                  const shot2 = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+                  const tile = await page.evaluate((b64, x, y, w, h, d) => {
+                    return new Promise((res) => {
+                      const im = new Image();
+                      im.onload = () => {
+                        const sx = Math.round(x * d), sy = Math.round(y * d);
+                        const sw = Math.max(1, Math.round(w * d)), sh = Math.max(1, Math.round(h * d));
+                        if (sx < 0 || sy < 0 || sx + sw > im.width + 2 || sy + sh > im.height + 2) { res(null); return; }
+                        const c = document.createElement('canvas');
+                        c.width = sw; c.height = sh;
+                        c.getContext('2d').drawImage(im, sx, sy, sw, sh, 0, 0, sw, sh);
+                        res({ cssW: sw / d, cssH: sh / d, url: c.toDataURL('image/png') });
+                      };
+                      im.onerror = () => res(null);
+                      im.src = 'data:image/png;base64,' + b64;
+                    });
+                  }, shot2.data, rect.x, rect.y, rect.w, rect.h, DPR).catch(() => null);
+                  if (tile && ws.readyState === 1) {
+                    sendJson({ type: 'dom-patches', patches: [{ path: m.path, tile, inp: 1 }] });
+                  }
+                }
+              } catch (e) {}
+              break;
+            }
             if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);
             const ok = await page.evaluate((kind, path, value) => {
               let el = window.__xy.find(path);
@@ -859,7 +760,7 @@ wss.on('connection', async (ws, req) => {
                 return true;
               }
               // React/Vue 受控输入：必须用原型原生 setter 改值，否则框架值追踪器忽略
-              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测生产站点
+              // 合成 input 事件，state 不更新 → 表单提交的是空值（实测站点
               // 键入即焦点（仅 input 事件）：真实浏览器里用户在某字段打字，该字段必为焦点；
               // 同步焦点后，后续 CDP 键事件（Enter 发送/提交、Esc、方向键）才落在正确元素上。
               // change 事件在失焦时触发——此刻聚焦等于"用户刚离开又被拉回"，禁止
@@ -959,10 +860,23 @@ wss.on('connection', async (ws, req) => {
             break;
           }
           case 'scroll': {
-            // frame 模式滚动同步：客户端容器滚到哪，服务端页面跟到哪（瞬时），
-            // 差分循环再把视口内真实变化（懒加载/固定元素/动画）补回来
+            // v3 dom 模式：客户端本地原生滚动（零延迟），滚动位置上报到服务端——
+            // 服务端页面跟到同位置（懒加载/锚点/后续补丁裁剪坐标才正确），
+            // 内部滚动容器一并同步
             noteInput();
-            await page.evaluate((x, y) => { try { window.scrollTo(x, y); } catch (e) {} }, m.x || 0, m.y || 0).catch(() => {});
+            await page.evaluate((x, y, inner) => {
+              window.__xyMirroring = Date.now(); // 镜像写入窗口：ping 侧不再回推
+              try { window.scrollTo(x, y); } catch (e) {}
+              for (const s of (inner || [])) {
+                try {
+                  const el = window.__xy ? window.__xy.find(s[0]) : null;
+                  if (el) { el.scrollTop = s[1]; el.scrollLeft = s[2]; }
+                } catch (e) {}
+              }
+            }, m.x || 0, m.y || 0, m.inner || []).catch(() => {});
+            // 键同步：服务端镜像后的页面滚动钩子会产出同位置 ping，
+            // 去重键先记为本次上报值，避免 RTT 后回拽
+            lastScrollKey = (m.x || 0) + ',' + (m.y || 0) + ',' + JSON.stringify(m.inner || []);
             break;
           }
         }
@@ -1044,15 +958,26 @@ wss.on('connection', async (ws, req) => {
     p2,
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + (tag2 || 'op'))), ms)),
   ]);
+  let lastFullDoneAt = 0, fullDebounceT = null;
   function startDomMirror() {
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
     // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白
     if (domStarting) return domStarting;
+    // 防抖：SPA 登录/路由切换会连发全量触发（head 注入样式 noPath:HEAD、
+    // +600/+1500ms 导航重试、补丁 miss 客户端重同步），实测 4 秒内 6 次全量
+    // 快照——重建窗口互相吞点击、镜像反复闪旧页。700ms 窗口内合并为一次。
+    const since = Date.now() - lastFullDoneAt;
+    if (since < 700) {
+      if (!fullDebounceT) {
+        fullDebounceT = setTimeout(() => { fullDebounceT = null; startDomMirror(); }, 700 - since + 30);
+      }
+      return Promise.resolve();
+    }
     domStartAt = Date.now();
     console.log('[dbg] startDomMirror <- ' + (new Error().stack.split('\n')[2] || '?').trim().replace(/^at /, ''));
     domStarting = (async () => {
       try { await doStartDomMirror(); }
-      finally { domStarting = null; }
+      finally { domStarting = null; lastFullDoneAt = Date.now(); }
     })();
     return domStarting;
   }
@@ -1075,34 +1000,38 @@ wss.on('connection', async (ws, req) => {
               await startDomMirror();
               return;
             }
-            if (mode === 'frame') {
-              // frame 模式：视觉由整页像素条带 + 差分通道负责；结构补丁仅更新
-              // 隐形交互代理（保点击路径新鲜），不做元素瓦片重裁（省带宽，画面走差分）
-              const structural = [];
-              for (const p of rest) {
-                if (!p) continue;
-                if (p.inner !== undefined) structural.push({ path: p.path, inner: p.inner });
-                else if (p.outer !== undefined) structural.push({ path: p.path, outer: p.outer });
-              }
-              if (structural.length && ws.readyState === 1) {
-                const payloadF = JSON.stringify({ type: 'dom-patches', patches: structural });
-                ws.send(payloadF);
-                ws._bytes = (ws._bytes || 0) + payloadF.length;
-                ws._chunks = (ws._chunks || 0) + 1;
-              }
-              return;
+            // v3：dom 与 frame 同路径——结构+瓦片补丁（均零明文）。60ms 合并窗 +
+            // 同路径去重（流式回复逐字变更只保留最新态），每批一次整页截图统一
+            // tileize。事件驱动：静止页零消息、零流量，不存在任何帧率概念。
+            for (const p of rest) {
+              if (!p || p.path === undefined) continue;
+              // outer 含子树：同路径 outer 与 inner 在合并窗内相遇时保留 outer
+              const kind2 = (p.outer !== undefined) ? 'outer' : 'inner';
+              if (kind2 === 'inner' && structBuf.get(p.path) === 'outer') continue;
+              structBuf.set(p.path, kind2);
             }
-            if (rest.some(p => p && (p.tile || p.selTile))) {
-              const payload = JSON.stringify({ type: 'dom-patches', patches: rest });
-              ws.send(payload);
-              ws._bytes = (ws._bytes || 0) + payload.length;
-              ws._chunks = (ws._chunks || 0) + 1;
-            } else {
-              await tilesPatches(rest);
-            }
+            if (structTimer) return;
+            structTimer = setTimeout(async () => {
+              structTimer = null;
+              if (dead || ws.readyState !== 1) { structBuf.clear(); return; }
+              const batch = [...structBuf.entries()].map(([path, kind2]) => ({ path, [kind2]: 1 }));
+              structBuf.clear();
+              // 异步兜底：截图超时/导航销毁上下文一旦以 unhandled rejection
+              // 冒泡会击穿整个网关进程（Node>=15 默认退出）
+              try { await tilesPatches(batch); } catch (e) { console.log('[patch] batch err:', e && e.message); }
+            }, 60);
           } catch (e) {}
         });
       });
+      try {
+        await page.exposeFunction('__xyScrollPing', (st) => {
+          if (!domActive || ws.readyState !== 1 || mode !== 'dom') return;
+          const key = st.sx + ',' + st.sy + ',' + JSON.stringify(st.scrollers || []);
+          if (key === lastScrollKey) return;
+          lastScrollKey = key;
+          sendJson({ type: 'scroll-sync', sx: st.sx, sy: st.sy, scrolls: st.scrollers || [] });
+        });
+      } catch (e) {}
       domExposed = true;
     }
     domActive = true;
@@ -1181,64 +1110,188 @@ wss.on('connection', async (ws, req) => {
       if (pending.length) window.__xyPatch(pending);
     });
     console.log('[dom   ] mirror started');
-    startDiffLoop();
-    // captureBeyondViewport 截图会中断 Page.screencast 帧流（实测快照后 36.6s 零帧、
-    // canvas/滚轮/流式全冻结）——快照完成后强制重启帧流
-    if (mode === 'dom' || mode === 'frame') {
+    // v3：dom 模式无帧流（客户端本地渲染，更新全部事件驱动——补丁/滚动同步/
+    // canvas 元素捕获）；帧差分通道仅属于显式 frame（像素直出）模式
+    if (mode === 'frame') {
+      startDiffLoop();
+      // captureBeyondViewport 截图会中断 Page.screencast 帧流——重启
       cdp.send('Page.stopScreencast').catch(() => {});
-      setTimeout(() => { cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {}); }, 80);
+      setTimeout(() => { if (mode === 'frame') cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {}); }, 80);
+    } else {
+      if (canvasSigsReset) canvasSigsReset(); // 重同步后旧基准必然失配（防"画面变化但比对为同"冻结）
+      startCanvasWatch();
     }
   }
 
-  // 变化补丁：一批变更合并为一次整页截图、页面内统一裁剪（流式回复逐字变更时，
-  // 逐元素 clip 截图会把 CPU 打满并造成会话级卡顿）。文字/外观均为服务端像素。
+  // 结构+瓦片补丁（v3）：一批变更合并为一次整页截图；每个变更子树在页面内
+  // tileize（文本→带服务端像素背景的等大占位，元素锚定）后以 inner/outer 下发。
+  // 客户端替换后瓦片随镜像文档流排版——无坐标、无图层、无帧率，零明文。
   async function tilesPatches(patches) {
     if (patches.some(p => p && p.full)) { await startDomMirror(); return; }
-    // 与全量快照同理：font-display:block 窗口内截图会得到空白文字瓦片
-    await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())).catch(() => {});
+    // 祖先后代去重：祖先 innerHTML 已含后代最终态；按深度排序祖先优先，
+    // 后到的祖先会移除已收入的其后代
+    const sorted = [...patches].filter(p => p && p.path !== undefined && (p.inner !== undefined || p.outer !== undefined))
+      .sort((a, b) => String(a.path).split('/').length - String(b.path).split('/').length);
     const items = [];
-    for (const p of patches) {
-      if (!p || p.path === undefined) continue;
-      try {
-        const rect = await page.evaluate((path) => {
-          const el = window.__xy.find(path);
-          if (!el || !el.getBoundingClientRect) return null;
-          const r = el.getBoundingClientRect();
-          if (r.width < 1 || r.height < 1) return null;
-          return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height,
-                   isSel: el.tagName === 'SELECT' };
-        }, p.path);
-        if (rect) items.push({ path: p.path, ...rect });
-      } catch (e) {}
+    for (const p of sorted) {
+      const pp = String(p.path);
+      if (items.some(q => pp === q.path || pp.startsWith(q.path + '/'))) continue;
+      for (let k = items.length - 1; k >= 0; k--) {
+        if (items[k].path.startsWith(pp + '/')) items.splice(k, 1);
+      }
+      items.push({ path: pp, outer: p.outer !== undefined ? 1 : undefined, inner: p.outer !== undefined ? undefined : 1 });
     }
     if (!items.length) return;
-    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
-    const out = await page.evaluate(async (b64, list, dpr) => {
+    await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())).catch(() => {});
+    // 只截补丁目标的联合矩形（页面绝对坐标）：受保护应用常见 ~2Hz 轮询自更新
+    // （时间戳/状态点），逐批整页截图会把 CPU 吃满；clip 截图开销 O(变更) 而非 O(页)
+    const geo = await withTimeout(page.evaluate((paths) => {
+      const rects = [];
+      for (const p of paths) {
+        try {
+          const el = window.__xy.find(p);
+          if (!el || !el.getBoundingClientRect) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 1 || r.height < 1) continue;
+          rects.push({ x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
+        } catch (e) {}
+      }
+      if (!rects.length) return null;
+      const x0 = Math.min(...rects.map(r => r.x)), y0 = Math.min(...rects.map(r => r.y));
+      const x1 = Math.max(...rects.map(r => r.x + r.w)), y1 = Math.max(...rects.map(r => r.y + r.h));
+      return { x: Math.max(0, Math.floor(x0) - 4), y: Math.max(0, Math.floor(y0) - 4), w: Math.ceil(x1 - x0) + 8, h: Math.ceil(y1 - y0) + 8 };
+    }, items.map(i => i.path)), 3000, 'patchGeo').catch(() => null);
+    if (!geo) return;
+    const shot = await withTimeout(cdp.send('Page.captureScreenshot', {
+      format: 'png',
+      clip: { x: geo.x, y: geo.y, width: Math.min(geo.w, 4000), height: Math.min(geo.h, 8000), scale: DPR },
+      captureBeyondViewport: true,
+    }), 8000, 'patchShot');
+    const out = await withTimeout(page.evaluate(async (b64, list, dpr, ox, oy) => {
       const img = new Image();
       img.src = 'data:image/png;base64,' + b64;
       await img.decode();
       const sheet = document.createElement('canvas');
       sheet.width = img.width; sheet.height = img.height;
       sheet.getContext('2d').drawImage(img, 0, 0);
+      window.__xyDpr = dpr;
       const out2 = [];
-      for (const it of list) {
-        const sx = Math.round(it.x * dpr), sy = Math.round(it.y * dpr);
-        const sw = Math.max(1, Math.round(it.w * dpr)), sh = Math.max(1, Math.round(it.h * dpr));
-        if (sx < 0 || sy < 0 || sx + sw > sheet.width + 2 || sy + sh > sheet.height + 2) continue;
-        const c2 = document.createElement('canvas');
-        c2.width = sw; c2.height = sh;
-        c2.getContext('2d').drawImage(sheet, sx, sy, sw, sh, 0, 0, sw, sh);
-        const tile = { w: sw, h: sh, cssX: sx / dpr, cssY: sy / dpr, cssW: sw / dpr, cssH: sh / dpr, url: c2.toDataURL('image/png') };
-        out2.push(it.isSel ? { path: it.path, selTile: tile } : { path: it.path, tile });
+      for (let it of list) {
+        try {
+          let live = window.__xy.find(it.path);
+          if (!live) continue;
+          if (live.nodeType === 3) live = live.parentElement;
+          if (!live || live.nodeType !== 1) continue;
+          // 表单控件自身作补丁目标时：改裁其父容器（控件外观瓦片只在父级
+          // 上下文里才会生成），inner 替换后控件带背景瓦片一起回来
+          if ((live.tagName === 'INPUT' || live.tagName === 'TEXTAREA' || live.tagName === 'SELECT') && it.path.includes('/')) {
+            const parentPath = it.path.split('/').slice(0, -1).join('/');
+            const par = window.__xy.find(parentPath);
+            if (par && par.nodeType === 1) { live = par; it = { path: parentPath, inner: 1 }; }
+          }
+          const clone = window.__xy.sanitizeClone(live);
+          window.__xy.tileize(live, clone, sheet, ox, oy);
+          const html = (it.outer !== undefined) ? clone.outerHTML : clone.innerHTML;
+          if (html) out2.push((it.outer !== undefined) ? { path: it.path, outer: html } : { path: it.path, inner: html });
+        } catch (e) {}
       }
       return out2;
-    }, shot.data, items, DPR).catch(() => null);
+    }, shot.data, items, DPR, geo.x, geo.y), 8000, 'patchTile').catch((e) => { console.log('[patch] tileize err:', e && e.message); return null; });
     if (!out || !out.length) return;
-    const payload = JSON.stringify({ type: 'dom-patches', patches: out });
     if (ws.readyState !== 1) return;
+    // 轮询自更新常产生逐字节相同的结果（像素一致 → data URL 一致）：
+    // 与上次已下发比对，全同批次直接跳过（省带宽与客户端重排）
+    if (lastPatchSent.size > 500) lastPatchSent.clear();
+    const out2 = out.filter(p => {
+      const key = (p.outer !== undefined ? 'o:' : 'i:') + p.path;
+      const html = p.outer !== undefined ? p.outer : p.inner;
+      if (lastPatchSent.get(key) === html) return false;
+      lastPatchSent.set(key, html);
+      return true;
+    });
+    if (!out2.length) return;
+    const payload = JSON.stringify({ type: 'dom-patches', patches: out2 });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
+  }
+
+  // v3 dom 模式：canvas 元素按需捕获。仅当页面存在视口内 canvas 时才截图，
+  // 且逐元素比对像素（sharp raw 或字节级），无变化零下发——静止 canvas（软件
+  // GL 下的 WebGL）零流量，动画 canvas 以 ~2fps 元素级小图跟随。绝不整页推流。
+  function startCanvasWatch() {
+    if (canvasTimer) return;
+    const lastSigs = new Map();
+    canvasSigsReset = () => lastSigs.clear();
+    canvasTimer = setInterval(async () => {
+      if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
+      try {
+        const list = await withTimeout(page.evaluate(() => {
+          const out = [];
+          try {
+            for (const c of document.body.querySelectorAll('canvas')) {
+              const r = c.getBoundingClientRect();
+              if (r.width < 8 || r.height < 8) continue;
+              if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
+              const path = window.__xy.pathOf(c);
+              if (path === null) continue;
+              out.push({ path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
+              if (out.length >= 3) break;
+            }
+          } catch (e) {}
+          return out;
+        }), 1500, 'canvasList').catch(() => null);
+        if (!list) return;
+        if (!list.length) { if (lastSigs.size) lastSigs.clear(); return; }
+        // rAF 活动门：260ms 窗口零回调 = 动画循环完全停转，canvas 必然静止，
+        // 零捕获（静止 canvas 的持续捕获曾是 CPU 大头：实测 34-47%）
+        const rafDelta = await withTimeout(page.evaluate(() => new Promise((res2) => {
+          const before = window.__xyRafCount || 0;
+          setTimeout(() => res2((window.__xyRafCount || 0) - before), 260);
+        })), 1500, 'rafGate').catch(() => 1);
+        if (rafDelta === 0) return;
+        const nowMs = Date.now();
+        for (const it of list) {
+          // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
+          const st0 = lastSigs.get(it.path);
+          if (st0 && st0.nextAt && nowMs < st0.nextAt) continue;
+          const shot = await withTimeout(cdp.send('Page.captureScreenshot', {
+            format: 'png',
+            clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: DPR },
+            captureBeyondViewport: true,
+          }), 3000, 'canvasShot').catch(() => null);
+          if (!shot) continue;
+          let changed = true;
+          try {
+            if (sharp) {
+              const { info, data } = await sharp(Buffer.from(shot.data, 'base64')).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+              const prev = lastSigs.get(it.path);
+              if (prev && prev.w === info.width && prev.h === info.height && prev.data && prev.data.equals(data)) changed = false;
+              else if (prev) { prev.w = info.width; prev.h = info.height; prev.data = data; }
+              else lastSigs.set(it.path, { w: info.width, h: info.height, data, unchanged: 0, nextAt: 0 });
+            } else {
+              const prev = lastSigs.get(it.path);
+              if (prev && prev.b64 === shot.data) changed = false;
+              else if (prev) prev.b64 = shot.data;
+              else lastSigs.set(it.path, { b64: shot.data, unchanged: 0, nextAt: 0 });
+            }
+          } catch (e) {}
+          if (!changed) {
+            const st = lastSigs.get(it.path);
+            if (st) { st.unchanged = (st.unchanged || 0) + 1; st.nextAt = Date.now() + Math.min(3600, 450 * Math.pow(2, st.unchanged)); }
+            continue;
+          }
+          const st2 = lastSigs.get(it.path);
+          if (st2) { st2.unchanged = 0; st2.nextAt = 0; }
+          if (ws.readyState === 1) {
+            const pl = JSON.stringify({ type: 'canvas-tile', path: it.path, url: 'data:image/png;base64,' + shot.data });
+            ws.send(pl);
+            ws._bytes = (ws._bytes || 0) + pl.length;
+            ws._chunks = (ws._chunks || 0) + 1;
+          }
+        }
+      } catch (e) {}
+    }, 450);
   }
 
   async function stopDomMirror() {
@@ -1250,12 +1303,11 @@ wss.on('connection', async (ws, req) => {
   // 首帧只建基准；无变化零下发。瓦片为不透明底板裁片，位移动画的新旧位置都在
   // 差分区域内，客户端直接覆盖即可，无需清理旧瓦片。
   function startDiffLoop() {
-    // 编码-解码范式差分通道 v2：合成器帧回调（60fps）→ sharp 在 Node 进程内
-    // 解码/比较/裁剪/编码（全链路 <10ms，零 CDP evaluate 大参数——evaluate 传
-    // 80KB base64 每次要 ~60ms，是 11msg/s 吞吐瓶颈的根源）。
-    // 静止时合成器不推帧 = 零解码零比较零下发（比视频编码的持续码流省）。
-    if (diffTimer) return;
-    if (mode === 'dom' || mode === 'frame') {
+    // 编码-解码范式差分通道 v2（仅 frame 像素直出模式）：合成器帧回调 → sharp
+    // 进程内解码/比较/裁剪/编码。dom 模式不进入此通道——dom 是客户端本地渲染，
+    // 更新全部事件驱动（补丁/滚动/元素捕获），不存在帧率。
+    if (diffTimer || mode !== 'frame') return;
+    if (mode === 'frame') {
       cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {});
     }
     let prevRaw = null, prevW = 0, prevH = 0;   // 上一帧 raw 像素（BGRA）
@@ -1359,7 +1411,7 @@ wss.on('connection', async (ws, req) => {
     let pfSeen = 0, pfLogged = 0;
     diffTimer = setInterval(async () => {
       if (diffBusy) return;
-      if (dead || (mode !== 'dom' && mode !== 'frame') || !domActive || !page || !cdp || ws.readyState !== 1) return;
+      if (dead || mode !== 'frame' || !domActive || !page || !cdp || ws.readyState !== 1) return;
       pfSeen++; if (pfSeen % 62 === 0) { console.log('[diffv2] tick ok, pfLogged=' + pfLogged); pfLogged = 0; }
       if (domStarting) {
         if (!domStartAt) domStartAt = Date.now();
@@ -1462,11 +1514,15 @@ wss.on('connection', async (ws, req) => {
       // 瓦片落到错误元素上）。客户端比对元素数，超阈即请求全量重同步。
       let elCount = 0;
       if ((mode === 'dom' || mode === 'frame') && domActive && !domStarting) {
-        page.evaluate(() => document.body ? document.body.querySelectorAll('*').length : 0)
+        page.evaluate(() => document.body ? document.body.querySelectorAll(':not(script):not(noscript):not(template)').length : 0)
           .then((n) => { elCount = n; })
           .catch(() => {});
       }
-      sendJson({ type: 'sstats', fps: frameTimes.length, inLat: inputLatMs, mode, els: elCount });
+      // v3：dom 无帧流——上报下行消息速率（帧语义只属于像素流模式）；
+      // 每秒兜底触发一次滚动同步 ping（捕获监听遗漏的初始态/漂移）
+      const mr = (ws._chunks || 0) - statLastChunks; statLastChunks = ws._chunks || 0;
+      if (mode === 'dom' && domActive) { page.evaluate(() => { if (window.__xyScrollPingNow) window.__xyScrollPingNow(true); }).catch(() => {}); }
+      sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: elCount });
     }, 1000);
 
     // 主框架导航（登录跳转/表单提交等）：重新注入镜像管线并全量重发，
@@ -1495,7 +1551,7 @@ wss.on('connection', async (ws, req) => {
 
     // 等客户端上报 DPR（超时回落 1）：服务端按访客 DPR 渲染 → 瓦片 1:1 显示 → 构造性一致
     const hello = await new Promise((res) => {
-      const t = setTimeout(() => res({ dpr: 1 }), 3000);
+      const t = setTimeout(() => { clearInterval(helloIv); res({ dpr: 1 }); }, 3000);
       helloIv = setInterval(() => {
         const i = queue.findIndex((r) => { try { return JSON.parse(r.toString()).type === 'hello'; } catch { return false; } });
         if (i >= 0) {
@@ -1523,6 +1579,9 @@ wss.on('connection', async (ws, req) => {
     try { ws.close(); } catch {}
   }
 });
+
+// 兜底：任何漏网的异步拒绝只记录不退出（单会话故障不得击穿网关）
+process.on('unhandledRejection', (e) => { console.log('[main  ] unhandledRejection:', e && e.message); });
 
 process.on('SIGTERM', async () => {
   console.log('[main  ] SIGTERM, shutting down');

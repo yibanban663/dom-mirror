@@ -88,8 +88,8 @@
         <div class="metric"><div class="v" id="mFrames">0</div><div class="l">累计帧数</div></div>
         <div class="metric"><div class="v" id="mTotal">0</div><div class="l">累计 KB</div></div>
         <div class="metric"><div class="v" id="mIdle">idle</div><div class="l">帧流状态</div></div>
-        <div class="metric"><div class="v" id="mFps">0</div><div class="l">收帧 FPS</div></div>
-        <div class="metric"><div class="v" id="mSrvFps">-</div><div class="l">服务端出帧 FPS</div></div>
+          <div class="metric"><div class="v" id="mFps">0</div><div class="l">下行消息/秒</div></div>
+          <div class="metric"><div class="v" id="mSrvFps">-</div><div class="l">服务端消息/秒</div></div>
         <div class="metric"><div class="v" id="mMode">jpeg</div><div class="l">当前编码</div></div>
       </div>
       <div class="quality" style="margin-top:12px">
@@ -293,7 +293,7 @@
     document.getElementById('cur').style.display = 'none';
     document.getElementById('mirrorBox').style.display = isDom ? '' : 'none';
     document.getElementById('stageHint').innerHTML = mo === 'dom'
-      ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端镜像、<b>渲染在你本地</b>——滚动/悬停/打字全部原生零延迟，表格等数据变化由服务端推送小补丁。试试：滚动页面、悬停按钮、在搜索框输入 <b>138</b>、点"发送验证码"。Canvas 图表已自动降级为位图（生产中即"位图兜底"层）。'
+      ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端编码下发、<b>渲染在你本地</b>——滚动/悬停/动画全部原生零延迟；内容变化由服务端推送小补丁（事件驱动，页面静止时零流量、零消息）。试试：滚动页面、悬停按钮、在输入框打字。'
       : '操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入（试试搜索框：<b>输入"138"</b> 回车筛选客户表；报价计算器输入数字实时计算）。PoC 未实现 IME 本地合成框，中文输入请暂用英文/数字验证键盘回传链路。';
     document.querySelectorAll('.quality button[data-m]').forEach(b => b.classList.toggle('active', b.dataset.m === mo));
     document.querySelectorAll('.quality button[data-q]').forEach(b => b.disabled = (mo === 'h264' || isDom));
@@ -355,7 +355,7 @@
     else mirrorRoot = host.shadowRoot;
     // 选择器映射：:root/html/body（含复合选择器 html[data-theme]、html.foo 等）→ .xy-body
     // （Shadow DOM 内 :root/html 匹配不到镜像根；复合形式不映射则按属性切换的主题全部失配，
-    // 实测生产站点
+    // 实测受保护站点 data-theme 亮色变量整组失效、输入框白底变暗——踩过）
     const css2 = css
       .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
       .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
@@ -374,17 +374,19 @@
     mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     mirrorBody = mirrorRoot.querySelector('.xy-body');
     snapMirrorToDevice();
-    // 瓦片图层：设备分辨率 canvas。drawImage 一律用整数设备坐标做 1:1 位块拷贝，
-    // img 元素方案在 DPR≠1 时会被合成器按分数 CSS 坐标重采样（实测垂直发糊）
-    const layer = document.createElement('canvas');
-    layer.className = 'xy-tiles';
-    const tdpr = window.devicePixelRatio || 1;
-    layer.style.cssText = 'position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:2147483647';
-    layer.width = Math.round((viewW || 1280) * tdpr);
-    syncLayerCSS(layer);
-    layer.height = 1;
-    layer.tdpr = tdpr;
-    mirrorBody.appendChild(layer);
+    // 瓦片图层（仅 frame 像素直出模式）：设备分辨率 canvas，整数设备坐标 1:1 blit。
+    // v3 dom 模式无图层——瓦片元素锚定在镜像文档流里，滚动/悬停/动画全部本地原生
+    if (frameMode) {
+      const layer = document.createElement('canvas');
+      layer.className = 'xy-tiles';
+      const tdpr = window.devicePixelRatio || 1;
+      layer.style.cssText = 'position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:2147483647';
+      layer.width = Math.round((viewW || 1280) * tdpr);
+      syncLayerCSS(layer);
+      layer.height = 1;
+      layer.tdpr = tdpr;
+      mirrorBody.appendChild(layer);
+    }
     if (!mirrorWired) {
       mirrorWired = true;
       mirrorRoot.addEventListener('click', (e) => {
@@ -434,12 +436,31 @@
         mirrorRoot.addEventListener('pointerup', endDrag, true);
         mirrorRoot.addEventListener('pointercancel', endDrag, true);
       }
+      // 内部滚动容器（v3 dom）：本地原生滚动 + 上报滚动位置（capture 收不冒泡
+      // 的滚动事件），服务端跟随到同位置——懒加载内容以补丁回来、后续瓦片
+      // 裁剪坐标正确。40ms 节流。
+      {
+        let lastInAt = 0;
+        mirrorRoot.addEventListener('scroll', (e) => {
+          if (frameMode) return; // frame：内部滚动由服务端差分回传
+          const t = e.target;
+          if (!t || t.nodeType !== 1 || t.scrollTop === undefined) return;
+          const now = Date.now();
+          if (now - lastInAt < 40) return;
+          lastInAt = now;
+          const p = pathOfMirror(t);
+          if (p === null) return;
+          const msx = document.getElementById('mirrorScroll');
+          send({ type: 'scroll', x: msx ? Math.round(msx.scrollLeft) : 0, y: msx ? Math.round(msx.scrollTop) : 0, inner: [[p, Math.round(t.scrollTop), Math.round(t.scrollLeft)]] });
+        }, true);
+      }
       mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
       mirrorRoot.addEventListener('input', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
-        // 输入瓦片：键入时隐藏服务端像素背景（placeholder 已被键入内容取代），清空后恢复
+        // 输入瓦片：键入时隐藏服务端像素背景（本地真实控件渲染打字回显），
+        // 清空后按存底恢复服务端像素
         if (e.target.matches('input[data-xy-inp], textarea[data-xy-inp]')) {
-          e.target.style.backgroundImage = e.target.value ? 'none' : '';
+          e.target.style.backgroundImage = e.target.value ? 'none' : (e.target.getAttribute('data-xy-bg') || '');
         }
         const p = pathOfMirror(e.target);
         if (p !== null) { lastTyped.set(p, e.target.value); send({ type: 'dom', kind: 'input', path: p, value: e.target.value }); }
@@ -457,10 +478,17 @@
         if (p === null || !lastTyped.has(p)) return;
         const v = lastTyped.get(p);
         t.value = v;
+        if (v) t.style.backgroundImage = 'none'; // 本地值可见时服务端像素背景必须让位（防双文字）
         try { t.setSelectionRange(v.length, v.length); } catch (err) {}
       });
-      // 失焦：统一补挂聚焦期间挂起的补丁
-      mirrorRoot.addEventListener('focusout', () => {
+      // 失焦：统一补挂聚焦期间挂起的补丁；离开的字段若有过本地键入，
+      // 请求服务端真相瓦片回填（含已提交值/placeholder，回填时清本地值防双文字）
+      mirrorRoot.addEventListener('focusout', (e) => {
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+          const fp = pathOfMirror(t);
+          if (fp !== null && lastTyped.has(fp)) send({ type: 'dom', kind: 'inptile', path: fp });
+        }
         if (!pendingFocusPatches.length) return;
         const q = pendingFocusPatches;
         pendingFocusPatches = [];
@@ -480,8 +508,13 @@
             if (p !== null) lastTyped.delete(p);
             // 同步清空本地值：失焦时原生 change 事件会回传当前值，
             // 残留旧值会把服务端已清空的字段重新写脏（实测聊天发送后点击空白，
-            // change 把旧消息文本塞回服务端输入框并聚焦，画面出现光标残影）
-            if (t) t.value = '';
+            // change 把旧消息文本塞回服务端输入框并聚焦，画面出现光标残影）。
+            // 清空后请求服务端真相瓦片回填（placeholder/空态像素）
+            if (t) {
+              t.value = '';
+              t.style.backgroundImage = t.getAttribute('data-xy-bg') || '';
+              if (p !== null) send({ type: 'dom', kind: 'inptile', path: p });
+            }
           }
           send({ type: 'key', action: 'down', key: k });
           if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
@@ -689,7 +722,7 @@
     if (layer) layer._rects.set(pathKey, { x: t.cssX, y: t.cssY, w: t.cssW, h: t.cssH });
   }
   // 结构补丁（innerHTML/outerHTML 替换）应用前清掉该元素子树的所有旧瓦片：
-  // 子元素增删后布局位移，旧位置瓦片没人清就会留"幽灵"残影（实测生产站点
+  // 子元素增删后布局位移，旧位置瓦片没人清就会留"幽灵"残影（实测受保护站点对话
   // 工作台输入框在旧位置留影）
   function clearSubtreeTiles(pathKey) {
     const layer = tileLayerStore();
@@ -717,22 +750,22 @@
         continue;
       }
       try {
-        // 像素瓦片补丁：追加/替换图层中的瓦片（绝对坐标，设备像素对齐）
+        // 像素瓦片补丁（v3 元素锚定）：瓦片作为元素背景落在镜像文档流里，
+        // 随布局/滚动自然移动——无图层、无绝对坐标
         if (p.tile || p.selTile) {
           const el = mirrorFind(p.path);
           if (!el) throw new Error('path miss');
           const t = p.tile || p.selTile;
-          if (p.selTile) {
-            el.style.backgroundImage = 'url("' + t.url + '")';
-            el.style.backgroundSize = '100% 100%';
-            el.style.backgroundRepeat = 'no-repeat';
-          } else {
-            // 先清旧瓦片残留（内容变化布局位移后旧像素会留影），再画新瓦片
-            clearTileRect(p.path);
-            const nt = { cssX: t.cssX, cssY: t.cssY, cssW: t.cssW, cssH: t.cssH, w: t.w, h: t.h, url: t.url };
-            nt.img = new Image();
-            nt.img.src = t.url;
-            drawTileToLayer(nt).then(() => { noteTileRect(p.path, nt); }).catch(() => {});
+          const bg = 'url("' + t.url + '")';
+          el.style.backgroundImage = bg;
+          el.style.backgroundSize = (t.cssW || t.w) + 'px ' + (t.cssH || t.h) + 'px';
+          el.style.backgroundPosition = '0 0';
+          el.style.backgroundRepeat = 'no-repeat';
+          if (p.inp || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            el.setAttribute('data-xy-inp', '1');
+            el.setAttribute('data-xy-bg', bg);
+            // 非聚焦态：本地值清空，视觉由服务端像素承载（防双文字）
+            if (mirrorRoot.activeElement !== el) { try { el.value = ''; } catch (e2) {} }
           }
           continue;
         }
@@ -740,7 +773,12 @@
         if (!el) throw new Error('path miss');
         // 结构替换前清子树旧瓦片，防幽灵残影
         clearSubtreeTiles(p.path);
-        if (p.inner !== undefined) el.innerHTML = p.inner;
+        if (p.inner !== undefined) {
+          // frame 模式：body 级补丁会连瓦片图层一起换掉——先摘下再挂回
+          const savedLayer = frameMode ? (mirrorBody ? mirrorBody.querySelector('.xy-tiles') : null) : null;
+          el.innerHTML = p.inner;
+          if (savedLayer && el === mirrorBody) el.appendChild(savedLayer);
+        }
         else if (p.outer !== undefined) {
           const tpl = document.createElement('template');
           tpl.innerHTML = p.outer;
@@ -849,6 +887,9 @@
           }
           if (j.type === 'dom-snapshot') {
             noteBytes(ev.data.length || ev.data.size || 0);
+            noteFrame(0);
+            // v3：frame 像素直出才存在条带图层；dom 模式纯镜像本地渲染
+            frameMode = !!j.frame;
             // 原子切换：先预载全部瓦片位图，再一次性重建镜像并同步绘制。
             // 若先重建后逐张加载，瓦片层会经历"空白→逐张补齐"，交互后每次重同步
             // 都闪一下（用户实测"页面斗来斗去"的直接来源）。
@@ -873,6 +914,14 @@
             Promise.all(preload).then(() => {
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               buildMirror(j.css, j.html, j.docClass, j.docAttrs);
+              // 快照健康自检（v3 dom）：镜像树过小=快照异常，限频请求重同步
+              if (!j.frame && (!j.html || j.html.length < 80) && snapSelfCheckRetries < 3) {
+                snapSelfCheckRetries++;
+                console.log('[mirror] empty snapshot, requesting resync');
+                send({ type: 'mode', mode: mode });
+              } else if (j.html && j.html.length >= 80) {
+                snapSelfCheckRetries = 0;
+              }
               let maxBottom = 0, maxRight = 0;
               const td = window.devicePixelRatio || 1;
               for (const t of tiles) {
@@ -928,6 +977,35 @@
             m('mIdle').textContent = 'mirror';
           }
           if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); applyPatches(j.patches); }
+          if (j.type === 'canvas-tile') {
+            // v3：canvas 元素按需捕获（有变化才推）——换掉镜像里的占位 img
+            noteBytes(ev.data.length || ev.data.size || 0);
+            noteFrame(0);
+            try {
+              const el = mirrorFind(j.path);
+              if (el && el.tagName === 'IMG') el.src = j.url;
+            } catch (e) {}
+          }
+          if (j.type === 'scroll-sync') {
+            // 服务端页面滚动（锚点/JS 自动滚动/内部滚动联动）→ 镜像跟随
+            try {
+              const ms = document.getElementById('mirrorScroll');
+              if (ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) {
+                ms.__xySync = true;
+                ms.scrollLeft = j.sx; ms.scrollTop = j.sy;
+                setTimeout(() => { ms.__xySync = false; }, 80);
+              }
+              if (Array.isArray(j.scrolls)) {
+                for (const s of j.scrolls) {
+                  try {
+                    const el = mirrorFind(s[0]);
+                    if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - s[1]) > 1) el.scrollTop = s[1];
+                    if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - s[2]) > 1) el.scrollLeft = s[2];
+                  } catch (e) {}
+                }
+              }
+            } catch (e) {}
+          }
           if (j.type === 'doc-class' && mirrorBody) {
             // 主题/状态类切换：直改镜像根类名（轻量，不重建）
             mirrorBody.className = 'xy-body ' + (j.cls || '');
@@ -939,7 +1017,8 @@
           if (j.type === 'mode') { setMode(j.mode); lastErr = ''; setStatus('会话在线', true); }
           if (j.type === 'pong') { m('mRtt').textContent = Math.round(performance.now() - j.t); }
           if (j.type === 'sstats') {
-            m('mSrvFps').textContent = j.fps;
+            // v3 dom 无帧流：服务端指标=下行消息速率（帧语义只属于像素流模式）
+            m('mSrvFps').textContent = (j.mr != null ? j.mr : j.fps);
             if (j.inLat != null) m('mInLat').textContent = j.inLat;
             // 结构指纹比对：服务端元素数 vs 代理元素数。SPA 异步渲染后代理结构
             // 过期，补丁路径会碰撞错位（瓦片落到错误元素）而不报 path miss——
@@ -968,7 +1047,7 @@
     m('mBw').textContent = (winBw.reduce((s, x) => s + x.v, 0) / 5 / 1024).toFixed(1);
     m('mFrames').textContent = frames;
     m('mTotal').textContent = (bytes / 1024).toFixed(1);
-    if (winFps.length === 0) m('mIdle').textContent = connected ? 'idle (0帧)' : 'disconnected';
+    if (winFps.length === 0) m('mIdle').textContent = connected ? 'idle' : 'disconnected';
     if (connected && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: performance.now() }));
   }, 1000);
 
@@ -1015,17 +1094,23 @@
     // 容器，页面级 scroll 同步永远不触发。wheel 直接送服务端 CDP mouseWheel——
     // 滚哪个容器由服务端命中测试决定（与原生同语义）。容器级监听：静态元素，
     // 脚本加载即挂，不依赖镜像 wiring 时序；preventDefault 防代理双滚。
+    // v3 dom：本地原生滚动（镜像含全页结构与内容，滚轮零延迟），滚动位置经
+    // scroll 事件上报、服务端跟随。frame（像素直出）保持转发 CDP mouseWheel。
     ms.addEventListener('wheel', (e) => {
+      if (!frameMode) return; // dom：不拦截，原生滚动
       e.preventDefault();
       send({ type: 'mouse', action: 'wheel', x: e.clientX, y: e.clientY, dx: Math.round(e.deltaX), dy: Math.round(e.deltaY) });
     }, { passive: false, capture: true });
-    let lastAt = 0;
+    let lastAt = 0, trailT = null;
+    const reportScroll = () => send({ type: 'scroll', x: Math.round(ms.scrollLeft), y: Math.round(ms.scrollTop) });
     ms.addEventListener('scroll', () => {
       if (ms.__xySync) return; // 服务端反向同步触发的滚动不再回传（防回环）
       const now = Date.now();
+      if (trailT) clearTimeout(trailT);
+      trailT = setTimeout(reportScroll, 90); // 尾随补报：手势最后一段不会被 40ms 节流吞掉
       if (now - lastAt < 40) return;
       lastAt = now;
-      send({ type: 'scroll', x: Math.round(ms.scrollLeft), y: Math.round(ms.scrollTop) });
+      reportScroll();
     }, { passive: true });
   })();
 
