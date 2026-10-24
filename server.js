@@ -883,6 +883,36 @@ wss.on('connection', async (ws, req) => {
           case 'scrolltop':
             await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
             break;
+          case 'repaint': {
+            // 本地投机孔回落：客户端孔关闭后请求该区域按服务端当前画面重绘
+            // （单张瓦片，消除 putImageData 复原与服务端瓦片的竞态）
+            noteInput();
+            try {
+              const shotR = await cdp.send('Page.captureScreenshot', { format: 'png' });
+              const tileR = await page.evaluate((b64, x, y, w, h, d) => {
+                return new Promise((res) => {
+                  const im = new Image();
+                  im.onload = () => {
+                    const vx = Math.round((x - window.scrollX) * d), vy = Math.round((y - window.scrollY) * d);
+                    const vw = Math.min(Math.round(w * d), im.width - vx), vh = Math.min(Math.round(h * d), im.height - vy);
+                    if (vw < 1 || vh < 1 || vx < 0 || vy < 0) { res(null); return; }
+                    const c = document.createElement('canvas');
+                    c.width = vw; c.height = vh;
+                    c.getContext('2d').drawImage(im, vx, vy, vw, vh, 0, 0, vw, vh);
+                    res({ w: vw, h: vh, cssX: x, cssY: y, cssW: vw / d, cssH: vh / d, url: c.toDataURL('image/png') });
+                  };
+                  im.onerror = () => res(null);
+                  im.src = 'data:image/png;base64,' + b64;
+                });
+              }, shotR.data, Math.max(0, m.x || 0), Math.max(0, m.y || 0), Math.max(2, m.w || 2), Math.max(2, m.h || 2), DPR).catch(() => null);
+              if (tileR && ws.readyState === 1) {
+                const pr = JSON.stringify({ type: 'anim-tiles', tiles: [tileR] });
+                ws.send(pr);
+                ws._bytes = (ws._bytes || 0) + pr.length;
+              }
+            } catch (e) {}
+            break;
+          }
           case 'scroll': {
             // frame 模式滚动同步：客户端容器滚到哪，服务端页面跟到哪（瞬时），
             // 差分循环再把视口内真实变化（懒加载/固定元素/动画）补回来
@@ -1234,7 +1264,7 @@ wss.on('connection', async (ws, req) => {
         }
       } catch (e) {}
       finally { diffBusy = false; }
-    }, 140);
+    }, 100);
   }
 
   try {

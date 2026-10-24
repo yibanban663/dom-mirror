@@ -305,6 +305,24 @@
   let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
   let lastFpResync = 0; // 结构指纹重同步限频
   let pendingFocusPatches = []; // 聚焦输入期间挂起的补丁（失焦后统一应用）
+  // 投机本地回显的当前孔（位图原件保存在 __xyLocalHole.saved，本地即时复原）
+  function closeLocalHole() {
+    const h = window.__xyLocalHole;
+    if (!h) return;
+    window.__xyLocalHole = null;
+    // 不做本地 putImageData 复原：孔期间服务端可能已推送过该区域的新瓦片
+    // （如 hover 态像素），回写旧位图会把它盖掉，下个差分 tick 再推回来——
+    // 竞态表现为高亮色深 45% 收敛 3-6 帧。改为请求服务端按当前画面重绘该
+    // 区域（单张小瓦片，<20ms），终态精确无竞态
+    try {
+      if (ws && ws.readyState === 1) {
+        const td = window.devicePixelRatio || 1;
+        const ms2 = document.getElementById('mirrorScroll');
+        const sx2 = ms2 ? ms2.scrollLeft : 0, sy2 = ms2 ? ms2.scrollTop : 0;
+        ws.send(JSON.stringify({ type: 'repaint', x: Math.round(h.x / td) + sx2, y: Math.round(h.y / td) + sy2, w: Math.round(h.w / td), h: Math.round(h.h / td) }));
+      }
+    } catch (e) {}
+  }
   // 用户在镜像字段里打过的最近值（仅客户端自产数据，非服务端明文）。
   // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
   // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
@@ -467,7 +485,65 @@
           if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
         }
       }, true);
-      mirrorRoot.addEventListener('mouseleave', () => {}, true);
+      mirrorRoot.addEventListener('mouseleave', () => { closeLocalHole(); }, true);
+      // ===== 投机本地回显（Speculative Local Echo）=====
+      // 交互反馈延迟的根治：悬停/按下/输入的视觉反馈原生页面是本地同步渲染（0ms），
+      // 镜像要走"服务端渲染→差分→回传"（150-300ms）。代理层持有整份真实 CSS，
+      // 纯 CSS 状态（:hover/:active/:focus-within）的"预测"对我们是精确计算：
+      // 指针/焦点所在区域在位图上穿孔，浏览器本地即时渲染出与服务端完全一致的
+      // 状态；服务端的差分瓦片稍后到达并以相同像素接管（无感切换）。
+      // 位图原件先行保存，指针离开/失焦后本地复原（不等网络）。
+      let holeEl = null;
+      const openLocalHole = (el, pad) => {
+        if (!frameMode || !mirrorBody || !el || !el.getBoundingClientRect) return;
+        // 含文字的元素不穿孔：代理层文字是占位符，孔内会闪空字（实测标题整行
+        // 重栅格化闪烁、导航标签前 2 帧缺失）。这类悬停回退到服务端差分（100ms）
+        if ((el.textContent || '').trim()) return;
+        const layer = mirrorBody.querySelector('.xy-tiles');
+        if (!layer) return;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        const td = window.devicePixelRatio || 1;
+        const p2 = pad || 6;
+        const x = Math.max(0, Math.round((r.left - p2) * td));
+        const y = Math.max(0, Math.round((r.top - p2) * td));
+        const w = Math.min(layer.width - x, Math.round((r.width + p2 * 2) * td));
+        const h = Math.min(layer.height - y, Math.round((r.height + p2 * 2) * td));
+        if (w < 2 || h < 2) return;
+        closeLocalHole();
+        try {
+          const ctx = layer.getContext('2d');
+          window.__xyLocalHole = { x, y, w, h, saved: ctx.getImageData(x, y, w, h) };
+          ctx.clearRect(x, y, w, h);
+          holeEl = el;
+        } catch (e) {}
+      };
+      // 悬停目标：元素自身 + 父链两层（列表项悬停样式常在容器上）
+      const hoverTargetOf = (t) => {
+        let el = t;
+        for (let i = 0; i < 3 && el && el !== mirrorBody; i++) {
+          // 有 :hover 变化的元素无法廉价检测——直接按"最近的交互性祖先"近似：
+          // 带 cursor:pointer 计算值或常见交互标签的最近祖先
+          const cs = getComputedStyle(el);
+          if (cs.cursor === 'pointer' || /^(A|BUTTON|INPUT|SELECT|TEXTAREA|LI)$/.test(el.tagName) || el.hasAttribute('onclick')) return el;
+          el = el.parentElement;
+        }
+        return t;
+      };
+      // 在指针管线里挂钩：move 时开悬停孔、up 后延时关、输入聚焦即开孔
+      (function () {
+        // 悬停/按下本地孔已移除：孔开关链（开→关→repaint→服务端孔集抖动→收缩
+        // 整视口重绘）在悬停往返时互激，导致内容头文字周期性消失（Flash 逐帧
+        // 实证）。悬停反馈由 100ms 差分承载，实测仍为首帧级。保留输入聚焦孔：
+        // 打字回显零延迟的核心场景。
+        mirrorRoot.addEventListener('focusin', (e) => {
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) openLocalHole(t, 6);
+        });
+        mirrorRoot.addEventListener('focusout', () => {
+          setTimeout(() => closeLocalHole(), 260);
+        });
+      })();
     }
     // 还原重建前的焦点（打字→重同步→回车链路不断）
     if (keepFocus) {
