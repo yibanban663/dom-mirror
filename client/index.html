@@ -304,6 +304,7 @@
   let snapSelfCheckRetries = 0;
   let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
   let lastFpResync = 0; // 结构指纹重同步限频
+  let pendingFocusPatches = []; // 聚焦输入期间挂起的补丁（失焦后统一应用）
   // 用户在镜像字段里打过的最近值（仅客户端自产数据，非服务端明文）。
   // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
   // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
@@ -437,6 +438,13 @@
         const v = lastTyped.get(p);
         t.value = v;
         try { t.setSelectionRange(v.length, v.length); } catch (err) {}
+      });
+      // 失焦：统一补挂聚焦期间挂起的补丁
+      mirrorRoot.addEventListener('focusout', () => {
+        if (!pendingFocusPatches.length) return;
+        const q = pendingFocusPatches;
+        pendingFocusPatches = [];
+        setTimeout(() => applyPatches(q), 30);
       });
       // 功能键转发：Enter 发送、Escape 关闭、方向键导航等快捷键由服务端页面响应。
       // 字符输入不走这里（由 input 事件整体同步 value），否则会双输入。
@@ -582,7 +590,20 @@
   function applyPatches(patches) {
     if (!mirrorBody) return;
     const dpr = window.devicePixelRatio || 1;
+    // 焦点保护：React 受控输入每次键入都会重渲染字段节点，补丁把输入框整个换掉，
+    // 焦点掉回 body → 后续字符全部丢失（实测只打进第一个字符）。替换前记焦点路径，
+    // 替换后回焦点（focusin 会按 lastTyped 恢复半截值）
+    const ae = mirrorRoot ? mirrorRoot.activeElement : null;
+    const aePath = (ae && ae !== mirrorBody && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ? pathOfMirror(ae) : null;
     for (const p of patches) {
+      // 聚焦输入期间挂起涉及该输入的补丁：React 每键重渲染都换输入框节点，
+      // 与打字/值回填形成竞态（实测值被打乱成 "sescac-loped"）。打字时用户即
+      // 权威（frame 模式输入框穿孔本地原生渲染；dom 模式瓦片随值隐藏），
+      // 失焦后统一补挂
+      if (aePath !== null && typeof p.path === 'string' && (p.path === aePath || aePath.startsWith(p.path + '/') || p.path.startsWith(aePath + '/'))) {
+        pendingFocusPatches.push(p);
+        continue;
+      }
       try {
         // 像素瓦片补丁：追加/替换图层中的瓦片（绝对坐标，设备像素对齐）
         if (p.tile || p.selTile) {
@@ -618,6 +639,12 @@
         if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 请求全量重同步
         return;
       }
+    }
+    if (aePath !== null) {
+      try {
+        const el2 = mirrorFind(aePath);
+        if (el2 && el2.focus && mirrorRoot.activeElement !== el2) el2.focus();
+      } catch (e) {}
     }
     noteFrame(0);
   }
@@ -674,6 +701,18 @@
                 ms.__xySync = true;
                 ms.scrollLeft = j.sx; ms.scrollTop = j.sy;
                 setTimeout(() => { ms.__xySync = false; }, 80);
+              }
+            }
+            // 穿孔：瓦片画完后在底图上挖洞，露出代理层同 CSS 的原生渲染
+            // （动画 60fps、输入回显/光标本地即时）——洞永远优先于瓦片
+            if (Array.isArray(j.holes) && frameMode && mirrorBody) {
+              const layerH = mirrorBody.querySelector('.xy-tiles');
+              if (layerH) {
+                const tdh = window.devicePixelRatio || 1;
+                const xh = layerH.getContext('2d');
+                for (const h2 of j.holes) {
+                  try { xh.clearRect(h2[0] * tdh, h2[1] * tdh, h2[2] * tdh, h2[3] * tdh); } catch (e) {}
+                }
               }
             }
             // 内部滚动容器跟随（源站 JS 自动滚动，如聊天滚到底）

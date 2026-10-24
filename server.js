@@ -27,18 +27,22 @@ const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
 const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom', 'frame'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
 const FRAME_MIN_INTERVAL = parseInt(process.env.FRAME_MIN_INTERVAL || '33', 10); // 30fps 上限
-const H264_ARGS = [
-  '-hide_banner', '-loglevel', 'error',
-  // 关键：稀疏帧输入下跳过长探测，首帧即出流（默认要攒 150 帧才开始编码）
-  '-analyzeduration', '0', '-probesize', '1M',
-  '-f', 'image2pipe', '-c:v', 'mjpeg', '-r', '30', '-i', 'pipe:0',
-  '-vf', `scale=${VIEW_W}:${VIEW_H}`,
-  '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-  '-profile:v', 'main', '-level', '4.0', '-pix_fmt', 'yuv420p',
-  '-x264-params', 'keyint=30:min-keyint=30:scenecut=0:repeat-headers=1',
-  '-b:v', '700k', '-maxrate', '1200k', '-bufsize', '200k',
-  '-f', 'h264', 'pipe:1',
-];
+// H.264 编码参数按会话视口动态构建（模块级常量会把 1440 会话压到 1280——实测踩过）。
+// 质量：CRF 12 + 30M 上限 → 文字锐利；zerolatency + 无 B 帧 + repeat-headers →
+// 任意时刻接入即可解码，玻璃到玻璃 <50ms（内网）。
+function h264Args() {
+  return [
+    '-hide_banner', '-loglevel', 'error',
+    '-analyzeduration', '0', '-probesize', '1M',
+    '-f', 'image2pipe', '-c:v', 'mjpeg', '-r', '30', '-i', 'pipe:0',
+    '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+    '-profile:v', 'high', '-level', '4.2', '-pix_fmt', 'yuv420p',
+    '-x264-params', 'keyint=60:min-keyint=30:scenecut=0:repeat-headers=1:bframes=0',
+    '-crf', '12', '-maxrate', '30M', '-bufsize', '4M',
+    '-f', 'h264', 'pipe:1',
+  ];
+}
 const CHROME_ARGS = [
   '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
   '--disable-gpu', '--hide-scrollbars', '--mute-audio',
@@ -460,26 +464,36 @@ const PAGE_HELPERS = `(() => {
       // 发送后参考帧前移。PNG 截图渲染确定性 → 静止页逐字节一致，低阈值不误报。
       const ref = window.__xyDiffRef;
       if (!ref || ref.length !== cur.length) { window.__xyDiffRef = cur; return { tiles: [], sx: window.scrollX, sy: window.scrollY }; }
-      // CSS 动画掩蔽区（视口坐标，设备像素）。动画元素在客户端原生渲染，
-      // 参考帧按"该区域未变化"维护（每帧写回 cur），掩蔽结束后自然恢复差分。
+      // CSS 动画掩蔽/穿孔区（视口坐标，设备像素）+ 聚焦输入框（原生输入回显与光标）。
+      // 无文字的动画才掩蔽：代理里文字是占位符，穿孔会露出空字。
+      // frame 模式下掩蔽区同时作为"穿孔"下发——客户端 clearRect 露出代理层
+      // 同 CSS 的原生 60fps 渲染；静态内容仍构造性位图一致。
       let animMask = null;
       if (maskAnims) {
         try {
           let area = 0;
           animMask = [];
+          const push = (r, allowText, el) => {
+            if (r.width < 2 || r.height < 2) return;
+            if (!allowText && el && (el.textContent || '').trim()) return;
+            const x0 = Math.max(0, Math.floor(r.left * dpr)), y0 = Math.max(0, Math.floor(r.top * dpr));
+            const x1 = Math.min(W, Math.ceil((r.left + r.width) * dpr)), y1 = Math.min(H, Math.ceil((r.top + r.height) * dpr));
+            if (x1 <= x0 || y1 <= y0) return;
+            animMask.push([x0, y0, x1, y1]);
+            area += (x1 - x0) * (y1 - y0);
+          };
           for (const a of document.getAnimations()) {
             if (a.playState !== 'running') continue;
             const el = a.effect && a.effect.target;
             if (!el || !el.getBoundingClientRect) continue;
-            const r = el.getBoundingClientRect();
-            if (r.width < 2 || r.height < 2) continue;
-            const x0 = Math.max(0, Math.floor(r.left * dpr)), y0 = Math.max(0, Math.floor(r.top * dpr));
-            const x1 = Math.min(W, Math.ceil((r.left + r.width) * dpr)), y1 = Math.min(H, Math.ceil((r.top + r.height) * dpr));
-            if (x1 <= x0 || y1 <= y0) continue;
-            animMask.push([x0, y0, x1, y1]);
-            area += (x1 - x0) * (y1 - y0);
+            push(el.getBoundingClientRect(), false, el);
           }
-          // 掩蔽区过大（近乎全屏动画的站点）时放弃掩蔽，退回差分兜底
+          try {
+            const ae = document.activeElement;
+            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && !ae.disabled) {
+              push(ae.getBoundingClientRect(), true, null);
+            }
+          } catch (e2) {}
           if (area > W * H * 0.8 || !animMask.length) animMask = animMask && animMask.length ? animMask : null;
         } catch (e) { animMask = null; }
       }
@@ -487,6 +501,12 @@ const PAGE_HELPERS = `(() => {
         if (!animMask) return false;
         for (const m of animMask) { if (x >= m[0] && x < m[2] && y >= m[1] && y < m[3]) return true; }
         return false;
+      };
+      // 穿孔（CSS 页面坐标）：frame 模式下掩蔽区=穿孔区
+      const holesOf = () => {
+        if (!animMask) return [];
+        const ox = Math.round(window.scrollX), oy = Math.round(window.scrollY);
+        return animMask.map((m) => [Math.round(m[0] / dpr) + ox, Math.round(m[1] / dpr) + oy, Math.round((m[2] - m[0]) / dpr), Math.round((m[3] - m[1]) / dpr)]);
       };
       const CELL = Math.max(12, Math.round(20 * dpr));
       const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
@@ -529,13 +549,13 @@ const PAGE_HELPERS = `(() => {
         // （下方变化过的内容 + 固定定位元素），连续滚动 400ms 一张足够。
         // 关键：跳过发送时绝不推进参考帧——参考帧必须始终等于"客户端当前持有"，
         // 否则变化被吞掉、画面永久停在旧状态（实测回车发送后输入框占位符不回来）
-        if (now - (window.__xyFullAt || 0) < 400) { return { tiles: [], sx: window.scrollX, sy: window.scrollY }; }
+        if (now - (window.__xyFullAt || 0) < 400) { return { tiles: [], holes: holesOf(), sx: window.scrollX, sy: window.scrollY }; }
         window.__xyFullAt = now;
         const c2w = document.createElement('canvas');
         c2w.width = W; c2w.height = H;
         c2w.getContext('2d').drawImage(cv, 0, 0);
         window.__xyDiffRef = cur;
-        return { tiles: [{ w: W, h: H, cssX: offX, cssY: offY, cssW: W / dpr, cssH: H / dpr, url: c2w.toDataURL('image/png') }], sx: window.scrollX, sy: window.scrollY };
+        return { tiles: [{ w: W, h: H, cssX: offX, cssY: offY, cssW: W / dpr, cssH: H / dpr, url: c2w.toDataURL('image/png') }], holes: holesOf(), sx: window.scrollX, sy: window.scrollY };
       }
       const tiles = [];
       for (const rc of rects) {
@@ -548,7 +568,7 @@ const PAGE_HELPERS = `(() => {
         tiles.push({ w: sw, h: sh, cssX: sx / dpr + offX, cssY: sy / dpr + offY, cssW: sw / dpr, cssH: sh / dpr, url: c2c.toDataURL('image/png') });
       }
       if (tiles.length) window.__xyDiffRef = cur;
-      return { tiles, sx: window.scrollX, sy: window.scrollY };
+      return { tiles, holes: holesOf(), sx: window.scrollX, sy: window.scrollY };
     },
   };
 })();`;
@@ -885,15 +905,20 @@ wss.on('connection', async (ws, req) => {
 
   async function startScreencast() {
     await cdp.send('Page.stopScreencast').catch(() => {});
+    // h264 模式的中间帧用高质量 JPEG（92）：它是送编码器的前置采集，压太狠文字
+    // 在编码前就糊了；分辨率按访客 DPR 保全清晰度
     await cdp.send('Page.startScreencast', {
       format: mode === 'webp' ? 'webp' : 'jpeg',
-      quality, maxWidth: VIEW_W, maxHeight: VIEW_H, everyNthFrame: 1,
+      quality: mode === 'h264' ? 92 : quality,
+      maxWidth: Math.round(viewW * (mode === 'h264' ? DPR : 1)) || VIEW_W,
+      maxHeight: Math.round(viewH * (mode === 'h264' ? DPR : 1)) || VIEW_H,
+      everyNthFrame: 1,
     });
   }
 
   function startFFmpeg() {
     if (ffmpeg) return;
-    ffmpeg = spawn('ffmpeg', H264_ARGS, { stdio: ['pipe', 'pipe', 'pipe'] });
+    ffmpeg = spawn('ffmpeg', h264Args(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const ff = ffmpeg;
     let errTail = [];
     ff.stderr.on('data', (d) => {
@@ -1138,7 +1163,7 @@ wss.on('connection', async (ws, req) => {
     // 独立浏览器实例。差分通道恢复启用（动画/悬停/视频跟随）。
     if (diffTimer) return;
     let diffSince = 0;
-    let lastAnnSX = 0, lastAnnSY = 0, lastScrolls = '[]';
+    let lastAnnSX = 0, lastAnnSY = 0, lastScrolls = '[]', lastHoles = '[]';
     diffTimer = setInterval(async () => {
       if (diffBusy) {
         // 卡死自愈：截图/evaluate 挂起会让 diffBusy 永真、该会话动画永久停更
@@ -1153,7 +1178,7 @@ wss.on('connection', async (ws, req) => {
           new Promise((_, rej) => setTimeout(() => rej(new Error('shot timeout')), 2500)),
         ]);
         const out = await Promise.race([
-          page.evaluate((b64, d, ma) => { const r = window.__xy.diffTiles(b64, d, ma); try { r.scrollers = window.__xy.scrollers(); } catch (e) {} return r; }, shot.data, DPR, mode === 'dom'),
+          page.evaluate((b64, d, ma) => { const r = window.__xy.diffTiles(b64, d, ma); try { r.scrollers = window.__xy.scrollers(); } catch (e) {} return r; }, shot.data, DPR, (mode === 'dom' || mode === 'frame'), !!lastInputAt && (Date.now() - lastInputAt < 800)),
           new Promise((_, rej) => setTimeout(() => rej(new Error('diff timeout')), 2500)),
         ]).catch((e) => { console.log('[diff] eval err:', e && e.message); return null; });
         if (!(diffTick = (diffTick + 1) % 20)) {
@@ -1167,8 +1192,38 @@ wss.on('connection', async (ws, req) => {
           const scrollMoved = out.sx !== undefined && (Math.abs((out.sx || 0) - lastAnnSX) > 1 || Math.abs((out.sy || 0) - lastAnnSY) > 1);
           const scrollsNow = JSON.stringify(out.scrollers || []);
           const innerMoved = scrollsNow !== lastScrolls;
+          // 穿孔收缩（失焦/动画结束）：客户端画布上的洞需要补回像素，但差分参考帧
+          // 认为该区域无变化不会推——强制整视口重绘一张（400ms 节流沿用）
+          const holesNow = JSON.stringify(out.holes || []);
+          if (holesNow !== lastHoles && (out.holes || []).length < JSON.parse(lastHoles).length) {
+            try {
+              if (Date.now() - (out.__fullAt || 0) >= 0) {
+                const full = await Promise.race([
+                  page.evaluate((b64, d) => {
+                    return new Promise((res) => {
+                      const im = new Image();
+                      im.onload = () => {
+                        const c = document.createElement('canvas');
+                        c.width = im.width; c.height = im.height;
+                        c.getContext('2d').drawImage(im, 0, 0);
+                        res({ w: im.width, h: im.height, cssX: Math.round(window.scrollX), cssY: Math.round(window.scrollY), cssW: im.width / d, cssH: im.height / d, url: c.toDataURL('image/png') });
+                      };
+                      im.src = 'data:image/png;base64,' + b64;
+                    });
+                  }, shot.data, DPR),
+                  new Promise((_, rej) => setTimeout(() => rej(new Error('full timeout')), 2500)),
+                ]).catch(() => null);
+                if (full && ws.readyState === 1) {
+                  const pf = JSON.stringify({ type: 'anim-tiles', tiles: [full], holes: out.holes || [], sx: out.sx || 0, sy: out.sy || 0 });
+                  ws.send(pf);
+                  ws._bytes = (ws._bytes || 0) + pf.length;
+                }
+              }
+            } catch (e) {}
+          }
+          lastHoles = holesNow;
           if ((out.tiles && out.tiles.length) || scrollMoved || innerMoved) {
-            const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], sx: out.sx || 0, sy: out.sy || 0, scrolls: out.scrollers || [] });
+            const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], holes: out.holes || [], sx: out.sx || 0, sy: out.sy || 0, scrolls: out.scrollers || [] });
             if (ws.readyState === 1) {
               ws.send(payload);
               ws._bytes = (ws._bytes || 0) + payload.length;
@@ -1248,7 +1303,6 @@ wss.on('connection', async (ws, req) => {
         navChain = navChain.then(async () => {
           try {
             await page.evaluate(PAGE_HELPERS).catch(() => {});
-            await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
             if (mode === 'dom' || mode === 'frame') await startDomMirror();
             for (const d of [2500, 7000]) {
               setTimeout(() => {
@@ -1279,7 +1333,6 @@ wss.on('connection', async (ws, req) => {
     if (hello.h) viewH = Math.max(240, Math.min(1600, parseInt(hello.h, 10) || viewH));
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
     await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
-    await page.addStyleTag({ content: originFontCssFor() }).catch(() => {});
     sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), url: sessionOrigin, maxSessions: MAX_SESSIONS, mode, prod: prodMode });
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
     else await startScreencast();
