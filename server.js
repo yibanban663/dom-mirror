@@ -482,10 +482,17 @@ const PAGE_HELPERS = `(() => {
             animMask.push([x0, y0, x1, y1]);
             area += (x1 - x0) * (y1 - y0);
           };
+          // 动态媒体挖除：canvas/svg/video/iframe 区域从掩蔽中排除——它们的内容
+          // 变化必须走差分（父容器带 CSS 动画时整块掩蔽会把 canvas 动画冻住，
+          // 实测雷达扫描图 4.6s 静止）。挖除后再与动画矩形求差太重，这里反向：
+          // 掩蔽只保留动画元素矩形减去媒体矩形后的部分（简化为：动画元素若包含
+          // 媒体后代则整块不掩蔽，由差分兜底其视觉）
+          const hasMedia = (el) => { try { return !!el.querySelector('canvas, svg, video, iframe'); } catch (e) { return false; } };
           for (const a of document.getAnimations()) {
             if (a.playState !== 'running') continue;
             const el = a.effect && a.effect.target;
             if (!el || !el.getBoundingClientRect) continue;
+            if (hasMedia(el)) continue;
             push(el.getBoundingClientRect(), false, el);
           }
           try {
@@ -511,7 +518,7 @@ const PAGE_HELPERS = `(() => {
       const CELL = Math.max(12, Math.round(20 * dpr));
       const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
       const cells = new Uint8Array(cols * rows);
-      const TH = 4;
+      const TH = 2; // PNG 截图确定性：静止页逐字节一致，低阈值安全；4 会吃掉慢动画逐步漂移
       for (let y = 0; y < H; y += 2) {
         const ri = (y / CELL) | 0;
         for (let x = 0; x < W; x += 2) {
@@ -860,7 +867,9 @@ wss.on('connection', async (ws, req) => {
             if (m.action === 'move') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseMoved', buttons: m.buttons || 0 });
             else if (m.action === 'down') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mousePressed', clickCount: 1, buttons: 1 });
             else if (m.action === 'up') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseReleased', clickCount: 1, buttons: 1 });
-            else if (m.action === 'wheel') await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseWheel', deltaX: m.dx || 0, deltaY: m.dy || 0 });
+            else if (m.action === 'wheel') {
+              await cdp.send('Input.dispatchMouseEvent', { ...common, type: 'mouseWheel', deltaX: m.dx || 0, deltaY: m.dy || 0 });
+            }
             break;
           }
           case 'key': {
@@ -987,13 +996,22 @@ wss.on('connection', async (ws, req) => {
   let domActive = false, domExposed = false;
   let DPR = 1;
   let viewW = VIEW_W, viewH = VIEW_H;
+  let domStartAt = 0; // 全量快照起点（死锁自愈计时）
   let patchChain = Promise.resolve();
 
   let domStarting = null;
+  // 全链路超时：截图/evaluate 在复杂页面可能挂起（实测 34 秒死锁——domStarting
+  // 永真 → 差分循环被 guard 跳过 → 视觉更新全停，直到全量重同步偶然复活）。
+  // 所有重操作的 await 必须有超时兜底。
+  const withTimeout = (p2, ms, tag2) => Promise.race([
+    p2,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + (tag2 || 'op'))), ms)),
+  ]);
   function startDomMirror() {
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
     // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白
     if (domStarting) return domStarting;
+    domStartAt = Date.now();
     console.log('[dbg] startDomMirror <- ' + (new Error().stack.split('\n')[2] || '?').trim().replace(/^at /, ''));
     domStarting = (async () => {
       try { await doStartDomMirror(); }
@@ -1057,7 +1075,7 @@ wss.on('connection', async (ws, req) => {
     await new Promise(r => setTimeout(r, 150));
     // 底板健康检查：共享 Chrome 偶发产出空白/未完成合成的截图，直接用会把全批瓦片
     // 裁成空白。解码采样判空，坏帧等待 500ms 重拍一次。
-    let shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    let shot = await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'sheet');
     const sheetHealthy = async (b64) => {
       try {
         return await page.evaluate((d) => {
@@ -1090,10 +1108,10 @@ wss.on('connection', async (ws, req) => {
     if (!(await sheetHealthy(shot.data))) {
       console.log('[dom   ] blank sheet detected, recapturing');
       await new Promise(r => setTimeout(r, 500));
-      shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+      shot = await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'sheet2');
     }
     await page.evaluate((d) => { window.__xyDpr = d; }, DPR);
-    const snap = await page.evaluate((b64, wf) => window.__xy.snapshotTiles(b64, wf), shot.data, mode === 'frame');
+    const snap = await withTimeout(page.evaluate((b64, wf) => window.__xy.snapshotTiles(b64, wf), shot.data, mode === 'frame'), 10000, 'snapshot');
     try {
       const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
       console.log('[dom   ] post-snapshot focus:', foc);
@@ -1200,7 +1218,14 @@ wss.on('connection', async (ws, req) => {
         if (Date.now() - diffSince > 5000) { console.log('[diff] stuck tick, self-healing'); diffBusy = false; }
         else return;
       }
-      if (dead || (mode !== 'dom' && mode !== 'frame') || !domActive || !page || !cdp || ws.readyState !== 1 || domStarting) return;
+      if (dead || (mode !== 'dom' && mode !== 'frame') || !domActive || !page || !cdp || ws.readyState !== 1) return;
+      // domStarting 死锁自愈：全量快照挂起（截图/evaluate 无响应）会让 domStarting
+      // 永真，差分被永久跳过（实测 34 秒视觉冻结）。8 秒未完成视为死锁，强制放行
+      if (domStarting) {
+        if (!domStartAt) domStartAt = Date.now();
+        else if (Date.now() - domStartAt > 8000) { console.log('[diff] domStarting stuck >8s, self-healing'); domStarting = null; domStartAt = 0; }
+        else return;
+      } else domStartAt = 0;
       diffBusy = true; diffSince = Date.now();
       try {
         const shot = await Promise.race([
@@ -1225,6 +1250,7 @@ wss.on('connection', async (ws, req) => {
           // 穿孔收缩（失焦/动画结束）：客户端画布上的洞需要补回像素，但差分参考帧
           // 认为该区域无变化不会推——强制整视口重绘一张（400ms 节流沿用）
           const holesNow = JSON.stringify(out.holes || []);
+          const holesMoved = holesNow !== lastHoles;
           if (holesNow !== lastHoles && (out.holes || []).length < JSON.parse(lastHoles).length) {
             try {
               if (Date.now() - (out.__fullAt || 0) >= 0) {
@@ -1252,7 +1278,9 @@ wss.on('connection', async (ws, req) => {
             } catch (e) {}
           }
           lastHoles = holesNow;
-          if ((out.tiles && out.tiles.length) || scrollMoved || innerMoved) {
+          // holes 变化必须发：输入框穿孔/动画孔出现时 tiles 可能为空（掩蔽区不产瓦片），
+          // 不发消息客户端就收不到孔 → 掩蔽区成黑洞（实测打字回显完全不可见）
+          if ((out.tiles && out.tiles.length) || scrollMoved || innerMoved || holesMoved) {
             const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], holes: out.holes || [], sx: out.sx || 0, sy: out.sy || 0, scrolls: out.scrollers || [] });
             if (ws.readyState === 1) {
               ws.send(payload);
@@ -1334,7 +1362,7 @@ wss.on('connection', async (ws, req) => {
           try {
             await page.evaluate(PAGE_HELPERS).catch(() => {});
             if (mode === 'dom' || mode === 'frame') await startDomMirror();
-            for (const d of [2500, 7000]) {
+            for (const d of [600, 1500]) {
               setTimeout(() => {
                 if (dead || !domActive || ws.readyState !== 1) return;
                 startDomMirror().catch(() => {});

@@ -284,6 +284,7 @@
     mode = mo;
     const isDom = mo === 'dom' || mo === 'frame';
     frameMode = mo === 'frame';
+    console.log('HOLEDBG setMode ' + mo + ' frameMode=' + frameMode);
     m('mMode').textContent = mo;
     m('spec').textContent = mo === 'dom' ? 'DOM 镜像（本地渲染 + 服务端补丁）'
       : mo === 'frame' ? '像素直出（服务端整页渲染，本地零重排）'
@@ -304,7 +305,8 @@
   let snapSelfCheckRetries = 0;
   let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
   let lastFpResync = 0; // 结构指纹重同步限频
-  let pendingFocusPatches = []; // 聚焦输入期间挂起的补丁（失焦后统一应用）
+  let pendingFocusPatches = [];
+  let lastServerHoles = null, holeRafOn = false; // 服务端穿孔区（rAF 持续重申，免疫瓦片覆盖时序） // 聚焦输入期间挂起的补丁（失焦后统一应用）
   // 投机本地回显的当前孔（位图原件保存在 __xyLocalHole.saved，本地即时复原）
   function closeLocalHole() {
     const h = window.__xyLocalHole;
@@ -486,6 +488,10 @@
         }
       }, true);
       mirrorRoot.addEventListener('mouseleave', () => { closeLocalHole(); }, true);
+      // 滚轮转发（根治内层容器滚动失效）：真实应用多为 100vh 布局 + 内层
+      // overflow 容器，页面级 scroll 同步永远不触发。wheel 直接送服务端
+      // CDP mouseWheel——滚哪个容器由服务端命中测试决定（与原生同语义）。
+      // 本地 preventDefault：代理不双滚，滚动结果经差分/内部滚动同步回传。
       // ===== 投机本地回显（Speculative Local Echo）=====
       // 交互反馈延迟的根治：悬停/按下/输入的视觉反馈原生页面是本地同步渲染（0ms），
       // 镜像要走"服务端渲染→差分→回传"（150-300ms）。代理层持有整份真实 CSS，
@@ -498,7 +504,7 @@
         if (!frameMode || !mirrorBody || !el || !el.getBoundingClientRect) return;
         // 含文字的元素不穿孔：代理层文字是占位符，孔内会闪空字（实测标题整行
         // 重栅格化闪烁、导航标签前 2 帧缺失）。这类悬停回退到服务端差分（100ms）
-        if ((el.textContent || '').trim()) return;
+        if ((el.textContent || '').trim() && el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT') return;
         const layer = mirrorBody.querySelector('.xy-tiles');
         if (!layer) return;
         const r = el.getBoundingClientRect();
@@ -536,13 +542,43 @@
         // 整视口重绘）在悬停往返时互激，导致内容头文字周期性消失（Flash 逐帧
         // 实证）。悬停反馈由 100ms 差分承载，实测仍为首帧级。保留输入聚焦孔：
         // 打字回显零延迟的核心场景。
+        // 输入框孔：rAF 持续重申（客户端几何每帧重取——元素随补丁/重建移动时
+        // 孔始终跟着；镜像重建（新 canvas）后孔自动重开；免疫瓦片覆盖时序）。
+        // 服务端在打字活跃期同时掩蔽该区域不推瓦片，本地真实输入控件负责渲染。
+        let inputHoleEl = null, inputRafOn = false;
+        const inputPunchLoop = () => {
+          if (!inputHoleEl || !frameMode || !mirrorBody) { inputRafOn = false; return; }
+          if (!inputHoleEl.isConnected) {
+            // 重建后元素被替换：按标签+同位置找回（近似——聚焦路径已由 keepFocus 恢复）
+            const ae2 = mirrorRoot ? mirrorRoot.activeElement : null;
+            if (ae2 && (ae2.tagName === 'INPUT' || ae2.tagName === 'TEXTAREA')) inputHoleEl = ae2;
+            else { inputHoleEl = null; inputRafOn = false; return; }
+          }
+          const layer = mirrorBody.querySelector('.xy-tiles');
+          if (layer) {
+            const r = inputHoleEl.getBoundingClientRect();
+            const td = window.devicePixelRatio || 1;
+            if (r.width > 1 && r.height > 1) {
+              const p3 = 6;
+              const x = Math.max(0, Math.round((r.left - p3) * td));
+              const y = Math.max(0, Math.round((r.top - p3) * td));
+              const w = Math.min(layer.width - x, Math.round((r.width + p3 * 2) * td));
+              const h = Math.min(layer.height - y, Math.round((r.height + p3 * 2) * td));
+              if (w > 1 && h > 1) {
+                try { layer.getContext('2d').clearRect(x, y, w, h); } catch (e) {}
+              }
+            }
+          }
+          requestAnimationFrame(inputPunchLoop);
+        };
         mirrorRoot.addEventListener('focusin', (e) => {
           const t = e.target;
-          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) openLocalHole(t, 6);
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+            inputHoleEl = t;
+            if (!inputRafOn) { inputRafOn = true; requestAnimationFrame(inputPunchLoop); }
+          }
         });
-        mirrorRoot.addEventListener('focusout', () => {
-          setTimeout(() => closeLocalHole(), 260);
-        });
+        mirrorRoot.addEventListener('focusout', () => { inputHoleEl = null; });
       })();
     }
     // 还原重建前的焦点（打字→重同步→回车链路不断）
@@ -781,14 +817,23 @@
             }
             // 穿孔：瓦片画完后在底图上挖洞，露出代理层同 CSS 的原生渲染
             // （动画 60fps、输入回显/光标本地即时）——洞永远优先于瓦片
-            if (Array.isArray(j.holes) && frameMode && mirrorBody) {
-              const layerH = mirrorBody.querySelector('.xy-tiles');
-              if (layerH) {
-                const tdh = window.devicePixelRatio || 1;
-                const xh = layerH.getContext('2d');
-                for (const h2 of j.holes) {
-                  try { xh.clearRect(h2[0] * tdh, h2[1] * tdh, h2[2] * tdh, h2[3] * tdh); } catch (e) {}
-                }
+            if (Array.isArray(j.holes)) {
+              lastServerHoles = j.holes;
+              if (!holeRafOn && frameMode && mirrorBody) {
+                holeRafOn = true;
+                const punchLoop = () => {
+                  if (!frameMode || !mirrorBody || !lastServerHoles || !lastServerHoles.length) { holeRafOn = false; return; }
+                  const layerH = mirrorBody.querySelector('.xy-tiles');
+                  if (layerH) {
+                    const tdh = window.devicePixelRatio || 1;
+                    const xh = layerH.getContext('2d');
+                    for (const h2 of lastServerHoles) {
+                      try { xh.clearRect(h2[0] * tdh, h2[1] * tdh, h2[2] * tdh, h2[3] * tdh); } catch (e) {}
+                    }
+                  }
+                  requestAnimationFrame(punchLoop);
+                };
+                requestAnimationFrame(punchLoop);
               }
             }
             // 内部滚动容器跟随（源站 JS 自动滚动，如聊天滚到底）
@@ -966,6 +1011,14 @@
   (function () {
     const ms = document.getElementById('mirrorScroll');
     if (!ms) return;
+    // 滚轮转发（根治内层容器滚动失效）：真实应用多为 100vh 布局 + 内层 overflow
+    // 容器，页面级 scroll 同步永远不触发。wheel 直接送服务端 CDP mouseWheel——
+    // 滚哪个容器由服务端命中测试决定（与原生同语义）。容器级监听：静态元素，
+    // 脚本加载即挂，不依赖镜像 wiring 时序；preventDefault 防代理双滚。
+    ms.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      send({ type: 'mouse', action: 'wheel', x: e.clientX, y: e.clientY, dx: Math.round(e.deltaX), dy: Math.round(e.deltaY) });
+    }, { passive: false, capture: true });
     let lastAt = 0;
     ms.addEventListener('scroll', () => {
       if (ms.__xySync) return; // 服务端反向同步触发的滚动不再回传（防回环）
