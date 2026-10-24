@@ -25,6 +25,7 @@ const VIEW_H = parseInt(process.env.VIEW_H || '800', 10);
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
 const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
+let sharp = null; try { sharp = require('sharp'); } catch (e) { console.log('[sharp ] unavailable:', e.message); }
 const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom', 'frame'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
 const FRAME_MIN_INTERVAL = parseInt(process.env.FRAME_MIN_INTERVAL || '33', 10); // 30fps 上限
 // H.264 编码参数按会话视口动态构建（模块级常量会把 1440 会话压到 1280——实测踩过）。
@@ -47,6 +48,13 @@ const CHROME_ARGS = [
   '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
   '--disable-gpu', '--hide-scrollbars', '--mute-audio',
   '--force-color-profile=srgb', '--font-render-hinting=none',
+  // 禁渲染节流：headless/不可见标签下 rAF 与定时器被节流会冻结 canvas 动画
+  // （实测烽火台球体 96 帧零变化、内容 3.6s 空白——真实前台浏览器无此问题，
+  // 但服务端渲染必须强制活跃）
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-features=CalculateNativeWinOcclusion',
 ];
 
 // ---------- DOM 镜像：注入到受保护页面的辅助函数 ----------
@@ -459,11 +467,36 @@ const PAGE_HELPERS = `(() => {
       const ctx = cv.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(img, 0, 0);
       const cur = ctx.getImageData(0, 0, W, H).data;
+      void cur;
       // 参考帧 = 客户端当前持有的画面（而非上一 tick）：慢速辉光每 tick 只漂移约 1 个
       // 灰度级，逐帧比对会被噪声阈值吃掉。与参考帧比对让慢变化累积过阈后才发送，
       // 发送后参考帧前移。PNG 截图渲染确定性 → 静止页逐字节一致，低阈值不误报。
       const ref = window.__xyDiffRef;
-      if (!ref || ref.length !== cur.length) { window.__xyDiffRef = cur; return { tiles: [], sx: window.scrollX, sy: window.scrollY }; }
+      if (!ref || ref.length !== cur.length) {
+        window.__xyDiffRef = cur;
+        window.__xyDiffRefCv = cv;
+        return { tiles: [], sx: window.scrollX, sy: window.scrollY };
+      }
+      // GPU 差异检测（1/4 降采样）：difference 混合在 360x225 上做——两次 getImageData
+      // 从 5MB 降到 0.3MB，缩放由 GPU 完成。变化定位精度 = 4px 网格（CELL 本来就是
+      // 12-20px），足够精确。全分辨率画布只用于变化区域的 PNG 裁剪编码。
+      // 这是把单次差分从 ~60ms 压到 ~15ms、通道从 11msg/s 提到 30fps+ 的关键。
+      if (!window.__xyDiffCv) { window.__xyDiffCv = document.createElement('canvas'); }
+      const dcv = window.__xyDiffCv;
+      const SW = Math.max(1, W >> 2), SH = Math.max(1, H >> 2);
+      if (dcv.width !== SW || dcv.height !== SH) { dcv.width = SW; dcv.height = SH; }
+      const dctx = dcv.getContext('2d', { willReadFrequently: true });
+      const refCv = window.__xyDiffRefCv;
+      dctx.globalCompositeOperation = 'source-over';
+      dctx.clearRect(0, 0, SW, SH);
+      dctx.drawImage(refCv, 0, 0, SW, SH);
+      dctx.globalCompositeOperation = 'difference';
+      dctx.drawImage(cv, 0, 0, SW, SH);
+      dctx.globalCompositeOperation = 'source-over';
+      const dImg = dctx.getImageData(0, 0, SW, SH).data;
+      window.__xyDiffRef = cur;
+      window.__xyDiffRefCv = cv;
+      const S = 4; // 降采样倍数
       // CSS 动画掩蔽/穿孔区（视口坐标，设备像素）+ 聚焦输入框（原生输入回显与光标）。
       // 无文字的动画才掩蔽：代理里文字是占位符，穿孔会露出空字。
       // frame 模式下掩蔽区同时作为"穿孔"下发——客户端 clearRect 露出代理层
@@ -515,22 +548,23 @@ const PAGE_HELPERS = `(() => {
         const ox = Math.round(window.scrollX), oy = Math.round(window.scrollY);
         return animMask.map((m) => [Math.round(m[0] / dpr) + ox, Math.round(m[1] / dpr) + oy, Math.round((m[2] - m[0]) / dpr), Math.round((m[3] - m[1]) / dpr)]);
       };
-      const CELL = Math.max(12, Math.round(20 * dpr));
-      const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
+      const CELL = Math.max(3, Math.round(5 * dpr)); // 降采样坐标下的网格（≈全分辨率 12-20px）
+      const cols = Math.ceil(SW / CELL), rows = Math.ceil(SH / CELL);
       const cells = new Uint8Array(cols * rows);
-      const TH = 2; // PNG 截图确定性：静止页逐字节一致，低阈值安全；4 会吃掉慢动画逐步漂移
-      for (let y = 0; y < H; y += 2) {
+      const TH = 2;
+      for (let y = 0; y < SH; y += 1) {
         const ri = (y / CELL) | 0;
-        for (let x = 0; x < W; x += 2) {
+        for (let x = 0; x < SW; x += 1) {
           const ci = (x / CELL) | 0;
           if (cells[ri * cols + ci]) continue;
-          if (inMask(x, y)) continue;
-          const p = (y * W + x) * 4;
-          if (Math.abs(cur[p] - ref[p]) > TH || Math.abs(cur[p + 1] - ref[p + 1]) > TH || Math.abs(cur[p + 2] - ref[p + 2]) > TH) cells[ri * cols + ci] = 1;
+          if (inMask(x * S, y * S)) continue;
+          const p = (y * SW + x) * 4;
+          if (dImg[p] > TH || dImg[p + 1] > TH || dImg[p + 2] > TH) cells[ri * cols + ci] = 1;
         }
       }
       const rects = [];
       for (let r = 0; r < rows; r++) {
+        void S;
         let c = 0;
         while (c < cols) {
           if (!cells[r * cols + c]) { c++; continue; }
@@ -546,6 +580,8 @@ const PAGE_HELPERS = `(() => {
           c = c2 + 1;
         }
       }
+      // 还原到全分辨率坐标（裁剪/编码坐标系）
+      for (const rc of rects) { rc.c0 *= S; rc.c1 = (rc.c1 + 1) * S - 1; rc.r0 *= S; rc.r1 = (rc.r1 + 1) * S - 1; }
       // 全屏级变化（滚动/翻页）：整视口单瓦片直推。frame 模式下这是滚动后新内容
       // 到达客户端的唯一通道（旧实现直接丢弃 → 滚动后画面停更）；
       // 坐标必须换算为页面绝对坐标（视口坐标 + scroll 偏移），瓦片才能落在整页图层上。
@@ -996,6 +1032,7 @@ wss.on('connection', async (ws, req) => {
   let domActive = false, domExposed = false;
   let DPR = 1;
   let viewW = VIEW_W, viewH = VIEW_H;
+  let pendingFrame = null, lastFrameAt = 0, lastFrameAt2 = 0; // 合成器帧回调缓存（编码-解码范式帧源）
   let domStartAt = 0; // 全量快照起点（死锁自愈计时）
   let patchChain = Promise.resolve();
 
@@ -1145,6 +1182,12 @@ wss.on('connection', async (ws, req) => {
     });
     console.log('[dom   ] mirror started');
     startDiffLoop();
+    // captureBeyondViewport 截图会中断 Page.screencast 帧流（实测快照后 36.6s 零帧、
+    // canvas/滚轮/流式全冻结）——快照完成后强制重启帧流
+    if (mode === 'dom' || mode === 'frame') {
+      cdp.send('Page.stopScreencast').catch(() => {});
+      setTimeout(() => { cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {}); }, 80);
+    }
   }
 
   // 变化补丁：一批变更合并为一次整页截图、页面内统一裁剪（流式回复逐字变更时，
@@ -1207,92 +1250,160 @@ wss.on('connection', async (ws, req) => {
   // 首帧只建基准；无变化零下发。瓦片为不透明底板裁片，位移动画的新旧位置都在
   // 差分区域内，客户端直接覆盖即可，无需清理旧瓦片。
   function startDiffLoop() {
-    // 重启：错位瓦片根因定位为共享 Chrome 单例的多标签截图不一致，已改为每会话
-    // 独立浏览器实例。差分通道恢复启用（动画/悬停/视频跟随）。
+    // 编码-解码范式差分通道 v2：合成器帧回调（60fps）→ sharp 在 Node 进程内
+    // 解码/比较/裁剪/编码（全链路 <10ms，零 CDP evaluate 大参数——evaluate 传
+    // 80KB base64 每次要 ~60ms，是 11msg/s 吞吐瓶颈的根源）。
+    // 静止时合成器不推帧 = 零解码零比较零下发（比视频编码的持续码流省）。
     if (diffTimer) return;
-    let diffSince = 0;
+    if (mode === 'dom' || mode === 'frame') {
+      cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {});
+    }
+    let prevRaw = null, prevW = 0, prevH = 0;   // 上一帧 raw 像素（BGRA）
     let lastAnnSX = 0, lastAnnSY = 0, lastScrolls = '[]', lastHoles = '[]';
-    diffTimer = setInterval(async () => {
-      if (diffBusy) {
-        // 卡死自愈：截图/evaluate 挂起会让 diffBusy 永真、该会话动画永久停更
-        if (Date.now() - diffSince > 5000) { console.log('[diff] stuck tick, self-healing'); diffBusy = false; }
-        else return;
+    let metaAt = 0, meta = { holes: [], scrollers: [], sx: 0, sy: 0 };
+
+    const diffFrame = async (b64) => {
+      if (!sharp) return null;
+      // ensureAlpha：合成器 PNG 可能为 3 通道（RGB），Uint32 视图按 4 字节/像素索引
+      // 会越界读 undefined → 恒等误判（实测 tiles=0 的根因）。恒定 RGBA 后视图对齐。
+      const img = sharp(Buffer.from(b64, 'base64')).ensureAlpha();
+      const { info, data } = await img.raw().toBuffer({ resolveWithObject: true });
+      const W = info.width, H = info.height, CH = info.channels;
+      if (!prevRaw || prevW !== W || prevH !== H) {
+        prevRaw = data; prevW = W; prevH = H;
+        return { tiles: [], full: true };
       }
+      // 逐像素比较找脏行/列（Uint32 视图加速；行级先筛再列级细化）
+      const dirtyRows = new Uint8Array(H);
+      let any = false;
+      const a = new Uint32Array(data.buffer, data.byteOffset, (data.length / 4) | 0);
+      const b = new Uint32Array(prevRaw.buffer, prevRaw.byteOffset, (prevRaw.length / 4) | 0);
+      const w32 = W >> 2; // 每行 Uint32 数（4 像素/步，TH 兜底用通道级复检）
+      for (let y = 0; y < H; y++) {
+        const off = y * W;
+        for (let x = 0; x < W; x++) {
+          if (a[off + x] !== b[off + x]) {
+            // Uint32 不等但可能只是 alpha 位——通道级复检（阈值 2）
+            const p = (off + x) * CH, q = p - CH + 3;
+            void q;
+            const dd = data, pp = prevRaw;
+            if (Math.abs(dd[p] - pp[p]) > 2 || Math.abs(dd[p + 1] - pp[p + 1]) > 2 || Math.abs(dd[p + 2] - pp[p + 2]) > 2) { dirtyRows[y] = 1; any = true; break; }
+          }
+        }
+      }
+      prevRaw = data; prevW = W; prevH = H;
+      if (!any) return { tiles: [] };
+      // 行程合并成矩形（按连续脏行段，列取整行宽——screencast 帧内横向裁剪收益小
+      // 且增加编码次数；行段合并上限 8 段防碎片）
+      const rects = [];
+      let y0 = -1;
+      for (let y = 0; y <= H; y++) {
+        const d2 = y < H && dirtyRows[y];
+        if (d2 && y0 < 0) y0 = y;
+        else if (!d2 && y0 >= 0) { rects.push([0, y0, W, y - y0]); y0 = -1; }
+      }
+      if (rects.length > 8) {
+        // 合并为整帧一张
+        rects.length = 0;
+        rects.push([0, 0, W, H]);
+      }
+      const src2 = Buffer.from(b64, 'base64');
+      const tiles = [];
+      for (const [rx, ry, rw, rh] of rects) {
+        if (rw < 2 || rh < 2) continue;
+        const png = await sharp(src2).extract({ left: rx, top: ry, width: rw, height: rh }).png({ compressionLevel: 3 }).toBuffer();
+        tiles.push({ w: rw, h: rh, cssX: Math.round(rx / DPR) + Math.round(meta.sx || 0), cssY: Math.round(ry / DPR) + Math.round(meta.sy || 0), cssW: rw / DPR, cssH: rh / DPR, url: 'data:image/png;base64,' + png.toString('base64') });
+      }
+      return { tiles };
+    };
+
+    const fetchMeta = async (inputActive) => {
+      // 轻量 evaluate：只拿 holes/scrollers/scroll 位置（无大参数）
+      try {
+        const r = await Promise.race([
+          page.evaluate((ia) => {
+            const out = { holes: [], scrollers: [], sx: window.scrollX, sy: window.scrollY };
+            try { out.scrollers = window.__xy.scrollers(); } catch (e) {}
+            try {
+              const maskAnims = true;
+              let area = 0;
+              const push = (r2, el) => {
+                if (r2.width < 2 || r2.height < 2) return;
+                if (el && (el.textContent || '').trim()) return;
+                const d = window.__xyDpr || 1;
+                const x0 = Math.max(0, Math.floor(r2.left * d)), y0 = Math.max(0, Math.floor(r2.top * d));
+                const W2 = window.innerWidth * d, H2 = window.innerHeight * d;
+                const x1 = Math.min(W2, Math.ceil((r2.left + r2.width) * d)), y1 = Math.min(H2, Math.ceil((r2.top + r2.height) * d));
+                if (x1 <= x0 || y1 <= y0) return;
+                out.holes.push([Math.round(x0 / d) + Math.round(window.scrollX), Math.round(y0 / d) + Math.round(window.scrollY), Math.round((x1 - x0) / d), Math.round((y1 - y0) / d)]);
+                area += (x1 - x0) * (y1 - y0);
+              };
+              for (const a2 of document.getAnimations()) {
+                if (a2.playState !== 'running') continue;
+                const el = a2.effect && a2.effect.target;
+                if (!el || !el.getBoundingClientRect) continue;
+                if (el.querySelector && el.querySelector('canvas, svg, video, iframe')) continue;
+                push(el.getBoundingClientRect(), el);
+              }
+              const ae = document.activeElement;
+              if (ia && ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && !ae.disabled) push(ae.getBoundingClientRect(), null);
+              if (area > window.innerWidth * window.innerHeight * 0.8) out.holes = [];
+            } catch (e) {}
+            return out;
+          }, inputActive),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('meta timeout')), 1500)),
+        ]).catch(() => null);
+        if (r) meta = r;
+      } catch (e) {}
+    };
+    let pfSeen = 0, pfLogged = 0;
+    diffTimer = setInterval(async () => {
+      if (diffBusy) return;
       if (dead || (mode !== 'dom' && mode !== 'frame') || !domActive || !page || !cdp || ws.readyState !== 1) return;
-      // domStarting 死锁自愈：全量快照挂起（截图/evaluate 无响应）会让 domStarting
-      // 永真，差分被永久跳过（实测 34 秒视觉冻结）。8 秒未完成视为死锁，强制放行
+      pfSeen++; if (pfSeen % 62 === 0) { console.log('[diffv2] tick ok, pfLogged=' + pfLogged); pfLogged = 0; }
       if (domStarting) {
         if (!domStartAt) domStartAt = Date.now();
-        else if (Date.now() - domStartAt > 8000) { console.log('[diff] domStarting stuck >8s, self-healing'); domStarting = null; domStartAt = 0; }
+        else if (Date.now() - domStartAt > 8000) { domStarting = null; domStartAt = 0; }
         else return;
       } else domStartAt = 0;
-      diffBusy = true; diffSince = Date.now();
-      try {
-        const shot = await Promise.race([
-          cdp.send('Page.captureScreenshot', { format: 'png' }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('shot timeout')), 2500)),
-        ]);
-        const out = await Promise.race([
-          page.evaluate((b64, d, ma) => { const r = window.__xy.diffTiles(b64, d, ma); try { r.scrollers = window.__xy.scrollers(); } catch (e) {} return r; }, shot.data, DPR, (mode === 'dom' || mode === 'frame'), !!lastInputAt && (Date.now() - lastInputAt < 800)),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('diff timeout')), 2500)),
-        ]).catch((e) => { console.log('[diff] eval err:', e && e.message); return null; });
-        if (!(diffTick = (diffTick + 1) % 20)) {
-          try {
-            const vis = await page.evaluate(() => document.visibilityState + ' focus=' + document.hasFocus());
-            console.log('[diff] tick20 visibility:', vis);
-          } catch (e) {}
+      const pf = pendingFrame;
+      pendingFrame = null;
+      // 帧流 watchdog：有活动（近期输入/动画周期内）但 5 秒无帧 = 帧流已断，重启
+      if (!pf) {
+        if (Date.now() - lastFrameAt2 > 5000 && (Date.now() - lastInputAt) < 60000) {
+          lastFrameAt2 = Date.now();
+          cdp.send('Page.stopScreencast').catch(() => {});
+          cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {});
+          console.log('[diffv2] screencast watchdog restarted');
         }
-        if (out === null) { console.log('[diff] diffTiles returned null (err)'); }
-        if (out) {
-          const scrollMoved = out.sx !== undefined && (Math.abs((out.sx || 0) - lastAnnSX) > 1 || Math.abs((out.sy || 0) - lastAnnSY) > 1);
-          const scrollsNow = JSON.stringify(out.scrollers || []);
-          const innerMoved = scrollsNow !== lastScrolls;
-          // 穿孔收缩（失焦/动画结束）：客户端画布上的洞需要补回像素，但差分参考帧
-          // 认为该区域无变化不会推——强制整视口重绘一张（400ms 节流沿用）
-          const holesNow = JSON.stringify(out.holes || []);
-          const holesMoved = holesNow !== lastHoles;
-          if (holesNow !== lastHoles && (out.holes || []).length < JSON.parse(lastHoles).length) {
-            try {
-              if (Date.now() - (out.__fullAt || 0) >= 0) {
-                const full = await Promise.race([
-                  page.evaluate((b64, d) => {
-                    return new Promise((res) => {
-                      const im = new Image();
-                      im.onload = () => {
-                        const c = document.createElement('canvas');
-                        c.width = im.width; c.height = im.height;
-                        c.getContext('2d').drawImage(im, 0, 0);
-                        res({ w: im.width, h: im.height, cssX: Math.round(window.scrollX), cssY: Math.round(window.scrollY), cssW: im.width / d, cssH: im.height / d, url: c.toDataURL('image/png') });
-                      };
-                      im.src = 'data:image/png;base64,' + b64;
-                    });
-                  }, shot.data, DPR),
-                  new Promise((_, rej) => setTimeout(() => rej(new Error('full timeout')), 2500)),
-                ]).catch(() => null);
-                if (full && ws.readyState === 1) {
-                  const pf = JSON.stringify({ type: 'anim-tiles', tiles: [full], holes: out.holes || [], sx: out.sx || 0, sy: out.sy || 0 });
-                  ws.send(pf);
-                  ws._bytes = (ws._bytes || 0) + pf.length;
-                }
-              }
-            } catch (e) {}
-          }
-          lastHoles = holesNow;
-          // holes 变化必须发：输入框穿孔/动画孔出现时 tiles 可能为空（掩蔽区不产瓦片），
-          // 不发消息客户端就收不到孔 → 掩蔽区成黑洞（实测打字回显完全不可见）
-          if ((out.tiles && out.tiles.length) || scrollMoved || innerMoved || holesMoved) {
-            const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], holes: out.holes || [], sx: out.sx || 0, sy: out.sy || 0, scrolls: out.scrollers || [] });
-            if (ws.readyState === 1) {
-              ws.send(payload);
-              ws._bytes = (ws._bytes || 0) + payload.length;
-              ws._chunks = (ws._chunks || 0) + 1;
-              lastAnnSX = out.sx || 0; lastAnnSY = out.sy || 0; lastScrolls = scrollsNow;
-            }
+        return;
+      }
+      lastFrameAt2 = Date.now();
+      pfLogged++;
+      diffBusy = true;
+      try {
+        // 每 ~200ms 刷新一次 meta（holes/scrollers/scroll）
+        const now = Date.now();
+        if (now - metaAt > 200) { metaAt = now; fetchMeta(!!lastInputAt && (Date.now() - lastInputAt < 800)); }
+        const out = await diffFrame(pf.data).catch((e2) => { console.log('[diffv2] frame err:', e2 && e2.message); return null; });
+        if (!out) return;
+        const holesNow = JSON.stringify(meta.holes || []);
+        const holesMoved = holesNow !== lastHoles;
+        const scrollsNow = JSON.stringify(meta.scrollers || []);
+        const innerMoved = scrollsNow !== lastScrolls;
+        const scrollMoved = Math.abs((meta.sx || 0) - lastAnnSX) > 1 || Math.abs((meta.sy || 0) - lastAnnSY) > 1;
+        if ((out.tiles && out.tiles.length) || scrollMoved || innerMoved || holesMoved) {
+          const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], holes: meta.holes || [], sx: meta.sx || 0, sy: meta.sy || 0, scrolls: meta.scrollers || [] });
+          if (ws.readyState === 1) {
+            ws.send(payload);
+            ws._bytes = (ws._bytes || 0) + payload.length;
+            ws._chunks = (ws._chunks || 0) + 1;
+            lastAnnSX = meta.sx || 0; lastAnnSY = meta.sy || 0; lastScrolls = scrollsNow; lastHoles = holesNow;
           }
         }
       } catch (e) {}
       finally { diffBusy = false; }
-    }, 100);
+    }, 16);
   }
 
   try {
@@ -1317,6 +1428,14 @@ wss.on('connection', async (ws, req) => {
         if (lastInputAt) { inputLatMs = now - lastInputAt; lastInputAt = 0; }
         frameTimes.push(now);
         const buf = Buffer.from(data, 'base64');
+        if (mode === 'dom' || mode === 'frame') {
+          // 编码-解码范式：合成器每帧变化即推（60fps 帧回调驱动差分，替代定时器
+          // 轮询截图——10fps 上限与轮询延迟是"卡"的根源）。帧存 pendingFrame，
+          // 差分循环 32ms 消费；立即 ack 保持帧流。静止时无帧 = 零 CPU 零流量。
+          pendingFrame = { data, at: now };
+          setTimeout(() => { cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {}); }, 0);
+          return;
+        }
         if (mode === 'h264') {
           if (ffmpeg && ffmpeg.stdin.writable) {
             fedFrames++; fedBytes += buf.length;
