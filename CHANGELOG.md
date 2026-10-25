@@ -1,3 +1,17 @@
+# v0.8.3 — site-owned fonts get PUA twins (artistic/brand fonts preserved)
+
+Any @font-face the protected site itself ships (artistic display fonts,
+brand fonts) is now detected from the page CSS, fetched server-side, and
+rebuilt with the session's PUA twin codepoints appended to its own cmap
+(tools/build_obf_twins.py). The twin face is registered under the site's
+family name with unicode-range U+F0000-10FFFF, so encoded text styled with
+an artistic webfont renders from THAT font - glyph-identical to native -
+while the DOM stays scrambled. Verified on the bundled demo origin with
+ZCOOL KuaiLe: the hand-drawn art title renders correctly in the mirror
+with all 9 title chars PUA-encoded. Build failures degrade gracefully
+(text falls to the next stack family, never tofu). Up to 6 site fonts per
+session, LRU-cached per (url, seed).
+
 # v0.8.2 — obfuscation font base switched to MiSans (TrueType)
 
 Baked the seed pool from MiSans (free-commercial, TrueType, hinted) instead

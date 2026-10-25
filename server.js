@@ -399,13 +399,53 @@ try {
     const permRaw = JSON.parse(fs.readFileSync(path.join(OBF_POOL_DIR, f), 'utf8'));
     const plain = {};
     for (const k of Object.keys(permRaw)) plain[parseInt(k, 16)] = parseInt(permRaw[k], 16);
-    obfPool.push({ seed, plain, reg: path.join(OBF_POOL_DIR, f.replace('.json', '.woff2')), bold: path.join(OBF_POOL_DIR, 'bold-s' + seed + '.woff2') });
+    obfPool.push({ seed, plain, permJson: path.join(OBF_POOL_DIR, f), reg: path.join(OBF_POOL_DIR, f.replace('.json', '.woff2')), bold: path.join(OBF_POOL_DIR, 'bold-s' + seed + '.woff2') });
   }
   console.log(`[obf   ] pool: ${obfPool.length} seeds ${OBF_ON ? 'ON' : 'OFF'}${obfPool.length ? '' : '（assets/obf 缺失）'}`);
 } catch (e) { console.log('[obf   ] pool unavailable:', e.message); }
 let obfRR = 0;
-const obfSessions = new Map();   // sid -> pool entry
-const obfFontCache = new Map();  // 文件路径 -> Buffer（LRU≤8，~8MB/项）
+const obfSessions = new Map();   // sid -> pool entry（含 .siteFonts 网站字体孪生）
+const obfFontCache = new Map();  // 文件路径 -> Buffer（LRU≤8，~3-8MB/项）
+const obfTwinCache = new Map();  // url|seed -> Buffer（网站字体 PUA 孪生，LRU≤12）
+const obfHttp = ORIGIN_BASE.protocol === 'https:' ? require('https') : require('http');
+// 下载源站字体文件（同源静态资源，服务端代取）
+function obfFetchFont(url, timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    try {
+      const req = obfHttp.get(url, { timeout: timeoutMs }, (r) => {
+        if ((r.statusCode || 0) >= 400) { r.resume(); resolve(null); return; }
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve(Buffer.concat(chunks)));
+        r.on('error', () => resolve(null));
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    } catch (e) { resolve(null); }
+  });
+}
+// 网站自有字体（艺术字/品牌字/图标字）的 PUA 孪生构建：把会话置换码点追加进
+// 网站字体自身的 cmap——被编码的艺术字文本由【网站原字体】渲染，逐位还原。
+const { execFile } = require('child_process');
+const execFileP = (cmd, args) => new Promise((resolve) => {
+  execFile(cmd, args, { timeout: 20000 }, (err, stdout) => resolve({ ok: !err, stdout: String(stdout || '') }));
+});
+async function buildObfTwin(ent, url) {
+  const key = url + '|' + ent.seed;
+  if (obfTwinCache.has(key)) return obfTwinCache.get(key);
+  const buf = await obfFetchFont(url);
+  if (!buf || buf.length < 500) return null;
+  const h = crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
+  const src = `/tmp/obf-twin-${h}.src`;
+  const out = `/tmp/obf-twin-${h}.woff2`;
+  require('fs').writeFileSync(src, buf);
+  const r = await execFileP('python3', [path.join(__dirname, 'tools', 'build_obf_twins.py'), src, ent.permJson, out]);
+  if (!r.ok || !fs.existsSync(out)) { console.log('[obf   ] twin build fail:', url.slice(-40), r.stdout.slice(0, 80)); return null; }
+  const outBuf = fs.readFileSync(out);
+  if (obfTwinCache.size >= 12) obfTwinCache.delete(obfTwinCache.keys().next().value);
+  obfTwinCache.set(key, outBuf);
+  return outBuf;
+}
 // 通用兜底字体族（页面 CSS 提取不到时的保险；PUA 专用面只接 U+F0000-10FFFF，
 // 对未编码字符零影响——任何站点的明文字符一律走访客本机字体，与原生一致）
 const OBF_FAMS_DEFAULT = [
@@ -446,7 +486,17 @@ function obfFacesCss(sid, fams) {
 
 const demoSrv = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/m/obf/')) {
-    // 会话混淆字体（池内种子轮换；URL 含会话 id，跨会话不可互换）
+    // 会话混淆字体（池内种子轮换；URL 含会话 id，跨会话不可互换）。
+    // site-<i> = 网站自有字体的 PUA 孪生（艺术字逐位还原）
+    const mSite = String(req.url).match(/^\/m\/obf\/([0-9a-z-]{4,40})\/site-(\d+)\.woff2$/);
+    if (mSite) {
+      const ent = obfSessions.get(mSite[1]);
+      const sf = ent && ent.siteFonts && ent.siteFonts[+mSite[2]];
+      if (!sf) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'private, max-age=3600' });
+      res.end(sf.buf);
+      return;
+    }
     const m2 = String(req.url).match(/^\/m\/obf\/([0-9a-z-]{4,40})\/(reg|bold)\.woff2$/);
     const ent = m2 && obfSessions.get(m2[1]);
     if (!ent) { res.writeHead(404); res.end(); return; }
@@ -888,7 +938,39 @@ wss.on('connection', async (ws, req) => {
       const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
       console.log('[dom   ] post-snapshot focus:', foc);
     } catch (e) {}
-    const obfCssBlock = (obfSess && mode === 'dom') ? obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) : '';
+    let siteFaces = '';
+    if (obfSess && mode === 'dom') {
+      // 网站自有 @font-face（艺术字/品牌字）：解析 family/weight/src 字体 URL，
+      // 为每个字体构建 PUA 孪生（构建失败则优雅跳过——该族 PUA 文本落到栈内
+      // 后续 MiSans 面，普通黑体渲染而非豆腐）
+      const ent = obfSessions.get(obfSess.sid);
+      const siteFonts = [];
+      const ffRe = /@font-face\s*\{([^}]*)\}/g;
+      let fm;
+      while ((fm = ffRe.exec(snap.css)) && siteFonts.length < 6) {
+        const blk = fm[1];
+        const fam = (blk.match(/font-family\s*:\s*['"]?([^;'"]+?)['"]?\s*(?:;|$)/) || [])[1];
+        let url = (blk.match(/src\s*:[^;]*?url\((['"]?)([^)'"]+?\.(?:woff2|woff|ttf|otf))\1/i) || [])[2];
+        if (!fam || !url || /^data:/i.test(url)) continue;
+        try { url = new URL(url, sessionOrigin).href; } catch (e) { continue; }
+        const wRaw = ((blk.match(/font-weight\s*:\s*([^;]+)/) || [])[1] || '400').trim();
+        const w = /^\d+$/.test(wRaw) ? wRaw : '400';
+        if (siteFonts.some(x => x.fam === fam && x.w === w)) continue;
+        siteFonts.push({ fam, w, url });
+      }
+      const built = [];
+      for (const sf of siteFonts) {
+        const buf = await buildObfTwin(ent, sf.url);
+        if (buf && buf.length > 500) built.push({ fam: sf.fam, w: sf.w, buf });
+      }
+      if (built.length) {
+        ent.siteFonts = built;
+        siteFaces = built.map((x, i) =>
+          '@font-face{font-family:"' + x.fam.replace(/"/g, '') + '";src:url(/m/obf/' + obfSess.sid + '/site-' + i + '.woff2) format("woff2");font-weight:' + x.w + ';font-display:block;unicode-range:U+F0000-10FFFF}').join('');
+        console.log(`[obf   ] site-font twins: ${built.map(x => x.fam + '/' + Math.round(x.buf.length / 1024) + 'KB').join(', ')}`);
+      } else ent.siteFonts = null;
+    }
+    const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + obfCssBlock;
     const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
     ws.send(payload);
