@@ -17,7 +17,7 @@ try {
     if (!packed.files.some(entry => entry.path === file)) throw new Error('Missing package file: ' + file);
   }
   fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify({ private: true }));
-  execFileSync('npm', ['install', '--offline', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund',
+  execFileSync('npm', ['install', '--prefer-offline', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund',
     path.join(consumer, packed.filename)], { cwd: consumer, env, timeout: 120000, stdio: 'pipe' });
   const smoke = String.raw`
     const assert = require('node:assert/strict');
