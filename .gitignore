@@ -4,3 +4,7 @@ bin/
 .env
 .DS_Store
 ck/
+
+assets/obf/
+.venv/
+__pycache__/

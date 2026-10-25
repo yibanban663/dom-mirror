@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dom-mirror RBI PoC — 客户端只有像素</title>
+<title>dom-mirror — DOM 镜像与 PNG 差分</title>
 <style>
   :root { --bg:#0f1420; --panel:#171e2e; --line:#242e44; --txt:#dbe4f3; --dim:#8294b0; --accent:#4f8cff; --ok:#3fce8f; }
   /* 网关(生产)模式：访客只看到业务页面本身——演示壳全部隐藏，镜像铺满窗口 */
@@ -56,7 +56,7 @@
   <div class="logo">影</div>
   <div>
     <h1>dom-mirror · RBI 远程浏览器隔离 PoC</h1>
-    <div class="sub">左侧画面 = 服务端 Chromium 的实时像素流。你的浏览器里没有该站点的任何 HTML / JS / 数据。</div>
+    <div class="sub">服务端 Chromium 执行业务页面，本地呈现 DOM 镜像或 PNG 差分画面。</div>
   </div>
   <div class="status" id="status">连接中…</div>
 </header>
@@ -98,31 +98,31 @@
       </div>
       <div class="conn-info" style="margin-top:10px">
         受保护源站标题：<code id="oTitle">-</code><br>
-        模式：<code id="spec">DOM 镜像（本地渲染 + 服务端补丁）</code> · 页面静止时零流量零消息<br>
-        延迟构成：<code>输入→出帧</code> + 网络 RTT ×2；DOM 模式渲染在本地，滚动/悬停/动画零延迟。
+        模式：<code id="spec">DOM 镜像（本地渲染 + 服务端补丁）</code> · DOM 补丁按变化发送<br>
+        输入→出帧指标仅反映画面通道，不代表 DOM 更新延迟；DOM 模式的本地滚动、CSS 悬停与动画无需等待服务端。
       </div>
     </div>
 
     <div class="panel">
-      <h3>攻击者自测（打开你的 DevTools 验证）</h3>
+      <h3>链路自查（DevTools）</h3>
       <ul class="plain">
-        <li>右键左侧画面 → 检查：DOM 里只有一个 <code>&lt;canvas&gt;</code>，无任何业务节点</li>
-        <li>DevTools → Network：除本壳页面（约 15KB）外，只有 <code>ws://…/ws</code> 的二进制帧</li>
-        <li>照着画面抄一个值（任一客户姓名 / 完整手机号 / 报价数字）在 Sources 全局搜索：<b>0 命中</b>——数据从未下载到你的浏览器</li>
-        <li>把本页全部 JS 下载逆向：只有帧解码与事件转发，无一行业务逻辑</li>
-        <li class="bad">直接访问源站：源站只绑定容器内 <code>127.0.0.1:8077</code>，宿主机未发布端口 —— 物理不可达</li>
+        <li>Elements：DOM 模式在 Shadow DOM 中呈现业务结构和文本</li>
+        <li>Network：WebSocket 传输 JSON 快照、补丁与 PNG data URL</li>
+        <li>业务脚本在服务端执行；展示数据、属性和输入值可能下发</li>
+        <li>字体混淆仅增加提取成本，可从字体映射恢复，不是加密</li>
+        <li>frame 通道仍携带镜像 DOM，不提供纯像素保密保证</li>
       </ul>
     </div>
 
     <div class="panel">
-      <h3>方案对比（SW 加密 → RBI 帧流）</h3>
+      <h3>方案对比（客户端执行与服务端执行）</h3>
       <table class="cmp">
-        <tr><th>维度</th><th>SW 加密（现状）</th><th>RBI 帧流（本 PoC）</th></tr>
-        <tr><td>客户端拿到什么</td><td>真实页面 + 加密逻辑（SW 在本地跑）</td><td><b>只有像素</b>，无源码无数据</td></tr>
-        <tr><td>防绕过</td><td>SW 可卸载、首载裸奔、高级爬虫可模拟</td><td>本地无可绕过——没有 JS 逻辑可逆向</td></tr>
-        <tr><td>带宽</td><td>与原页面相当</td><td>DOM 镜像增量补丁（静止页零流量）；防抓取由字体混淆编码层承担</td></tr>
-        <tr><td>服务端成本</td><td>一个 WAF</td><td>每在线会话一个真浏览器（本容器限 1.5GB / 最多 3 会话）</td></tr>
-        <tr><td>工程量</td><td>已有</td><td>浏览器集群、编码管道、输入回传、下载/剪贴板/验证码处理（本 PoC 已覆盖核心链路）</td></tr>
+        <tr><th>维度</th><th>客户端 SW 方案</th><th>DOM 镜像（本项目）</th></tr>
+        <tr><td>客户端拿到什么</td><td>真实页面 + 加密逻辑（SW 在本地跑）</td><td>DOM/CSS、属性与展示数据；业务脚本在服务端执行</td></tr>
+        <tr><td>防绕过</td><td>SW 可卸载、首载裸奔、高级爬虫可模拟</td><td>仍可提取 DOM 数据；字体混淆不等于加密</td></tr>
+        <tr><td>带宽</td><td>与原页面相当</td><td>按变化发送 DOM 补丁；统计和心跳仍有流量</td></tr>
+        <tr><td>服务端成本</td><td>一个 WAF</td><td>每会话独立 Chromium；默认最多 3 会话，资源成本需实测</td></tr>
+        <tr><td>工程量</td><td>已有</td><td>已实现镜像与输入回传；集群、上传下载和复杂站点兼容仍需完善</td></tr>
       </table>
     </div>
 
@@ -171,7 +171,7 @@
     document.getElementById('cur').style.display = 'none';
     document.getElementById('mirrorBox').style.display = isDom ? '' : 'none';
     document.getElementById('stageHint').innerHTML = mo === 'dom'
-      ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端编码下发、<b>渲染在你本地</b>——滚动/悬停/动画全部原生零延迟；内容变化由服务端推送小补丁（事件驱动，页面静止时零流量、零消息）。试试：滚动页面、悬停按钮、在输入框打字。'
+      ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端编码下发、<b>渲染在你本地</b>——本地滚动、CSS 悬停与动画无需等待服务端；内容变化由服务端推送小补丁（事件驱动，业务 DOM 静止时不发结构补丁，统计和心跳仍发送）。试试：滚动页面、悬停按钮、在输入框打字。'
       : '操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入。';
     document.querySelectorAll('.quality button[data-m]').forEach(b => b.classList.toggle('active', b.dataset.m === mo));
   }

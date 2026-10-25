@@ -13,9 +13,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - name: server.js 语法检查
-        run: node --check server.js
+          node-version: 22
+          cache: npm
+      - name: 安装锁定依赖
+        run: npm ci
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - name: 依赖加载与审计
+        run: |
+          node -e "require('puppeteer');require('ws');require('sharp')"
+          npm audit --omit=dev
+      - name: 语法与策略回归检查
+        run: npm run check && npm test
       - name: 客户端结构检查
         run: |
           node -e "

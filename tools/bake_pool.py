@@ -18,7 +18,10 @@ for seed in seeds:
         cmd = [sys.executable, os.path.join(here, 'build_obf_font.py'), src, str(seed),
                os.path.join(out, '%s-s%d.woff2' % (w, seed)), os.path.join(out, '%s-s%d.json' % (w, seed))]
         procs.append((os.path.basename(cmd[-1]), subprocess.Popen(cmd)))
+failed = False
 for tag, p in procs:
-    o, e = p.communicate()
-    print(tag, 'OK' if p.returncode == 0 else 'FAIL ' + e.decode()[-300:])
+    p.communicate()
+    failed |= p.returncode != 0
+    print(tag, 'OK' if p.returncode == 0 else 'FAIL (exit %d)' % p.returncode)
 print('%d fonts in %.0fs' % (len(procs), time.time() - t0))
+sys.exit(1 if failed else 0)

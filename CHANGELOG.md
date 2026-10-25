@@ -1,3 +1,17 @@
+# v0.8.4 — 交付与边界整理
+
+- 更新 Puppeteer/ws/sharp 和对应浏览器基础镜像，Node 要求调整为 22.12+。
+- package 版本对齐，声明并锁定 Puppeteer/ws/sharp 依赖；Docker 使用 npm ci，移除失效 setup 入口。
+- 静态资源代理限制同源和无凭据 URL，拒绝重定向，增加超时和 nosniff。
+- x-rbi-origin 改为显式 RBI_ALLOWED_ORIGINS 白名单，WS 上行限制为 64 KiB。
+- 修复 frame 截图失败分支错误引用服务端 window、快照视口尺寸未跟随 hello。
+- 移除输入值调试日志及 meta 中直接发送的源站 URL，忽略非对象上行 JSON。
+- 重写 README、演示说明和协议，更新客户端安全说明，明确 DOM 数据和字体混淆边界。
+- 增加资源/源站策略回归测试与客户端/注入脚本编译检查。
+- 修复字体池烘焙失败时的二次异常及退出码，增加 Docker 构建上下文排除。
+
+兼容变更：已有网关注入 x-rbi-origin 时必须配置 RBI_ALLOWED_ORIGINS；frame 不是纯像素隔离。历史性能和视觉数字未在本轮复验。
+
 # v0.8.3 — site-owned fonts get PUA twins (artistic/brand fonts preserved)
 
 Any @font-face the protected site itself ships (artistic display fonts,

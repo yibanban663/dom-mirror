@@ -1,7 +1,7 @@
 {
   "name": "@lizhen-xxaq/dom-mirror",
-  "version": "0.4.1",
-  "description": "dom-mirror — Remote Browser Isolation engine: mirror the DOM, not the pixels. Business JS and data never leave the server.",
+  "version": "0.8.4",
+  "description": "Remote browser DOM/CSS mirroring with a PNG frame fallback and optional font obfuscation.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -16,7 +16,9 @@
     "docs/PROTOCOL.md",
     "README.md",
     "LICENSE",
-    "get-ffmpeg.sh"
+    "lib/",
+    "tools/",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "remote-browser-isolation",
@@ -29,12 +31,18 @@
   ],
   "scripts": {
     "start": "node server.js",
-    "setup": "bash get-ffmpeg.sh"
+    "check": "node --check server.js && node --check lib/policy.js && node tools/check.js",
+    "test": "node --test"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.12.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "puppeteer": "25.16.0",
+    "sharp": "0.35.5",
+    "ws": "8.22.0"
   }
 }

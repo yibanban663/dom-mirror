@@ -17,6 +17,7 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
+const { assetUrl, selectOrigin } = require('./lib/policy');
 
 const DEMO_PORT = parseInt(process.env.DEMO_PORT || '8088', 10);
 const ORIGIN_PORT = parseInt(process.env.ORIGIN_PORT || '8077', 10);
@@ -25,6 +26,7 @@ const VIEW_H = parseInt(process.env.VIEW_H || '800', 10);
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
 const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
+const ALLOWED_ORIGINS = (process.env.RBI_ALLOWED_ORIGINS || '').split(',').filter(Boolean).map(v => new URL(v.trim()).origin);
 let sharp = null; try { sharp = require('sharp'); } catch (e) { console.log('[sharp ] unavailable:', e.message); }
 const DEFAULT_MODE = ['dom', 'frame'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'dom';
 const CHROME_ARGS = [
@@ -359,16 +361,14 @@ const KEYMAP = {
 // ---------- HTTP + WS ----------
 // /m/* —— 镜像静态资源代理（CSS/字体/图片回源拉取，仅表现层资源，无数据）
 const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? require('https') : require('http');
-const ASSET_RE = /\.(png|jpe?g|gif|svg|webp|avif|ico|bmp|css|woff2?|ttf|otf|eot|mp4|webm)$/i;
 function proxyAsset(req, res) {
   // 白名单：只代理表现层静态资源（CSS url() 引用的图片/字体等）。
   // 不加白名单时 GET /m/ 可直接拉到源站整页明文（含页面内密钥）——击穿"数据不出站"
-  let u;
-  try { u = new URL(req.url.slice(2), ORIGIN_BASE); } catch { res.writeHead(400); res.end(); return; }
-  if (!u.pathname || !ASSET_RE.test(u.pathname)) { res.writeHead(403); res.end('asset allowlist'); return; }
+  const u = assetUrl(req.url.slice(2), ORIGIN_BASE);
+  if (!u) { res.writeHead(403); res.end('asset allowlist'); return; }
   const upstream = httpOrigin.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
     const ct = (up.headers['content-type'] || '').toLowerCase();
-    if ((up.statusCode || 502) >= 400 || /text\/html|json|javascript|xml/.test(ct)) {
+    if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300 || /text\/html|json|javascript|xml/.test(ct)) {
       up.resume();
       res.writeHead(403); res.end('asset allowlist');
       return;
@@ -376,10 +376,16 @@ function proxyAsset(req, res) {
     res.writeHead(up.statusCode || 502, {
       'content-type': up.headers['content-type'] || 'application/octet-stream',
       'cache-control': 'public, max-age=300',
+      'x-content-type-options': 'nosniff',
     });
+    up.on('error', () => res.destroy());
     up.pipe(res);
   });
-  upstream.on('error', () => { res.writeHead(502); res.end('bad gateway'); });
+  upstream.setTimeout(12000, () => upstream.destroy(new Error('asset timeout')));
+  upstream.on('error', () => {
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(502); res.end('bad gateway');
+  });
 }
 
 // ---------- 防抓取编码层：字体混淆（会话种子池轮换） ----------
@@ -523,12 +529,14 @@ const demoSrv = http.createServer((req, res) => {
   }
   return staticHandler(path.join(__dirname, 'client'))(req, res);
 });
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 demoSrv.on('upgrade', (req, socket, head) => {
   let pathname = '';
   try { pathname = new URL(req.url, 'http://x').pathname; }
   catch { socket.destroy(); return; }
   if (pathname !== '/ws') { socket.destroy(); return; }
+  try { req.rbiOrigin = selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, ALLOWED_ORIGINS); }
+  catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
 demoSrv.listen(DEMO_PORT, '0.0.0.0', () => console.log(`[demo  ] listening on 0.0.0.0:${DEMO_PORT}`));
@@ -577,14 +585,7 @@ wss.on('connection', async (ws, req) => {
   ws.on('error', () => {});
 
   // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
-  let sessionOrigin = ORIGIN_URL;
-  try {
-    const hOrigin = req && req.headers['x-rbi-origin'];
-    if (hOrigin) {
-      const u = new URL(String(hOrigin));
-      if ((u.protocol === 'http:' || u.protocol === 'https:') && u.hostname) sessionOrigin = u.origin + '/';
-    }
-  } catch (e) {}
+  const sessionOrigin = req.rbiOrigin || ORIGIN_URL;
     console.log('[sess  ] origin =', sessionOrigin);
     let prodMode = (sessionOrigin !== ORIGIN_URL) || process.env.PROD_PRESENTATION === '1'; // 网关模式/专用实例：访客端隐藏演示壳，只呈现业务页面
 
@@ -643,7 +644,7 @@ wss.on('connection', async (ws, req) => {
           case 'dom': {
             // 客户端镜像 DOM 上的真实交互 → 服务端真实页面元素
             noteInput();
-            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);
+            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);
             const ok = await page.evaluate((kind, path, value) => {
               let el = window.__xy.find(path);
               // 镜像里的文字占位符(data-xy-space)与源站文本节点同位：文本节点不能 click，
@@ -717,10 +718,6 @@ wss.on('connection', async (ws, req) => {
           }
           case 'key': {
             noteInput();
-            if (m.key === 'Enter') {
-              const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + document.activeElement.id + ' val="' + String(document.activeElement.value || '').slice(0, 30) + '"') : 'null').catch(() => 'eval-fail');
-              console.log('[dbg] Enter arrived, server focus=' + foc);
-            }
             const k = m.key;
             if (KEYMAP[k]) {
               const args = { type: m.action === 'up' ? 'keyUp' : 'keyDown', key: k, code: k, windowsVirtualKeyCode: KEYMAP[k], nativeVirtualKeyCode: KEYMAP[k] };
@@ -789,6 +786,7 @@ wss.on('connection', async (ws, req) => {
   };
   const handleRaw = async (raw) => {
     let m; try { m = JSON.parse(raw.toString()); } catch { return; }
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return;
     try {
       await handleCommand(m);
     } catch (e) { sendJson({ type: 'error', msg: '事件处理异常: ' + e.message }); }
@@ -927,7 +925,7 @@ wss.on('connection', async (ws, req) => {
       try {
         const shotF = await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'frameSheet');
         await page.evaluate((b64) => { window.__xyFrameShot = b64; }, shotF.data);
-      } catch (e) { window.__xyFrameShot = null; }
+      } catch (e) { await page.evaluate(() => { window.__xyFrameShot = null; }).catch(() => {}); }
     }
     const snap = await withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot');
     try {
@@ -972,7 +970,7 @@ wss.on('connection', async (ws, req) => {
     }
     const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + obfCssBlock;
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
+    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -1394,7 +1392,7 @@ wss.on('connection', async (ws, req) => {
     if (hello.h) viewH = Math.max(240, Math.min(1600, parseInt(hello.h, 10) || viewH));
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
     await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
-    sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), url: sessionOrigin, maxSessions: MAX_SESSIONS, mode, prod: prodMode });
+    sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode });
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
 
     dispatchReady = true;
