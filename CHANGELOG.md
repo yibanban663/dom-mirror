@@ -1,3 +1,18 @@
+# v0.7.1 — fix: obfuscation fonts must register at document level
+
+@font-face declared inside the mirror shadow root is not applied by some
+Chromium builds (reproduced on Windows): the font stack falls through to a
+LOCAL font (e.g. Microsoft YaHei), plane-15 PUA codepoints have no glyph
+there, and the whole page renders tofu. Container-internal Chrome happens
+to honor shadow-scoped @font-face, which is why in-container acceptance
+passed while real browsers showed boxes.
+
+Fix: the client additionally injects the same @font-face rules into the
+document head (standard, engine-independent); document-level faces are
+visible to shadow content. Verified end-to-end through the production
+ingress path on a real external Windows Chromium: login + report pages
+render native-quality Chinese while the DOM remains PUA-encoded.
+
 # v0.7.0 — 真文本 DOM 镜像 + 防抓取字体混淆（编码-解码范式）
 
 ## v4 真文本镜像（dom 模式重写）

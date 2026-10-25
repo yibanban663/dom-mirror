@@ -373,6 +373,18 @@
     }
     mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     mirrorBody = mirrorRoot.querySelector('.xy-body');
+    // 防抓取混淆字体（关键兼容）：@font-face 写在 shadow root 样式里在部分 Chromium
+    // （Windows 实测）不生效——字体栈落到本地"Microsoft YaHei"，PUA 码点无字形 → 全页
+    // 豆腐块。同一组 @font-face 必须额外注入文档级（document.head），文档级字体对所有
+    // shadow 内容可见；按会话 sid 变化时整体替换（URL 变了自然重新拉取）。
+    try {
+      const faces = (css.match(/@font-face\{[^}]*\/m\/obf\/[^}]*\}/g) || []).join('\n');
+      if (faces) {
+        let st = document.getElementById('xy-obf-fonts');
+        if (!st) { st = document.createElement('style'); st.id = 'xy-obf-fonts'; document.head.appendChild(st); }
+        if (st.textContent !== faces) st.textContent = faces;
+      }
+    } catch (e) {}
     snapMirrorToDevice();
     // 瓦片图层（仅 frame 像素直出模式）：设备分辨率 canvas，整数设备坐标 1:1 blit。
     // v3 dom 模式无图层——瓦片元素锚定在镜像文档流里，滚动/悬停/动画全部本地原生
