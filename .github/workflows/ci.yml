@@ -66,7 +66,7 @@ jobs:
       - name: 冒烟启动（内置演示源站 + HTTP 探活）
         run: |
           docker run -d --name ci-run -p 18088:8088 dom-mirror:ci
-          for i in $(seq 1 20); do
+          for _ in $(seq 1 20); do
             code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/ || true)
             [ "$code" = "200" ] && echo "HTTP 200 OK" && exit 0
             sleep 1
@@ -83,6 +83,24 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-data-boundary.sh
       - name: 宿主身份与会话恢复边界回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-session-identity.sh
+      - name: 真实 Chromium 宿主注销与会话撤销回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-session-revocation.sh
+      - name: frame 首帧晚到回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-frame-baseline.sh
+      - name: 保存 frame 首帧证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-baseline-regression
+          path: artifacts/frame-baseline/
+          if-no-files-found: warn
+      - name: 保存会话撤销证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-revocation-regression
+          path: artifacts/session-revocation/
+          if-no-files-found: warn
       - name: 保存身份边界证据
         if: always()
         uses: actions/upload-artifact@v4

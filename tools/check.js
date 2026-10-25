@@ -5,11 +5,17 @@ const vm = require('node:vm');
 const path = require('node:path');
 const root = path.join(__dirname, '..');
 
-for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/scroll.html', 'test/fixtures/data-boundary.html']) {
+for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/scroll.html', 'test/fixtures/data-boundary.html', 'tools/fixtures/capacity.html']) {
   const html = fs.readFileSync(path.join(root, name), 'utf8');
   for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
     new vm.Script(match[1], { filename: name });
   }
+}
+
+for (const name of ['tools/capacity-host.cjs', 'tools/capacity-client.cjs', 'tools/summarize-capacity.cjs',
+  'tools/memory-host.cjs', 'tools/memory-client.cjs', 'tools/summarize-memory.cjs', 'tools/verify-frame-baseline.cjs',
+  'tools/summarize-allocator.cjs', 'tools/verify-allocator.cjs']) {
+  new vm.Script(fs.readFileSync(path.join(root, name), 'utf8'), { filename: name });
 }
 
 // Compile the actual injected template after evaluating its server-side interpolation.

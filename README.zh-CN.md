@@ -144,7 +144,7 @@ npm run demo
 - 没有内建鉴权提供方、限流或 WS Origin 校验，需要宿主实现；可选身份回调只消费宿主已验证的身份。
 - 默认 Chromium 参数包含 `--no-sandbox`，Demo Docker 以 root 运行；处理不可信内容前需要进一步加固浏览器与网络隔离。
 - 上传下载、剪贴板、弹窗、IME、iframe、Shadow DOM、富文本及虚拟滚动尚无完整兼容性保证。
-- 每会话独立 Chromium。默认三会话只是配置上限，不是经过压测的容量。
+- 每会话独立 Chromium。默认三会话是配置上限；合成并发测试不构成通用业务容量保证。
 
 默认从镜像快照和补丁中移除隐藏 input 的 `value`；宿主还可用 `redactAttributes` 剔除指定属性，源站原页面不改写。该机制不会过滤隐藏文本、CSS、资源正文或像素。具体观察和限制见[数据下发边界验收](docs/acceptance/data-boundary-2026-10-26.md)。
 
@@ -159,6 +159,7 @@ node tools/verify-package.cjs
 IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-data-boundary.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-session-identity.sh
+IMAGE=dom-mirror:local bash tools/verify-docker-session-revocation.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-vikunja.sh
 IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
   BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery \
@@ -167,7 +168,9 @@ IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
 
 tarball 检查会把实际 npm 包安装到独立临时宿主，不启动 Chromium。浏览器回归使用隔离 Docker 环境；Vikunja 流程覆盖登录、创建任务、修改优先级和完成，并独立检查持久化。CI 已配置这些检查及浏览器证据保存，是否通过以对应提交结果为准。
 
-frame 编码会复用普通 RGB/RGBA PNG 的解码像素，对其他编码保守回退。测量证明了**局部编码收益**，尚未证明稳定的端到端提速。多会话容量与长期运行仍待验收。
+frame 编码会复用普通 RGB/RGBA PNG 的解码像素，对其他编码保守回退。测量证明了**局部编码收益**，尚未证明稳定的端到端提速。[合成并发测试](docs/performance/2026-10-26-capacity.md)已覆盖 DOM/frame 的 1/3/6 会话：DOM 满足本轮预算，frame 回收后匿名内存预算未稳定通过（单会话一轮略超，3/6 会话均超）。[十轮内存调查](docs/performance/2026-10-26-frame-memory.md)确认强制 GC 和关闭 sharp cache 均未解决匿名内存驻留；分配器参数属于宿主诊断选项，不设为包的默认行为。真实业务容量与长期运行仍待验收。
+
+[三十轮原生内存续测](docs/performance/2026-10-26-frame-memory-long.md)完成 900 次操作，但正常回收内存预算 0/30 轮通过。末尾 GC/trim 诊断确认约 41MiB 可归还驻留，库中没有启用该干预。[同镜像宿主配置对照](docs/performance/2026-10-26-allocator-mappings.md)中，glibc 回收内存预算通过 1/10 轮，jemalloc 加后台回收配置通过 10/10 轮；后者仍需更长轮次及真实业务验收。
 
 更多资料：[路线图](docs/ROADMAP.md) · [Vikunja 验收](docs/acceptance/vikunja-2026-10-26.md) · [恢复验收](docs/acceptance/recovery-2026-10-26.md) · [编码优化验收](docs/acceptance/frame-codec-0.10.1.md) · [性能调查](docs/performance/2026-10-26.md) · [字体配置](docs/FONTS.md) · [变更记录](CHANGELOG.md)。历史报告中的结果仅对应其明确标注的版本。
 

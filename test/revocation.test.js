@@ -60,7 +60,7 @@ test('single-session revocation invalidates its token synchronously and awaits a
   const disconnected = once(owner.socket, 'close');
   let cleaned = false;
   const revoked = mirror.revokeSession(owner.message.token).then(value => { cleaned = true; return value; });
-  await disconnected;
+  assert.equal((await disconnected)[0], 4001, 'explicit terminal revocation close code');
   assert.equal(cleaned, false, 'resource cleanup waits for browser launch');
   const denied = await connect('a', { resume: owner.message.token });
   assert.equal(denied.message.code, 'SESSION_EXPIRED');
@@ -86,7 +86,7 @@ test('identity revocation covers retained sessions and pending handshakes, prese
   const pending = await connect('a', null);
   const closed = Promise.all([once(active.socket, 'close'), once(pending.socket, 'close')]);
   const revoked = mirror.revokeIdentity('tenant/alice');
-  await closed;
+  for (const [code] of await closed) assert.equal(code, 4001);
   for (const token of [active.message.token, retained.message.token]) {
     const denied = await connect('a', { resume: token });
     assert.equal(denied.message.code, 'SESSION_EXPIRED');
@@ -153,4 +153,24 @@ test('anonymous sessions support individual revocation and invalid selectors rej
   await mirror.close();
   assert.equal(await mirror.revokeSession(owner.message.token), false);
   assert.equal(await mirror.revokeIdentity('tenant/alice'), 0);
+});
+
+test('revocation reclaims a transport that does not acknowledge the close frame', { timeout: 10000 }, async t => {
+  const launches = mockLaunch(t);
+  const { mirror, connect } = await host(t);
+  const owner = await connect();
+  owner.socket._socket.pause(); // Simulate a peer that does not process or answer close frames.
+  const revoked = mirror.revokeSession(owner.message.token);
+  launches[0].finish();
+  let timer;
+  try {
+    assert.equal(await Promise.race([revoked, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('revocation close deadline exceeded')), 3000);
+    })]), true);
+  } finally {
+    clearTimeout(timer);
+    owner.socket._socket.resume();
+  }
+  assert.equal(launches[0].browser.closeCount, 1);
+  assert.equal(await mirror.revokeSession(owner.message.token), false);
 });

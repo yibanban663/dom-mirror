@@ -1,0 +1,173 @@
+{
+  "sourceCommitBasis": "cabaf4b53702fc76bcd5156b000e1441eee744f2",
+  "sourceWorktreeChanges": true,
+  "runtime": {
+    "kind": "cached dependency runtime with current source copied in",
+    "imageId": "sha256:cee0723401cee281532f80fd462e31b518565752bf22fe52d14d35def2def741",
+    "baseImage": "dom-mirror:identity",
+    "network": "none",
+    "memory": "3 GiB",
+    "cpus": 2,
+    "timeoutSeconds": 300
+  },
+  "evidencePath": "/home/Kei/dom-mirror-validation/20261026/session-revocation/final",
+  "result": {
+    "version": "0.11.0",
+    "cases": [
+      {
+        "mode": "dom",
+        "events": [
+          {
+            "id": "8df70015-9d2b-41f3-b57e-859f5a8a072b",
+            "draft": "synthetic-owner-draft",
+            "count": 1
+          }
+        ],
+        "temporaryDisconnectResumed": true,
+        "logout": {
+          "status": 200,
+          "endedSessions": 3
+        },
+        "revokedClient": {
+          "text": "会话已撤销，请重新登录后再访问。",
+          "status": "会话已撤销",
+          "closeCodes": [
+            1000,
+            4001
+          ],
+          "connectionAttempts": 2,
+          "restartHidden": true,
+          "interactionDisabled": true
+        },
+        "retryObservationMs": 6000,
+        "postLogoutUpgradeAttempts": 0,
+        "uiDisabled": true,
+        "pendingTransportClosed": true,
+        "identityResources": [
+          {
+            "pid": 170,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          },
+          {
+            "pid": 329,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          },
+          {
+            "pid": 774,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          }
+        ],
+        "oldCredentialsRejected": true,
+        "oldTokensRejectedWithFreshCredentials": true,
+        "otherUserAndTenantUnaffected": true,
+        "singleSessionResources": [
+          {
+            "pid": 464,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          }
+        ],
+        "singleSessionRevoked": true,
+        "newLoginStartsFresh": true,
+        "businessReplayCount": 0,
+        "applicationBrowsersLaunched": 6,
+        "completed": true
+      },
+      {
+        "mode": "frame",
+        "events": [
+          {
+            "id": "c821daea-5665-4cbb-815f-3eb96cbad2f5",
+            "draft": "synthetic-owner-draft",
+            "count": 1
+          }
+        ],
+        "temporaryDisconnectResumed": true,
+        "logout": {
+          "status": 200,
+          "endedSessions": 3
+        },
+        "revokedClient": {
+          "text": "会话已撤销，请重新登录后再访问。",
+          "status": "会话已撤销",
+          "closeCodes": [
+            1000,
+            4001
+          ],
+          "connectionAttempts": 2,
+          "restartHidden": true,
+          "interactionDisabled": true
+        },
+        "retryObservationMs": 6000,
+        "postLogoutUpgradeAttempts": 0,
+        "uiDisabled": true,
+        "pendingTransportClosed": true,
+        "identityResources": [
+          {
+            "pid": 1188,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          },
+          {
+            "pid": 1349,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          },
+          {
+            "pid": 1803,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          }
+        ],
+        "oldCredentialsRejected": true,
+        "oldTokensRejectedWithFreshCredentials": true,
+        "otherUserAndTenantUnaffected": true,
+        "singleSessionResources": [
+          {
+            "pid": 1487,
+            "pages": 2,
+            "allPagesClosed": true,
+            "processGone": true,
+            "exitCode": 0,
+            "signalCode": null
+          }
+        ],
+        "singleSessionRevoked": true,
+        "newLoginStartsFresh": true,
+        "businessReplayCount": 0,
+        "applicationBrowsersLaunched": 6,
+        "completed": true
+      }
+    ],
+    "clientSha256": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+    "scriptSha256": "e2247bb3ae90ae91a365f211fa8eb38391e727f95dd845cc6ef08367b884149f",
+    "sessionsSha256": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+    "sourceSha256": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+    "chromium": "Chrome/156.0.8078.47",
+    "completed": true
+  }
+}

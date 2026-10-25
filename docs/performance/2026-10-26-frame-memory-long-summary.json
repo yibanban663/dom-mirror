@@ -1,0 +1,1720 @@
+{
+  "plan": {
+    "groups": [
+      "default"
+    ],
+    "cycles": 30,
+    "sessions": 3,
+    "operationsPerSessionPerCycle": 10,
+    "periodMs": 1000,
+    "sessionGraceMs": 3000,
+    "postReclaimIdleMs": 3000,
+    "limits": {
+      "mirrorCpus": 2,
+      "mirrorMemoryMiB": 2048,
+      "loadCpus": 4,
+      "loadMemoryMiB": 4096
+    },
+    "fixture": "tools/fixtures/capacity.html",
+    "nodeExposeGcInAllGroups": true,
+    "gc": "Only gc/gc-cache-off: two full diagnostic calls after postIdle checkpoint, each followed by setImmediate",
+    "cache": "Only cache-off/gc-cache-off: sharp.cache(false) before createMirror; process-local",
+    "gates": [
+      "Every source session receives exactly indices 0..9 and renders all markers",
+      "All tracked Chromium main processes disappear before next cycle",
+      "OOM kill delta zero",
+      "Stop a group on functional failure or OOM"
+    ],
+    "interpretation": [
+      "Original 64MiB / 3-second capacity criterion stays unchanged; diagnostics cannot count as a production pass",
+      "10 cycles establish bounded observations only, not a proof of no long-term leak",
+      "No test code may retain Browser/Page/ChildProcess objects in the mirror process"
+    ],
+    "nativeProbe": true,
+    "glibc": "2.36",
+    "hostEnvironment": {
+      "MALLOC_ARENA_MAX": "2",
+      "VIPS_CONCURRENCY": "1"
+    },
+    "sharpConcurrency": 1,
+    "finalDiagnostics": [
+      "15 seconds idle",
+      "two full GC calls",
+      "one malloc_trim(0)",
+      "3 seconds idle"
+    ],
+    "budget": {
+      "postCleanupAnonGrowthMiB": 64
+    },
+    "scope": "One 30-cycle candidate-host run; final GC/trim is diagnostic only and excluded from normal-cycle budgets",
+    "nativeStatsLimit": "malloc_info totals cover glibc arenas; system/free/in-use estimate are allocator accounting, not resident bytes or call-site attribution; tcache is not separately exposed",
+    "sourceHashes": {
+      "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+      "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+      "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+      "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+      "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+      "tools/memory-host.cjs": "da26c4a58a92a20c5c507fa2521e1c5c45d82a53ca9e8eaca86cb880eb802c9f",
+      "tools/memory-client.cjs": "4847b6998cacd202ac82b2956e18fabaf94e9c0c726a54d87d130e6d65f0aa5a",
+      "tools/verify-docker-memory.sh": "b2a971d0d4eca14ff4033dceadf7fbbdbc937dce52a0837382dbc86a26a1519a",
+      "tools/native-memory.c": "c7384cc37983d6aa3cba224c35e74e3c7a6321d02a744aa55b8e0caa5a25b0ef"
+    }
+  },
+  "groups": [
+    {
+      "group": "default",
+      "complete": true,
+      "baseline": {
+        "anonMiB": 31.875,
+        "rssMiB": 87.07421875,
+        "heapMiB": 13.906562805175781,
+        "heapTotalMiB": 31.4296875,
+        "externalMiB": 4.140305519104004,
+        "arrayBuffersMiB": 0.2649374008178711,
+        "native": {
+          "arenas": 2,
+          "systemMiB": 6.89453125,
+          "freeMiB": 1.341867446899414,
+          "mmapMiB": 0.50390625,
+          "inUseEstimateMiB": 6.056570053100586,
+          "privateDirtyMiB": 31.78125,
+          "anonymousMiB": 31.78125
+        }
+      },
+      "cycles": [
+        {
+          "cycle": 1,
+          "anonMiB": 103.52734375,
+          "anonGrowthMiB": 71.65234375,
+          "rssMiB": 158.30078125,
+          "rssAnonMiB": 103.43359375,
+          "heapMiB": 21.88360595703125,
+          "heapTotalMiB": 52.51953125,
+          "externalMiB": 19.5970458984375,
+          "arrayBuffersMiB": 2.599520683288574,
+          "interventionReleased": {
+            "heapMiB": -0.11252593994140625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.00390625
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 60.5703125,
+            "freeMiB": 37.11337184906006,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 23.96084690093994,
+            "privateDirtyMiB": 103.43359375,
+            "anonymousMiB": 103.43359375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 2,
+          "anonMiB": 118.71875,
+          "anonGrowthMiB": 86.84375,
+          "rssMiB": 173.734375,
+          "rssAnonMiB": 118.625,
+          "heapMiB": 26.458236694335938,
+          "heapTotalMiB": 56.6640625,
+          "externalMiB": 22.98495101928711,
+          "arrayBuffersMiB": 5.987425804138184,
+          "interventionReleased": {
+            "heapMiB": -0.11304473876953125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 69.359375,
+            "freeMiB": 42.291873931884766,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 27.571407318115234,
+            "privateDirtyMiB": 118.625,
+            "anonymousMiB": 118.625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 3,
+          "anonMiB": 112.2578125,
+          "anonGrowthMiB": 80.3828125,
+          "rssMiB": 166.8515625,
+          "rssAnonMiB": 112.1640625,
+          "heapMiB": 26.815353393554688,
+          "heapTotalMiB": 88.6875,
+          "externalMiB": 23.00691795349121,
+          "arrayBuffersMiB": 6.009392738342285,
+          "interventionReleased": {
+            "heapMiB": -0.1122894287109375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 61.55078125,
+            "freeMiB": 33.55196762084961,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.50271987915039,
+            "privateDirtyMiB": 112.171875,
+            "anonymousMiB": 112.171875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 4,
+          "anonMiB": 110.59765625,
+          "anonGrowthMiB": 78.72265625,
+          "rssMiB": 164.546875,
+          "rssAnonMiB": 110.50390625,
+          "heapMiB": 22.447296142578125,
+          "heapTotalMiB": 85.51953125,
+          "externalMiB": 19.65901279449463,
+          "arrayBuffersMiB": 2.661487579345703,
+          "interventionReleased": {
+            "heapMiB": -0.11055755615234375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 60.5703125,
+            "freeMiB": 36.15860652923584,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 24.91561222076416,
+            "privateDirtyMiB": 110.50390625,
+            "anonymousMiB": 110.50390625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 5,
+          "anonMiB": 124.02734375,
+          "anonGrowthMiB": 92.15234375,
+          "rssMiB": 178.08203125,
+          "rssAnonMiB": 123.97265625,
+          "heapMiB": 27.16887664794922,
+          "heapTotalMiB": 89.1640625,
+          "externalMiB": 22.989227294921875,
+          "arrayBuffersMiB": 5.991702079772949,
+          "interventionReleased": {
+            "heapMiB": -0.10910797119140625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.109375
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 69.41796875,
+            "freeMiB": 41.50416851043701,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.41770648956299,
+            "privateDirtyMiB": 124.0234375,
+            "anonymousMiB": 124.0234375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 6,
+          "anonMiB": 118.421875,
+          "anonGrowthMiB": 86.546875,
+          "rssMiB": 172.59375,
+          "rssAnonMiB": 118.328125,
+          "heapMiB": 27.30304718017578,
+          "heapTotalMiB": 89.6640625,
+          "externalMiB": 23.06551742553711,
+          "arrayBuffersMiB": 6.067992210388184,
+          "interventionReleased": {
+            "heapMiB": -0.1083984375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 56.17578125,
+            "freeMiB": 28.019097328186035,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.660590171813965,
+            "privateDirtyMiB": 118.328125,
+            "anonymousMiB": 118.328125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 7,
+          "anonMiB": 132.234375,
+          "anonGrowthMiB": 100.359375,
+          "rssMiB": 186.8828125,
+          "rssAnonMiB": 132.140625,
+          "heapMiB": 27.732986450195312,
+          "heapTotalMiB": 89.6640625,
+          "externalMiB": 23.013389587402344,
+          "arrayBuffersMiB": 6.015864372253418,
+          "interventionReleased": {
+            "heapMiB": -0.108184814453125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 69.53515625,
+            "freeMiB": 41.384535789489746,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.654526710510254,
+            "privateDirtyMiB": 132.140625,
+            "anonymousMiB": 132.140625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 8,
+          "anonMiB": 120.44140625,
+          "anonGrowthMiB": 88.56640625,
+          "rssMiB": 175.12890625,
+          "rssAnonMiB": 120.34765625,
+          "heapMiB": 22.91667938232422,
+          "heapTotalMiB": 86.01953125,
+          "externalMiB": 19.659064292907715,
+          "arrayBuffersMiB": 2.661539077758789,
+          "interventionReleased": {
+            "heapMiB": -0.10927581787109375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 60.5703125,
+            "freeMiB": 35.90474510192871,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 25.16947364807129,
+            "privateDirtyMiB": 120.34765625,
+            "anonymousMiB": 120.34765625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 9,
+          "anonMiB": 119.07421875,
+          "anonGrowthMiB": 87.19921875,
+          "rssMiB": 172.921875,
+          "rssAnonMiB": 118.98046875,
+          "heapMiB": 23.644638061523438,
+          "heapTotalMiB": 87.57421875,
+          "externalMiB": 19.96188259124756,
+          "arrayBuffersMiB": 2.964357376098633,
+          "interventionReleased": {
+            "heapMiB": -0.10916900634765625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 57.22265625,
+            "freeMiB": 32.26106643676758,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 25.465496063232422,
+            "privateDirtyMiB": 118.98046875,
+            "anonymousMiB": 118.98046875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 10,
+          "anonMiB": 115.109375,
+          "anonGrowthMiB": 83.234375,
+          "rssMiB": 169.0625,
+          "rssAnonMiB": 115.015625,
+          "heapMiB": 23.71997833251953,
+          "heapTotalMiB": 87.07421875,
+          "externalMiB": 19.965309143066406,
+          "arrayBuffersMiB": 2.9677839279174805,
+          "interventionReleased": {
+            "heapMiB": -0.111358642578125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 52.828125,
+            "freeMiB": 27.746231079101562,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 25.585800170898438,
+            "privateDirtyMiB": 115.015625,
+            "anonymousMiB": 115.015625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 11,
+          "anonMiB": 136.18359375,
+          "anonGrowthMiB": 104.30859375,
+          "rssMiB": 190.0390625,
+          "rssAnonMiB": 136.08984375,
+          "heapMiB": 27.957786560058594,
+          "heapTotalMiB": 90.6640625,
+          "externalMiB": 22.986867904663086,
+          "arrayBuffersMiB": 5.98934268951416,
+          "interventionReleased": {
+            "heapMiB": -0.1080322265625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 68.90625,
+            "freeMiB": 40.629849433898926,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.780306816101074,
+            "privateDirtyMiB": 136.08984375,
+            "anonymousMiB": 136.08984375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 12,
+          "anonMiB": 132.30078125,
+          "anonGrowthMiB": 100.42578125,
+          "rssMiB": 186.37890625,
+          "rssAnonMiB": 132.20703125,
+          "heapMiB": 28.343360900878906,
+          "heapTotalMiB": 90.4375,
+          "externalMiB": 23.00352954864502,
+          "arrayBuffersMiB": 6.006004333496094,
+          "interventionReleased": {
+            "heapMiB": -0.10986328125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 64.96484375,
+            "freeMiB": 36.75636291503906,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.712387084960938,
+            "privateDirtyMiB": 132.20703125,
+            "anonymousMiB": 132.20703125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 13,
+          "anonMiB": 144.36328125,
+          "anonGrowthMiB": 112.48828125,
+          "rssMiB": 198.60546875,
+          "rssAnonMiB": 144.26953125,
+          "heapMiB": 28.552574157714844,
+          "heapTotalMiB": 90.4140625,
+          "externalMiB": 22.99501895904541,
+          "arrayBuffersMiB": 5.997493743896484,
+          "interventionReleased": {
+            "heapMiB": -0.11127471923828125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 76.75390625,
+            "freeMiB": 48.44017219543457,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.81764030456543,
+            "privateDirtyMiB": 144.26953125,
+            "anonymousMiB": 144.26953125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 14,
+          "anonMiB": 130.4609375,
+          "anonGrowthMiB": 98.5859375,
+          "rssMiB": 184.80859375,
+          "rssAnonMiB": 130.3671875,
+          "heapMiB": 27.935745239257812,
+          "heapTotalMiB": 91.03515625,
+          "externalMiB": 22.70393466949463,
+          "arrayBuffersMiB": 5.706409454345703,
+          "interventionReleased": {
+            "heapMiB": -0.111724853515625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 60.5703125,
+            "freeMiB": 32.48082160949707,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.59339714050293,
+            "privateDirtyMiB": 130.3671875,
+            "anonymousMiB": 130.3671875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 15,
+          "anonMiB": 130.0546875,
+          "anonGrowthMiB": 98.1796875,
+          "rssMiB": 184.85546875,
+          "rssAnonMiB": 129.9609375,
+          "heapMiB": 28.815528869628906,
+          "heapTotalMiB": 91.4140625,
+          "externalMiB": 22.97378158569336,
+          "arrayBuffersMiB": 5.976256370544434,
+          "interventionReleased": {
+            "heapMiB": -0.11243438720703125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 59.76953125,
+            "freeMiB": 31.390762329101562,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.882675170898438,
+            "privateDirtyMiB": 129.9609375,
+            "anonymousMiB": 129.9609375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 16,
+          "anonMiB": 133.60546875,
+          "anonGrowthMiB": 101.73046875,
+          "rssMiB": 188.0546875,
+          "rssAnonMiB": 133.51171875,
+          "heapMiB": 24.34002685546875,
+          "heapTotalMiB": 88.82421875,
+          "externalMiB": 19.955516815185547,
+          "arrayBuffersMiB": 2.957991600036621,
+          "interventionReleased": {
+            "heapMiB": -0.111846923828125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 65.7890625,
+            "freeMiB": 40.59408760070801,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 25.698881149291992,
+            "privateDirtyMiB": 133.51171875,
+            "anonymousMiB": 133.51171875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 17,
+          "anonMiB": 128.82421875,
+          "anonGrowthMiB": 96.94921875,
+          "rssMiB": 183.26953125,
+          "rssAnonMiB": 128.73046875,
+          "heapMiB": 24.33379364013672,
+          "heapTotalMiB": 88.01953125,
+          "externalMiB": 19.65626621246338,
+          "arrayBuffersMiB": 2.658740997314453,
+          "interventionReleased": {
+            "heapMiB": -0.11266326904296875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 61.23828125,
+            "freeMiB": 36.26448154449463,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 25.47770595550537,
+            "privateDirtyMiB": 128.73046875,
+            "anonymousMiB": 128.73046875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 18,
+          "anonMiB": 131.89453125,
+          "anonGrowthMiB": 100.01953125,
+          "rssMiB": 186.5234375,
+          "rssAnonMiB": 131.80078125,
+          "heapMiB": 29.245140075683594,
+          "heapTotalMiB": 91.9140625,
+          "externalMiB": 22.972664833068848,
+          "arrayBuffersMiB": 5.975139617919922,
+          "interventionReleased": {
+            "heapMiB": -0.11615753173828125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 61.0390625,
+            "freeMiB": 32.678711891174316,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.864256858825684,
+            "privateDirtyMiB": 131.80078125,
+            "anonymousMiB": 131.80078125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 19,
+          "anonMiB": 145.42578125,
+          "anonGrowthMiB": 113.55078125,
+          "rssMiB": 199.62890625,
+          "rssAnonMiB": 145.33203125,
+          "heapMiB": 29.306289672851562,
+          "heapTotalMiB": 91.9140625,
+          "externalMiB": 22.992817878723145,
+          "arrayBuffersMiB": 5.995292663574219,
+          "interventionReleased": {
+            "heapMiB": -0.11183929443359375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 74.8671875,
+            "freeMiB": 46.46339797973633,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.907695770263672,
+            "privateDirtyMiB": 145.33203125,
+            "anonymousMiB": 145.33203125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 20,
+          "anonMiB": 138.69140625,
+          "anonGrowthMiB": 106.81640625,
+          "rssMiB": 192.765625,
+          "rssAnonMiB": 138.59765625,
+          "heapMiB": 29.553855895996094,
+          "heapTotalMiB": 91.9140625,
+          "externalMiB": 22.96908664703369,
+          "arrayBuffersMiB": 5.971561431884766,
+          "interventionReleased": {
+            "heapMiB": -0.11136627197265625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 67.83984375,
+            "freeMiB": 39.34630870819092,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.997441291809082,
+            "privateDirtyMiB": 138.59765625,
+            "anonymousMiB": 138.59765625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 21,
+          "anonMiB": 132.3046875,
+          "anonGrowthMiB": 100.4296875,
+          "rssMiB": 186.2890625,
+          "rssAnonMiB": 132.2109375,
+          "heapMiB": 29.84174346923828,
+          "heapTotalMiB": 91.9140625,
+          "externalMiB": 22.997432708740234,
+          "arrayBuffersMiB": 5.999907493591309,
+          "interventionReleased": {
+            "heapMiB": -0.111328125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 61.328125,
+            "freeMiB": 32.80876445770264,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 29.023266792297363,
+            "privateDirtyMiB": 132.2109375,
+            "anonymousMiB": 132.2109375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 22,
+          "anonMiB": 134.03125,
+          "anonGrowthMiB": 102.15625,
+          "rssMiB": 188.203125,
+          "rssAnonMiB": 133.9375,
+          "heapMiB": 29.200645446777344,
+          "heapTotalMiB": 91.01171875,
+          "externalMiB": 22.758645057678223,
+          "arrayBuffersMiB": 5.761119842529297,
+          "interventionReleased": {
+            "heapMiB": -0.11222076416015625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 60.984375,
+            "freeMiB": 32.69506549835205,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.79321575164795,
+            "privateDirtyMiB": 133.9375,
+            "anonymousMiB": 133.9375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 23,
+          "anonMiB": 130.7109375,
+          "anonGrowthMiB": 98.8359375,
+          "rssMiB": 184.73046875,
+          "rssAnonMiB": 130.6171875,
+          "heapMiB": 25.902610778808594,
+          "heapTotalMiB": 90.37890625,
+          "externalMiB": 20.260159492492676,
+          "arrayBuffersMiB": 3.26263427734375,
+          "interventionReleased": {
+            "heapMiB": -0.11148834228515625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 57.40625,
+            "freeMiB": 31.741119384765625,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 26.169036865234375,
+            "privateDirtyMiB": 130.6171875,
+            "anonymousMiB": 130.6171875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 24,
+          "anonMiB": 132.703125,
+          "anonGrowthMiB": 100.828125,
+          "rssMiB": 187.3984375,
+          "rssAnonMiB": 132.609375,
+          "heapMiB": 30.601715087890625,
+          "heapTotalMiB": 93.31640625,
+          "externalMiB": 22.98366928100586,
+          "arrayBuffersMiB": 5.985039710998535,
+          "interventionReleased": {
+            "heapMiB": -0.1120758056640625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 56.58984375,
+            "freeMiB": 27.98998260498047,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 29.10376739501953,
+            "privateDirtyMiB": 132.609375,
+            "anonymousMiB": 132.609375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 25,
+          "anonMiB": 145.79296875,
+          "anonGrowthMiB": 113.91796875,
+          "rssMiB": 200.50390625,
+          "rssAnonMiB": 145.69921875,
+          "heapMiB": 30.44121551513672,
+          "heapTotalMiB": 92.9140625,
+          "externalMiB": 22.98390007019043,
+          "arrayBuffersMiB": 5.986374855041504,
+          "interventionReleased": {
+            "heapMiB": -0.11167144775390625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 69.6484375,
+            "freeMiB": 41.029425621032715,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 29.122918128967285,
+            "privateDirtyMiB": 145.69921875,
+            "anonymousMiB": 145.69921875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 26,
+          "anonMiB": 148.13671875,
+          "anonGrowthMiB": 116.26171875,
+          "rssMiB": 202.28125,
+          "rssAnonMiB": 148.04296875,
+          "heapMiB": 25.466964721679688,
+          "heapTotalMiB": 89.76953125,
+          "externalMiB": 19.66154384613037,
+          "arrayBuffersMiB": 2.6640186309814453,
+          "interventionReleased": {
+            "heapMiB": -0.11174774169921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 74.80859375,
+            "freeMiB": 49.60020351409912,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 25.71229648590088,
+            "privateDirtyMiB": 148.04296875,
+            "anonymousMiB": 148.04296875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 27,
+          "anonMiB": 133.22265625,
+          "anonGrowthMiB": 101.34765625,
+          "rssMiB": 187.8515625,
+          "rssAnonMiB": 133.12890625,
+          "heapMiB": 30.7371826171875,
+          "heapTotalMiB": 93.6640625,
+          "externalMiB": 22.980566024780273,
+          "arrayBuffersMiB": 5.983040809631348,
+          "interventionReleased": {
+            "heapMiB": -0.1152191162109375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.00390625
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 56.58984375,
+            "freeMiB": 27.947412490844727,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 29.146337509155273,
+            "privateDirtyMiB": 133.12890625,
+            "anonymousMiB": 133.12890625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 28,
+          "anonMiB": 137.9609375,
+          "anonGrowthMiB": 106.0859375,
+          "rssMiB": 191.8046875,
+          "rssAnonMiB": 137.8671875,
+          "heapMiB": 30.965621948242188,
+          "heapTotalMiB": 94.2109375,
+          "externalMiB": 22.996004104614258,
+          "arrayBuffersMiB": 5.998478889465332,
+          "interventionReleased": {
+            "heapMiB": -0.10918426513671875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 60.984375,
+            "freeMiB": 32.410828590393066,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 29.077452659606934,
+            "privateDirtyMiB": 137.8671875,
+            "anonymousMiB": 137.8671875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 29,
+          "anonMiB": 149.49609375,
+          "anonGrowthMiB": 117.62109375,
+          "rssMiB": 204.08203125,
+          "rssAnonMiB": 149.40234375,
+          "heapMiB": 31.28710174560547,
+          "heapTotalMiB": 94.1640625,
+          "externalMiB": 22.98608112335205,
+          "arrayBuffersMiB": 5.988555908203125,
+          "interventionReleased": {
+            "heapMiB": -0.11032867431640625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 70.70703125,
+            "freeMiB": 42.02393054962158,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 29.187006950378418,
+            "privateDirtyMiB": 149.40234375,
+            "anonymousMiB": 149.40234375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 30,
+          "anonMiB": 135.39453125,
+          "anonGrowthMiB": 103.51953125,
+          "rssMiB": 189.421875,
+          "rssAnonMiB": 135.30078125,
+          "heapMiB": 30.683517456054688,
+          "heapTotalMiB": 93.76171875,
+          "externalMiB": 22.682530403137207,
+          "arrayBuffersMiB": 5.685005187988281,
+          "interventionReleased": {
+            "heapMiB": -0.1105804443359375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "arenas": 2,
+            "systemMiB": 56.46484375,
+            "freeMiB": 28.09954261779785,
+            "mmapMiB": 0.50390625,
+            "inUseEstimateMiB": 28.86920738220215,
+            "privateDirtyMiB": 135.30078125,
+            "anonymousMiB": 135.30078125
+          },
+          "browsersGone": true
+        }
+      ],
+      "lastFiveAnonSlopeMiBPerCycle": -0.92109375,
+      "lastFiveAnonSpanMiB": 16.2734375,
+      "lastTenAnonSlopeMiBPerCycle": 1.06796875,
+      "lastTenAnonSpanMiB": 18.78515625,
+      "normalCleanupBudget": {
+        "limitMiB": 64,
+        "passingCycles": 0,
+        "allWithinBudget": false
+      },
+      "forcedGcCalls": 0,
+      "gcEvents": 1865,
+      "maxGcPauseMs": 66.76472797989845,
+      "peakCgroupMiB": 857.18359375,
+      "oomKillDelta": 0,
+      "operations": 900,
+      "sourceReceipts": 900,
+      "hashes": {
+        "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/memory-host.cjs": "da26c4a58a92a20c5c507fa2521e1c5c45d82a53ca9e8eaca86cb880eb802c9f",
+        "tools/memory-client.cjs": "4847b6998cacd202ac82b2956e18fabaf94e9c0c726a54d87d130e6d65f0aa5a",
+        "tools/verify-docker-memory.sh": "b2a971d0d4eca14ff4033dceadf7fbbdbc937dce52a0837382dbc86a26a1519a",
+        "tools/native-memory.c": "c7384cc37983d6aa3cba224c35e74e3c7a6321d02a744aa55b8e0caa5a25b0ef"
+      },
+      "image": "sha256:991b11a92142f36fffc35ed065dde05c24c93914970dc9e318e9c1c4844cdfab",
+      "sharpConcurrency": 1,
+      "sharpVersions": {
+        "aom": "3.15.1",
+        "archive": "3.8.9",
+        "cairo": "1.18.6",
+        "cgif": "0.5.4",
+        "exif": "0.6.26",
+        "expat": "2.8.5",
+        "ffi": "3.8.0",
+        "fontconfig": "2.18.3",
+        "freetype": "2.14.3",
+        "fribidi": "1.0.17",
+        "glib": "2.90.0",
+        "harfbuzz": "14.5.0",
+        "heif": "1.23.5",
+        "highway": "1.4.0",
+        "imagequant": "2.4.1",
+        "lcms": "2.19.1",
+        "mozjpeg": "0826579",
+        "pango": "1.58.2",
+        "pixman": "0.46.4",
+        "png": "1.6.58",
+        "proxy-libintl": "0.5",
+        "rsvg": "2.63.2",
+        "tiff": "4.7.2",
+        "uhdr": "2.0.2",
+        "vips": "8.18.7",
+        "webp": "1.6.0",
+        "xml2": "2.15.4",
+        "zlib-ng": "2.3.3",
+        "sharp": "0.35.5"
+      },
+      "nativeProbe": {
+        "glibc": "2.36",
+        "env": {
+          "MALLOC_ARENA_MAX": "2",
+          "VIPS_CONCURRENCY": "1"
+        },
+        "binarySha256": "0fbe8640147771efdc3b4c41fe3f122b688d4307444f3dfaf9d2a58980cad8bd"
+      },
+      "finalGcCalls": 2,
+      "trimCalls": 1,
+      "durationMs": 574797.248731,
+      "finalDiagnostics": [
+        {
+          "phase": "finalIdle",
+          "cycle": 30,
+          "trimReleased": null,
+          "gcEventsDuringCheckpoint": 0,
+          "before": {
+            "anonMiB": 135.22265625,
+            "externalMiB": 22.682530403137207,
+            "heapMiB": 36.07402038574219,
+            "heapTotalMiB": 93.76171875,
+            "arrayBuffersMiB": 5.685005187988281,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.46484375,
+              "freeMiB": 28.285395622253418,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 28.683354377746582,
+              "privateDirtyMiB": 135.12890625,
+              "anonymousMiB": 135.12890625
+            }
+          },
+          "after": {
+            "anonMiB": 135.22265625,
+            "externalMiB": 22.682530403137207,
+            "heapMiB": 36.188636779785156,
+            "heapTotalMiB": 93.76171875,
+            "arrayBuffersMiB": 5.685005187988281,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.46484375,
+              "freeMiB": 28.285395622253418,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 28.683354377746582,
+              "privateDirtyMiB": 135.12890625,
+              "anonymousMiB": 135.12890625
+            }
+          }
+        },
+        {
+          "phase": "finalGc",
+          "cycle": 30,
+          "trimReleased": null,
+          "gcEventsDuringCheckpoint": 2,
+          "before": {
+            "anonMiB": 135.22265625,
+            "externalMiB": 22.682530403137207,
+            "heapMiB": 36.45134735107422,
+            "heapTotalMiB": 93.76171875,
+            "arrayBuffersMiB": 5.685005187988281,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.46484375,
+              "freeMiB": 28.285395622253418,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 28.683354377746582,
+              "privateDirtyMiB": 135.12890625,
+              "anonymousMiB": 135.12890625
+            }
+          },
+          "after": {
+            "anonMiB": 129.890625,
+            "externalMiB": 4.274181365966797,
+            "heapMiB": 17.646682739257812,
+            "heapTotalMiB": 27.6796875,
+            "arrayBuffersMiB": 0.4602499008178711,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.46484375,
+              "freeMiB": 47.041069984436035,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 9.927680015563965,
+              "privateDirtyMiB": 129.796875,
+              "anonymousMiB": 129.796875
+            }
+          }
+        },
+        {
+          "phase": "finalTrim",
+          "cycle": 30,
+          "trimReleased": true,
+          "gcEventsDuringCheckpoint": 0,
+          "before": {
+            "anonMiB": 129.890625,
+            "externalMiB": 4.274181365966797,
+            "heapMiB": 17.949012756347656,
+            "heapTotalMiB": 27.6796875,
+            "arrayBuffersMiB": 0.4602499008178711,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.46484375,
+              "freeMiB": 47.03239440917969,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 9.936355590820312,
+              "privateDirtyMiB": 129.796875,
+              "anonymousMiB": 129.796875
+            }
+          },
+          "after": {
+            "anonMiB": 88.6640625,
+            "externalMiB": 4.274181365966797,
+            "heapMiB": 18.15361785888672,
+            "heapTotalMiB": 27.6796875,
+            "arrayBuffersMiB": 0.4602499008178711,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.33984375,
+              "freeMiB": 46.90739440917969,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 9.936355590820312,
+              "privateDirtyMiB": 88.58984375,
+              "anonymousMiB": 88.58984375
+            }
+          }
+        },
+        {
+          "phase": "finalSettled",
+          "cycle": 30,
+          "trimReleased": null,
+          "gcEventsDuringCheckpoint": 0,
+          "before": {
+            "anonMiB": 88.96484375,
+            "externalMiB": 4.274181365966797,
+            "heapMiB": 17.87250518798828,
+            "heapTotalMiB": 24.6796875,
+            "arrayBuffersMiB": 0.4602499008178711,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.33984375,
+              "freeMiB": 46.9096736907959,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 9.934076309204102,
+              "privateDirtyMiB": 88.87109375,
+              "anonymousMiB": 88.87109375
+            }
+          },
+          "after": {
+            "anonMiB": 88.96484375,
+            "externalMiB": 4.274181365966797,
+            "heapMiB": 17.986312866210938,
+            "heapTotalMiB": 24.6796875,
+            "arrayBuffersMiB": 0.4602499008178711,
+            "native": {
+              "arenas": 2,
+              "systemMiB": 56.33984375,
+              "freeMiB": 46.9096736907959,
+              "mmapMiB": 0.50390625,
+              "inUseEstimateMiB": 9.934076309204102,
+              "privateDirtyMiB": 88.87109375,
+              "anonymousMiB": 88.87109375
+            }
+          }
+        }
+      ],
+      "treatmentValid": true,
+      "sourceMatchesPlan": true,
+      "nativeTreatmentValid": true,
+      "receiptsValid": true
+    }
+  ],
+  "consistentSources": true,
+  "consistentImages": true,
+  "complete": true,
+  "provenance": {
+    "evidenceRoot": "/home/Kei/dom-mirror-validation/20261026/frame-memory-long",
+    "pilotRoot": "/home/Kei/dom-mirror-validation/20261026/frame-memory-long-pilot",
+    "pilotExcluded": true,
+    "engineChangedSincePreviousInvestigation": false,
+    "baseImage": "sha256:7d1dd2a274f3b69816ec7e790ea7bbf203f2fd9fad9fa7290c2d0f7e46ec7ff5",
+    "build": "tools/Dockerfile.memory with cached pinned dependency base; not a fresh online standard Dockerfile build",
+    "analysisHashes": {
+      "tools/summarize-memory.cjs": "bcde5cc6e4ab548b93c474b6a8685c253dc7001cfe0889abb7bf9b4bba6ec10e",
+      "tools/plot-memory-long.py": "f64d2e97336e71ff1b4bb936822427de845cdfe13ea04d93df90048fb370dcc5",
+      "tools/run-memory-long.sh": "234eeeb980d7d7565fd3f551d951c1a7e7bf51d097fec8b0b602a294f9d8e55b",
+      "tools/Dockerfile.memory": "5f1e7d00397be4abcacb7d37520d1d9955fe88475442665119e34729b6bf758b"
+    },
+    "host": {
+      "kernel": "6.6.114.1-microsoft-standard-WSL2",
+      "logicalCpus": 24,
+      "quotaNote": "Docker CPU quotas, not exclusive host CPU cores"
+    },
+    "audit": "All source hashes, 900 unique receipts/90 source IDs, normal/final interventions, quotas, OOM flags and 90 tracked Chromium parent exits independently verified"
+  }
+}

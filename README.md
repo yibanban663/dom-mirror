@@ -144,7 +144,7 @@ This layer does not repair authorization, injection or business-logic flaws in t
 - There is no built-in authentication provider, rate limiting or WS Origin validation. Hosts must implement these controls; the optional identity hook consumes the host's verified identity.
 - Default Chromium arguments include `--no-sandbox`; the Demo Docker image runs as root. Browser and network isolation need additional hardening for untrusted content.
 - Uploads/downloads, clipboard, popups, IME, iframes, Shadow DOM, rich text and virtual scrolling do not have complete compatibility guarantees.
-- Each session owns a Chromium instance. The default limit of three sessions is configuration, not measured capacity.
+- Each session owns a Chromium instance. The default limit of three is configuration; synthetic concurrency tests do not establish general application capacity.
 
 Hidden input `value` attributes are excluded from mirrored snapshots and patches by default. Hosts can additionally remove named attributes with `redactAttributes`; the source page is unchanged. This does not filter hidden text, CSS, resource bodies or pixels. See the [measured data boundary](docs/acceptance/data-boundary-2026-10-26.md) for the observations and limits.
 
@@ -159,6 +159,7 @@ node tools/verify-package.cjs
 IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-data-boundary.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-session-identity.sh
+IMAGE=dom-mirror:local bash tools/verify-docker-session-revocation.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-vikunja.sh
 IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
   BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery \
@@ -167,7 +168,9 @@ IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
 
 The tarball check installs the actual package in a separate temporary host; it does not launch Chromium. Browser regressions use isolated Docker environments. Vikunja tests cover login, task creation, priority changes and completion, with separate persistence assertions. CI is configured to run these checks and retain browser evidence; use the result for the relevant commit.
 
-The frame codec reuses decoded pixels for ordinary RGB/RGBA PNG crops and falls back for other encodings. Measurements show a **local encoding benefit**, not a demonstrated stable end-to-end speedup. Multi-session capacity and sustained operation remain to be validated.
+The frame codec reuses decoded pixels for ordinary RGB/RGBA PNG crops and falls back for other encodings. Measurements show a **local encoding benefit**, not a demonstrated stable end-to-end speedup. [Synthetic concurrency tests](docs/performance/2026-10-26-capacity.md) cover 1/3/6 sessions in DOM and frame: DOM meets this experiment's budgets; frame does not consistently meet the post-cleanup anonymous-memory budget (one single-session run and both 3/6-session runs exceed it). A [ten-cycle memory investigation](docs/performance/2026-10-26-frame-memory.md) finds that forced GC and disabling sharp cache do not resolve the retained anonymous memory; allocator controls are a host-level diagnostic, not a package default. Real-application capacity and sustained operation remain to be validated.
+
+A [30-cycle native-memory follow-up](docs/performance/2026-10-26-frame-memory-long.md) passed 900 operations but failed the normal cleanup-memory budget in all 30 cycles. A terminal GC/trim diagnostic confirmed about 41MiB of reclaimable residency; it is not enabled by the library. A [matched host-profile comparison](docs/performance/2026-10-26-allocator-mappings.md) passed the cleanup-memory budget in 1/10 glibc cycles and 10/10 jemalloc-with-decay cycles; the latter remains a candidate pending longer and real-application validation.
 
 Further reading: [roadmap](docs/ROADMAP.md) · [Vikunja acceptance](docs/acceptance/vikunja-2026-10-26.md) · [recovery acceptance](docs/acceptance/recovery-2026-10-26.md) · [codec acceptance](docs/acceptance/frame-codec-0.10.1.md) · [performance investigation](docs/performance/2026-10-26.md) · [font setup](docs/FONTS.md) · [changelog](CHANGELOG.md). These historical reports identify the versions they tested.
 

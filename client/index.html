@@ -720,10 +720,17 @@
       lastErr = '';
       socket.send(JSON.stringify({ type: 'hello', resume: resumeToken || undefined, dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight }));
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (ws !== socket) return;
+      if (event.code === 4001) {
+        retryAllowed = false;
+        resumeToken = null;
+        clearTimeout(retryTimer);
+        lastErr = '会话已撤销，请重新登录后再访问。';
+        m('newSession').hidden = true;
+      }
       availability(false, lastErr || '连接已断开，正在恢复。未确认的操作请恢复后核对。');
-      setStatus('已断开', false);
+      setStatus(event.code === 4001 ? '会话已撤销' : '已断开', false);
       window.__xyDrag = null;
       m('mIdle').textContent = 'disconnected';
       if (retryAllowed) {

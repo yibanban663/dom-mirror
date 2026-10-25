@@ -1210,7 +1210,8 @@ async function runSession(ws, req, lifecycle) {
       const W = info.width, H = info.height, CH = info.channels;
       if (!prevRaw || prevW !== W || prevH !== H) {
         prevRaw = data; prevW = W; prevH = H;
-        return { tiles: [], full: true };
+        return { tiles: [{ w: W, h: H, cssX: Math.round(meta.sx || 0), cssY: Math.round(meta.sy || 0),
+          cssW: W / DPR, cssH: H / DPR, url: 'data:image/png;base64,' + b64 }], full: true };
       }
       // 逐像素比较找脏行/列（Uint32 视图加速；行级先筛再列级细化）
       const dirtyRows = new Uint8Array(H);
@@ -1478,12 +1479,21 @@ async function runSession(ws, req, lifecycle) {
   }
 }
 
+function waitForRevokedClose(socket) {
+  if (!socket || socket.readyState === 3) return Promise.resolve();
+  return new Promise(resolve => {
+    const timer = setTimeout(() => socket.terminate(), 1000);
+    timer.unref();
+    socket.once('close', () => { clearTimeout(timer); resolve(); });
+  });
+}
+
 async function revokeSessions(selected) {
   const pending = [];
   for (const session of selected) {
     const socket = session.socket;
-    session.close(1008, 'session revoked');
-    socket?.terminate();
+    session.close(4001, 'SESSION_REVOKED');
+    pending.push(waitForRevokedClose(socket));
     const lifecycle = sessionLifecycles.get(session);
     pending.push(lifecycle?.task, lifecycle?.cleanup());
   }
@@ -1501,10 +1511,15 @@ async function revokeIdentity(identity) {
   if (typeof identity !== 'string' || !identity.trim()) throw new TypeError('identity must be a non-empty string');
   const selected = [...sessionStore.entries.values()].filter(session => sessionLifecycles.get(session)?.identity === identity);
   const result = revokeSessions(selected);
+  const pending = [result];
   // Includes authenticated transports that have not sent their first hello yet.
   for (const socket of wss.clients) {
-    if (socketIdentities.get(socket) === identity) socket.terminate();
+    if (socketIdentities.get(socket) === identity && socket.readyState === 1) {
+      socket.close(4001, 'SESSION_REVOKED');
+      pending.push(waitForRevokedClose(socket));
+    }
   }
+  await Promise.all(pending);
   return result;
 }
 

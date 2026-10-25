@@ -1,0 +1,8 @@
+# Optional diagnostic image: the npm package and ordinary image do not build this addon.
+ARG BASE_IMAGE=dom-mirror:local
+FROM ${BASE_IMAGE}
+ENV MALLOC_ARENA_MAX=2 VIPS_CONCURRENCY=1
+COPY tools /app/tools
+RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+    -I/usr/local/include/node tools/native-memory.c -o tools/native-memory.node \
+ && node -e "const n=require('./tools/native-memory.node'); if (!n.snapshot().includes('<malloc') || typeof n.trim() !== 'boolean') throw Error('native probe'); console.log('glibc', n.glibc, 'sharp concurrency', require('sharp').concurrency())"
