@@ -12,6 +12,15 @@ server="$run_id-server"
 client="$run_id-client"
 server_entry=demo/server.js
 server_mount=()
+allocator_profile=${BUSINESS_ALLOCATOR_PROFILE:-}
+[[ -z "$allocator_profile" || "$allocator_profile" == jemalloc ]] || exit 2
+allocator_env=()
+if [[ "$allocator_profile" == jemalloc ]]; then
+  [[ "${PROFILE:-0}" != 1 ]] || exit 2
+  server_entry=tools/allocator-business-host.cjs
+  allocator_env=(-e LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
+    -e MALLOC_CONF=narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000)
+fi
 if [[ "${PROFILE:-0}" == 1 ]]; then
   server_entry=tools/profile-server.cjs
   server_mount=(-v "$repo/tools:/app/tools:ro" -v "$repo/server.js:/app/server.js:ro")
@@ -29,6 +38,7 @@ cleanup() {
   docker logs "$app" > "$evidence/app.log" 2>&1 || true
   docker logs "$server" > "$evidence/server.log" 2>&1 || true
   docker logs "$client" > "$evidence/client.log" 2>&1 || true
+  docker inspect "$server" "$client" > "$evidence/containers.json" 2>/dev/null || true
   docker cp "$client:/tmp/business-evidence/." "$evidence/" >/dev/null 2>&1 || true
   docker rm -f "$client" "$server" "$app" >/dev/null 2>&1 || true
   docker network rm "$run_id" >/dev/null 2>&1 || true
@@ -51,7 +61,7 @@ docker exec "$app" /app/vikunja/vikunja version > "$evidence/app-version.txt"
 docker image inspect "$image" --format '{{json .Id}}' > "$evidence/mirror-image.json"
 printf '%s\n' "$business_image" > "$evidence/app-image.txt"
 docker run -d --name "$server" --network "$run_id" --network-alias mirror \
-  "${proxy_env[@]}" --memory 2g --cpus "${MIRROR_CPUS:-2}" -e PROD_PRESENTATION=1 \
+  "${proxy_env[@]}" "${allocator_env[@]}" --memory 2g --cpus "${MIRROR_CPUS:-2}" -e PROD_PRESENTATION=1 \
   -e "PROFILE_FRAME_TICK_MS=${PROFILE_FRAME_TICK_MS:-16}" -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "PROFILE_CODEC=${PROFILE_CODEC:-production}" \
   -e "PROFILE_PATCH_MS=${PROFILE_PATCH_MS:-60}" -e "DEFAULT_MODE=${PROFILE_MODE:-dom}" "${server_mount[@]}" \
   -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e ORIGIN_URL=http://business:3456/ "$image" timeout 330 node "$server_entry" >/dev/null
@@ -70,3 +80,21 @@ docker run --name "$client" --network "$run_id" --memory 2g \
   -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "DIAGNOSTIC_HOLD_MS=${DIAGNOSTIC_HOLD_MS:-0}" \
   -v "$repo/tools:/app/tools:ro" --entrypoint timeout \
   "$image" 270 node "tools/$test_script"
+if [[ "$allocator_profile" == jemalloc ]]; then
+  docker exec "$server" node -e '
+    (async () => {
+      const deadline = Date.now() + Number(process.env.SESSION_GRACE_MS) + 20000;
+      while (Date.now() < deadline) {
+        const response = await fetch("http://127.0.0.1:8088/__allocator/status", {signal: AbortSignal.timeout(2000)});
+        const state = await response.json();
+        if (state.allocator.implementation !== "jemalloc" || state.sharpConcurrency !== 1 || !state.browsers.length
+          || state.browsers.some(browser => browser.jemallocMapped)) throw Error("Invalid allocator or browser treatment");
+        if (state.browsers.every(browser => browser.closed && !browser.connected && browser.processGone)) {
+          console.log(JSON.stringify(state)); return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw Error("Business browsers not reclaimed");
+    })().catch(error => { console.error(error); process.exit(1); });
+  ' > "$evidence/allocator.json"
+fi

@@ -170,7 +170,7 @@ tarball 检查会把实际 npm 包安装到独立临时宿主，不启动 Chromi
 
 frame 编码会复用普通 RGB/RGBA PNG 的解码像素，对其他编码保守回退。测量证明了**局部编码收益**，尚未证明稳定的端到端提速。[合成并发测试](docs/performance/2026-10-26-capacity.md)已覆盖 DOM/frame 的 1/3/6 会话：DOM 满足本轮预算，frame 回收后匿名内存预算未稳定通过（单会话一轮略超，3/6 会话均超）。[十轮内存调查](docs/performance/2026-10-26-frame-memory.md)确认强制 GC 和关闭 sharp cache 均未解决匿名内存驻留；分配器参数属于宿主诊断选项，不设为包的默认行为。真实业务容量与长期运行仍待验收。
 
-[三十轮原生内存续测](docs/performance/2026-10-26-frame-memory-long.md)完成 900 次操作，但正常回收内存预算 0/30 轮通过。末尾 GC/trim 诊断确认约 41MiB 可归还驻留，库中没有启用该干预。[同镜像宿主配置对照](docs/performance/2026-10-26-allocator-mappings.md)中，glibc 回收内存预算通过 1/10 轮，jemalloc 加后台回收配置通过 10/10 轮；后者仍需更长轮次及真实业务验收。
+[三十轮原生内存续测](docs/performance/2026-10-26-frame-memory-long.md)完成 900 次操作，但正常回收内存预算 0/30 轮通过。末尾 GC/trim 诊断确认约 41MiB 可归还驻留，库中没有启用该干预。[同镜像宿主配置对照](docs/performance/2026-10-26-allocator-mappings.md)中，glibc 回收内存预算通过 1/10 轮，jemalloc 加后台回收配置通过 10/10 轮；后续[三十轮候选验收](docs/performance/2026-10-26-jemalloc-candidate.md)完成 900 次操作，但正常回收内存预算仅通过 17/30 轮，同配置下的 Vikunja 核心流程及 DOM/frame 恢复通过；候选配置尚未满足生产准入。
 
 更多资料：[路线图](docs/ROADMAP.md) · [Vikunja 验收](docs/acceptance/vikunja-2026-10-26.md) · [恢复验收](docs/acceptance/recovery-2026-10-26.md) · [编码优化验收](docs/acceptance/frame-codec-0.10.1.md) · [性能调查](docs/performance/2026-10-26.md) · [字体配置](docs/FONTS.md) · [变更记录](CHANGELOG.md)。历史报告中的结果仅对应其明确标注的版本。
 

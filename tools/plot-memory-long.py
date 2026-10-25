@@ -12,6 +12,7 @@ report = json.loads(source.read_text())
 assert report["complete"], "Only plot complete evidence"
 assert report["plan"]["cycles"] == 30 and report["plan"]["nativeProbe"], "Expected the 30-cycle native-probe plan"
 group = report["groups"][0]
+jemalloc = group["nativeProbe"].get("allocator", {}).get("implementation") == "jemalloc"
 cycles = group["cycles"]
 fig, axes = plt.subplots(1, 3, figsize=(14, 4.6))
 x = [point["cycle"] for point in cycles]
@@ -19,17 +20,20 @@ axes[0].plot(x, [p["anonGrowthMiB"] for p in cycles], color="#235d9f", marker=".
 axes[0].axhline(report["plan"]["budget"]["postCleanupAnonGrowthMiB"], color="#ba3b52", linestyle="--", label="64 MiB budget")
 axes[0].set_title("Anonymous growth above baseline")
 axes[0].legend(frameon=False, fontsize=8)
-for field, label, color in [("systemMiB", "System", "#235d9f"), ("freeMiB", "Free", "#21866f"),
-                             ("inUseEstimateMiB", "In-use estimate", "#c26c23")]:
+fields = [("allocatedMiB", "Allocated", "#235d9f"), ("activeMiB", "Active", "#21866f"), ("residentMiB", "Resident", "#c26c23")] if jemalloc else [
+    ("systemMiB", "System", "#235d9f"), ("freeMiB", "Free", "#21866f"), ("inUseEstimateMiB", "In-use estimate", "#c26c23")]
+for field, label, color in fields:
     axes[1].plot(x, [p["native"][field] for p in cycles], label=label, color=color)
-axes[1].set_title("glibc accounting (not RSS)")
+axes[1].set_title("jemalloc accounting (not process RSS)" if jemalloc else "glibc accounting (not RSS)")
 axes[1].legend(frameon=False, fontsize=8)
 points = group["finalDiagnostics"]
+phase_labels = {"finalIdle": ("Idle", "#235d9f"), "finalGc": ("GC", "#c26c23"),
+                "finalTrim": ("Trim", "#21866f"), "finalSettled": ("+3s", "#77589c")}
 bars = axes[2].bar(range(len(points)), [p["after"]["anonMiB"] for p in points],
-                   color=["#235d9f", "#c26c23", "#21866f", "#77589c"])
+                   color=[phase_labels[p["phase"]][1] for p in points])
 axes[2].bar_label(bars, fmt="%.1f", padding=3, fontsize=8)
 axes[2].margins(y=0.15)
-axes[2].set_xticks(range(len(points)), ["Idle", "GC", "Trim", "+3s"])
+axes[2].set_xticks(range(len(points)), [phase_labels[p["phase"]][0] for p in points])
 axes[2].set_title("Terminal diagnostic: absolute anon")
 for ax in axes[:2]:
     ax.set_xlabel("Create / operate / reclaim cycle")
@@ -38,7 +42,7 @@ for ax in axes:
     ax.set_ylabel("MiB")
     ax.grid(axis="y", alpha=0.2)
     ax.set_axisbelow(True)
-fig.suptitle("Frame: 30 cycles, arena cap=2, libvips concurrency=1", fontsize=12)
+fig.suptitle("Frame: 30 cycles, " + ("jemalloc + background decay" if jemalloc else "arena cap=2") + ", libvips concurrency=1", fontsize=12)
 fig.text(0.5, 0.02, "3 sessions / cycle; no forced GC or trim during normal cycles. Terminal interventions do not count toward the budget.",
          ha="center", fontsize=8, color="#555555")
 fig.tight_layout(rect=(0, 0.07, 1, 0.94))

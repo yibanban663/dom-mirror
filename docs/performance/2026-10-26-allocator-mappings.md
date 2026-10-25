@@ -80,3 +80,5 @@ IMAGE=dom-mirror:allocator EVIDENCE_DIR="$PWD/artifacts/allocator/run-1" \
 ```
 
 诊断镜像需要 Debian 包源、gcc 和 Node headers。基础镜像与实际测试平台必须满足冻结计划；本轮沿用固定的缓存依赖基底，新安装的 allocator 版本、镜像与源码摘要另行留档。普通 npm 安装/包导入不安装或加载 jemalloc，也不编译该诊断 helper。
+
+后续[三十轮 jemalloc 候选宿主与真实业务验收](2026-10-26-jemalloc-candidate.md)保持原预算，正常回收通过 17/30 轮；十轮候选结果不代表更长运行通过，原十轮数据保持不变。
