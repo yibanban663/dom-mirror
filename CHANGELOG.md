@@ -1,3 +1,30 @@
+# v0.7.2 — fix: lazy-loaded stylesheets never reached the mirror (all entrance animations dead)
+
+Root cause chain (found on a real external browser, invisible to in-container
+acceptance): the app loads its second stylesheet (17 of 30 keyframes: view/
+message entrance animations) into <head> seconds after login; the login POST
+is a real navigation so the +600/+1500ms re-snapshots all run before the
+injection, the MutationObserver's noPath:HEAD full-trigger gets swallowed by
+the in-flight-snapshot guard (consumed, never requeued), and the els-drift
+radar was dead code (async elCount race -> sstats.els always 0). Result: the
+mirror's css froze at the login-page state forever - every entrance/ambient
+animation gone while static layout kept working.
+
+Fixes:
+- css-set fingerprint fallback: 1Hz stylesheet manifest comparison in the
+  stats tick; any change triggers a full resync (retries until a snapshot
+  confirms the new set; independent of observer/navigation races)
+- swallowed-trigger requeue: full-patch triggers arriving during an in-flight
+  snapshot now set pendingFull and are re-scheduled after it completes
+- observer mounts BEFORE the snapshot (kills the no-observer window across
+  secondary navigations); helpers injection gets a timeout
+- sstats.els async race fixed (client els-drift resync radar revived)
+
+Verified on a real external Chromium through the production ingress: fresh
+login now delivers 30/30 keyframes (264KB css), computed-style census shows
+sr-fade-in/sr-view-in/soulraid-spin running in the mirror, and a 4-frame
+burst during view switch measures 6.6%/7.3%/3.5% pixel change (was 0.000%).
+
 # v0.7.1 — fix: obfuscation fonts must register at document level
 
 @font-face declared inside the mirror shadow root is not applied by some

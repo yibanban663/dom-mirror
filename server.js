@@ -237,9 +237,10 @@ const PAGE_HELPERS = `(() => {
       const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
       let linkCss = '';
       try {
-        const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch(() => '')));
+        const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch((e) => { console.warn('[snapcss] fetch fail', h, String(e).slice(0, 60)); return ''; })));
         linkCss = texts.join('\\n');
-      } catch (e) {}
+      } catch (e) { console.warn('[snapcss] batch fail', String(e).slice(0, 60)); }
+      window.__xyCssDiag = { hrefs, lens: hrefs.map((h, i) => (linkCss.length)), styleLen: styleCss.length, linkLen: linkCss.length, kf: (linkCss.match(/@keyframes/g) || []).length, at: Date.now(), url: location.pathname };
       let docClass = '', docAttrs = '';
       for (const root of [document.documentElement, document.body]) {
         if (!root) continue;
@@ -507,6 +508,7 @@ wss.on('connection', async (ws, req) => {
   // 清定时器——否则 3 次断连即耗尽 MAX_SESSIONS；无监听的 error 事件还会打崩整个进程
   let dead = false;
   let helloIv = null;
+  let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
   const cleanup = async () => {
     if (dead) return;
     dead = true;
@@ -834,11 +836,14 @@ wss.on('connection', async (ws, req) => {
     p2,
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + (tag2 || 'op'))), ms)),
   ]);
-  let lastFullDoneAt = 0, fullDebounceT = null;
+  let lastFullDoneAt = 0, fullDebounceT = null, pendingFull = false;
   function startDomMirror() {
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
-    // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白
-    if (domStarting) return domStarting;
+    // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白。
+    // 被吞触发必须补发（pendingFull）：full 补丁（如 head 注入懒加载样式表的
+    // noPath:HEAD）到达时若正有快照在飞，直接 return 会把触发消费掉且无人重排
+    // ——实测 Assistant css 注入被吞一次后镜像动画样式永久缺失。
+    if (domStarting) { pendingFull = true; return domStarting; }
     // 防抖：SPA 登录/路由切换会连发全量触发（head 注入样式 noPath:HEAD、
     // +600/+1500ms 导航重试、补丁 miss 客户端重同步），实测 4 秒内 6 次全量
     // 快照——重建窗口互相吞点击、镜像反复闪旧页。700ms 窗口内合并为一次。
@@ -853,7 +858,13 @@ wss.on('connection', async (ws, req) => {
     console.log('[dbg] startDomMirror <- ' + (new Error().stack.split('\n')[2] || '?').trim().replace(/^at /, ''));
     domStarting = (async () => {
       try { await doStartDomMirror(); }
-      finally { domStarting = null; lastFullDoneAt = Date.now(); }
+      finally {
+        domStarting = null; lastFullDoneAt = Date.now();
+        if (pendingFull) {
+          pendingFull = false;
+          fullDebounceT = setTimeout(() => { fullDebounceT = null; startDomMirror().catch(() => {}); }, 60);
+        }
+      }
     })();
     return domStarting;
   }
@@ -915,6 +926,22 @@ wss.on('connection', async (ws, req) => {
       domExposed = true;
     }
     domActive = true;
+    // observer 先挂后拍（关键顺序）：原实现快照之后才挂 observer，快照期间二次
+    // 导航（POST→302→落地页）会让快照发出旧内容且新文档上无任何 observer——
+    // 该会话从此零补丁零触发（实测 css 永久冻结的一种成因）。先挂可观测窗口
+    // 覆盖整个快照期；PAGE_HELPERS 注入加超时防导航竞态悬挂。
+    await withTimeout(page.evaluate(PAGE_HELPERS), 8000, 'helpers').catch((e) => {
+      console.log('[dom   ] helpers inject fail:', e && e.message);
+    });
+    await page.evaluate(() => {
+      if (window.__xyObs) window.__xyObs.disconnect();
+      window.__xyObs = new MutationObserver((recs) => {
+        const out = [];
+        for (const r of recs) { try { const p2 = window.__xy.patchOf(r); if (p2) out.push(p2); } catch (e) {} }
+        if (out.length) window.__xyPatch(out);
+      });
+      window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+    }).catch(() => {});
     // v4：dom 快照零截图（文本/输入框外观由客户端原生渲染，字体由源站 CSS 自带）。
     // frame 模式仍需整页截图作条带底板。
     await page.evaluate((d) => { window.__xyDpr = d; }, DPR);
@@ -926,6 +953,10 @@ wss.on('connection', async (ws, req) => {
     }
     const snap = await withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot');
     try {
+      const diag = await page.evaluate(() => window.__xyCssDiag || null);
+      if (diag) console.log(`[snapcss] ${diag.url} links=${diag.hrefs.length}(${diag.hrefs.map(h => h.split('/').pop()).join(',')}) kf=${diag.kf} cssLen=${diag.styleLen + diag.linkLen}`);
+    } catch (e) {}
+    try {
       const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
       console.log('[dom   ] post-snapshot focus:', foc);
     } catch (e) {}
@@ -934,29 +965,8 @@ wss.on('connection', async (ws, req) => {
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
-    await page.evaluate(() => {
-      if (window.__xyObs) window.__xyObs.disconnect();
-      window.__xyObs = new MutationObserver((recs) => {
-        if (window.__xyBusy) {
-          // 位图化期间的变更不丢、也不整体重同步（重同步自身耗时会再撞上变更，形成
-          // 自我延续的风暴，实测 15s 内 24 次全量快照）：记录下来，快照完成后按常规
-          // 补丁链补发（瓦片重裁的是最新像素）
-          const pend = window.__xyPending || (window.__xyPending = []);
-          for (const r of recs) { try { const p2 = window.__xy.patchOf(r); if (p2) pend.push(p2); } catch (e) {} }
-          if (pend.length > 200) pend.splice(0, pend.length - 200);
-          return;
-        }
-        const out = [];
-        for (const r of recs) { const p2 = window.__xy.patchOf(r); if (p2) out.push(p2); }
-        if (out.length) window.__xyPatch(out);
-      });
-      window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
-      // 快照期间发生的变更补发（常规补丁链；不触发全量重同步）
-      const pending = (window.__xyPending || []).filter(Boolean);
-      window.__xyPending = null;
-      if (pending.length) window.__xyPatch(pending);
-    });
     console.log('[dom   ] mirror started');
+    lastCssSig = null; // 快照即最新基线，下一拍重定（含懒加载样式表）
     // v3：dom 模式无帧流（客户端本地渲染，更新全部事件驱动——补丁/滚动同步/
     // canvas 元素捕获）；帧差分通道仅属于显式 frame（像素直出）模式
     if (mode === 'frame') {
@@ -1317,19 +1327,39 @@ wss.on('connection', async (ws, req) => {
     statTimer = setInterval(() => {
       const now = Date.now();
       frameTimes = frameTimes.filter(t => now - t < 1000);
-      // 结构指纹：SPA 异步渲染会让代理与服务端结构漂移（补丁路径碰撞错位，
-      // 瓦片落到错误元素上）。客户端比对元素数，超阈即请求全量重同步。
-      let elCount = 0;
-      if ((mode === 'dom' || mode === 'frame') && domActive && !domStarting) {
-        page.evaluate(() => document.body ? document.body.querySelectorAll(':not(script):not(noscript):not(template)').length : 0)
-          .then((n) => { elCount = n; })
-          .catch(() => {});
-      }
+      const mr = (ws._chunks || 0) - statLastChunks; statLastChunks = ws._chunks || 0;
       // v3：dom 无帧流——上报下行消息速率（帧语义只属于像素流模式）；
       // 每秒兜底触发一次滚动同步 ping（捕获监听遗漏的初始态/漂移）
-      const mr = (ws._chunks || 0) - statLastChunks; statLastChunks = ws._chunks || 0;
       if (mode === 'dom' && domActive) { page.evaluate(() => { if (window.__xyScrollPingNow) window.__xyScrollPingNow(true); }).catch(() => {}); }
-      sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: elCount });
+      // 结构指纹 + CSS 集合指纹（必须在 .then 内取值再上报：elCount 闭包竞态
+      // 曾使 sstats.els 恒为 0、客户端 els-drift 重同步雷达整体失活）。
+      // CSS 兜底：SPA 懒加载样式表注入 head 可能错过 observer（导航竞态/触发
+      // 被吞）——实测 Assistant css（17 个入场 keyframes）不下发则镜像动画全灭。
+      // 集合变化即触发全量重同步；成功快照后由 doStartDomMirror 重定基线，
+      // 失败则保持脏态每秒重试，不提前更新基线。
+      if ((mode === 'dom' || mode === 'frame') && domActive && !domStarting) {
+        page.evaluate(() => document.body ? document.body.querySelectorAll(':not(script):not(noscript):not(template)').length : 0)
+          .then(async (n) => {
+            let sig = null;
+            try {
+              sig = await page.evaluate(() => {
+                const links = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
+                return links.join('|') + '#' + document.querySelectorAll('style').length;
+              });
+            } catch (e) {}
+            if (sig !== null) {
+              if (lastCssSig === null) lastCssSig = sig;
+              else if (sig !== lastCssSig) {
+                console.log('[snapcss] set changed:', String(lastCssSig).slice(0, 90), '->', sig.slice(0, 90));
+                startDomMirror().catch(() => {});
+              }
+            }
+            sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: n });
+          })
+          .catch(() => sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: 0 }));
+      } else {
+        sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: 0 });
+      }
     }, 1000);
 
     // 主框架导航（登录跳转/表单提交等）：重新注入镜像管线并全量重发，
