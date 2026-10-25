@@ -75,6 +75,8 @@ jobs:
           exit 1
       - name: 真实浏览器滚动与首次点击回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-scroll.sh
+      - name: 下拉框节点替换回归
+        run: docker run --rm --network none --memory 1g --cpus 2 dom-mirror:ci timeout 30 node tools/verify-select.cjs
       - name: Vikunja 三通道业务回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh
       - name: Vikunja 短时断线恢复回归

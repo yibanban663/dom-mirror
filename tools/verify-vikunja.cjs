@@ -35,6 +35,18 @@ async function button(page, mirror, text) {
   const locate = new Function('return [...' + root + '.querySelectorAll("button")].find(e => e.textContent.trim().toLowerCase() === ' + JSON.stringify(text.toLowerCase()) + ')');
   await page.locator(locate).setTimeout(20000).click();
 }
+async function selectValue(page, mirror, value) {
+  // Resolve and dispatch in one browser task: snapshots can detach a handle between CDP calls.
+  return page.evaluate((mirror, value) => {
+    const root = mirror ? document.querySelector('#mirrorHost').shadowRoot : document;
+    const select = root.querySelector('select');
+    if (!select || ![...select.options].some(option => option.value === value)) throw new Error('Live select option missing');
+    select.value = value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return select.value;
+  }, mirror, value);
+}
 async function run(browser, mode) {
   const result = { mode, steps: [], pass: false, started: new Date().toISOString() };
   const context = await browser.createBrowserContext();
@@ -89,7 +101,7 @@ async function run(browser, mode) {
     await page.locator(prefix + '::-p-text(' + title + ')').setTimeout(20000).click();
     await button(page, mirror, 'Set Priority');
     await page.waitForSelector(prefix + 'select');
-    await page.select(prefix + 'select', '2');
+    await selectValue(page, mirror, '2');
     const updated = await persisted('/tasks/' + created.id, token, task => task.priority === 2 && task);
     await page.waitForFunction(mirror => {
       const root = mirror ? document.querySelector('#mirrorHost').shadowRoot : document;
@@ -135,4 +147,4 @@ async function main() {
   if (results.some(r => !r.pass)) process.exitCode = 1;
 }
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { api, persisted, button };
+module.exports = { api, persisted, button, selectValue };
