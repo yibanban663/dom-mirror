@@ -1,3 +1,13 @@
+# v0.7.3 — fix: repo Dockerfile is self-contained (CI docker job green again)
+
+The previous pushes overwrote the repo Dockerfile with the production one,
+which COPYs the production-only ck/ directory - the CI docker build failed on
+every commit since v0.6.0 while in-production builds (where ck/ exists) kept
+passing. The repo Dockerfile now: omits ck/, expects bin/ffmpeg to be fetched
+by get-ffmpeg.sh (CI already does), and documents that the obfuscation font
+pool (assets/obf) is baked locally via tools/ - absent pool degrades to
+OBFUSCATE off automatically.
+
 # v0.7.2 — fix: lazy-loaded stylesheets never reached the mirror (all entrance animations dead)
 
 Root cause chain (found on a real external browser, invisible to in-container

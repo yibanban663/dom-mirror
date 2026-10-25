@@ -1,5 +1,7 @@
-# WAF RBI 帧流 PoC
-# 基础镜像自带 Node + Chromium + puppeteer；再补中文字体与 ws 库
+# WAF RBI（dom-mirror）——仓库自洽构建
+# ffmpeg 不入库：CI/本地先跑 ./get-ffmpeg.sh 下载静态 ffmpeg 到 bin/（只用 DOM 镜像可不装）
+# 混淆字体池（assets/obf）不入库：缺省时引擎自动降级为"混淆关闭"；要开启先跑
+#   python3 tools/build_obf_font.py 抽面 + tools/bake_pool.py 烘焙种子池（详见 README）
 FROM ghcr.io/puppeteer/puppeteer:24.7.0
 
 USER root
@@ -21,10 +23,7 @@ COPY client ./client
 COPY protected ./protected
 COPY assets ./assets
 COPY tools ./tools
-COPY ck ./ck
 
-# sharp：Node 端原生 PNG 解码/裁剪/编码（编码-解码范式的差分引擎跑在进程内，
-# 不经过 CDP evaluate 传大参数——后者是 ~60ms/帧的吞吐瓶颈，sharp 全链路 <10ms）
 RUN npm install sharp --no-save --unsafe-perm 2>&1 | tail -1 \
  && node -e "require('puppeteer');require('ws');const s=require('sharp');console.log('deps ok, sharp', s.versions.vips)"
 
