@@ -1,3 +1,20 @@
+# v0.8.1 — universal font handling: unicode-range-scoped obfuscation faces
+
+The obfuscation @font-face rules are now scoped with
+`unicode-range: U+F0000-10FFFF`: the obfuscated font only renders the
+scrambled (PUA) codepoints; every other character - latin, digits,
+punctuation, unencoded CJK - falls through to the visitor's LOCAL fonts,
+pixel-identical to native (previously the faces shadowed whole family
+names, forcing a Noto-based webfont everywhere and visibly changing
+typography on machines where e.g. Microsoft YaHei resolves natively).
+
+Font families are now extracted dynamically from the page's own CSS
+(font-family declarations, generic keywords skipped, fallback list
+included) instead of a hardcoded 5-name list - any site's font stack is
+covered. Verified on a real external Windows Chromium, same view/state:
+latin/digit regions 0.0-0.4% pixel diff vs native, no line-height shift,
+CJK glyph difference reduced to designer-level (open-font ceiling).
+
 # v0.8.0 — remove jpeg/webp/h264 pixel-stream channels
 
 The engine is now dom + frame only:

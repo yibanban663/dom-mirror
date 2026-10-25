@@ -42,15 +42,6 @@ const CHROME_ARGS = [
 
 // ---------- DOM 镜像：注入到受保护页面的辅助函数 ----------
 // 序列化 = 剥离 script/事件属性 + canvas→位图兜底 + 静态资源 URL 重写(/m 代理) ；路径 = 基于 body 的 childNodes 索引
-// 源站字体同源注入：残差根因（实测）——源站文字走 fontconfig 系统字体路径，镜像走 webfont 路径，
-// 两者的 FreeType 渲染参数不同 → 文字区残差 ~1/255。给源站页面注入与镜像同一份 @font-face
-// （webfont 路径）后三条渲染链同源：同引擎下文字残差 → 0（实测表格区逐位相同，整页 0.7→0.009）。
-const FONT_FAMS = ['Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑'];
-function originFontCssFor() {
-  const base = `http://127.0.0.1:${DEMO_PORT}`;
-  const face = (fam, w, u) => `@font-face{font-family:'${fam}';src:url(${base}${u}) format('woff2');font-weight:${w};font-display:block;}`;
-  return FONT_FAMS.map(f => face(f, 400, '/f/noto-regular') + face(f, 700, '/f/noto-bold')).join('');
-}
 const PAGE_HELPERS = `(() => {
   // 滚动同步钩子（v3 事件驱动，替代帧差分通道）：页面/内部容器的任何滚动
   // 都以 80ms 节流上报（capture 能收到不冒泡的内层滚动）。必须放在 __xy 守卫
@@ -415,15 +406,42 @@ try {
 let obfRR = 0;
 const obfSessions = new Map();   // sid -> pool entry
 const obfFontCache = new Map();  // 文件路径 -> Buffer（LRU≤8，~8MB/项）
+// 通用兜底字体族（页面 CSS 提取不到时的保险；PUA 专用面只接 U+F0000-10FFFF，
+// 对未编码字符零影响——任何站点的明文字符一律走访客本机字体，与原生一致）
+const OBF_FAMS_DEFAULT = [
+  'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑', '微软雅黑 UI',
+  'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Source Han Sans CN', '思源黑体',
+  'Segoe UI', 'Helvetica Neue', 'Arial', 'SimHei', 'SimSun', '黑体', '宋体',
+  'WenQuanYi Micro Hei', 'Droid Sans Fallback',
+];
+const OBF_FAM_SKIP = new Set(['inherit', 'initial', 'unset', 'revert', 'sans-serif', 'serif', 'monospace', 'cursive', 'fantasy', 'ui-serif', 'ui-monospace', 'ui-rounded', '-apple-system', 'BlinkMacSystemFont', 'math', 'emoji', 'fangsong', 'STKaiti', 'STSong']);
 function nextObfSession() {
   if (!OBF_ON || !obfPool.length) return null;
   const sid = crypto.randomUUID().slice(0, 8);
   const ent = obfPool[obfRR++ % obfPool.length];
   obfSessions.set(sid, ent);
-  const faces = OBF_FAMILIES.map(f =>
-    '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/reg.woff2) format("woff2");font-weight:400;font-display:block}'
-    + '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/bold.woff2) format("woff2");font-weight:700;font-display:block}').join('');
-  return { sid, plain: ent.plain, css: faces };
+  return { sid, plain: ent.plain };
+}
+// 从页面 CSS 提取全部 font-family 族名（通用引擎：不写死站点字体栈）
+function obfFamiliesFromCss(css) {
+  const found = new Set(OBF_FAMS_DEFAULT);
+  const re = /font-family\s*:\s*([^;}]+)/g;
+  let m;
+  while ((m = re.exec(css || ''))) {
+    for (const raw of m[1].split(',')) {
+      const f = raw.trim().replace(/^['"]|['"]$/g, '').trim();
+      if (f && f.length <= 48 && !OBF_FAM_SKIP.has(f.toLowerCase()) && !f.startsWith('var(')) found.add(f);
+    }
+    if (found.size > 90) break;
+  }
+  return [...found].slice(0, 90);
+}
+// PUA 专用 @font-face：unicode-range 只接 U+F0000-10FFFF——混淆字体仅渲染被编码的
+// 码点，页面其余字符（英文/数字/标点/未编码 CJK）全部走访客本机字体 → 与原生一致。
+function obfFacesCss(sid, fams) {
+  return fams.map(f =>
+    '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/reg.woff2) format("woff2");font-weight:400;font-display:block;unicode-range:U+F0000-10FFFF}'
+    + '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/bold.woff2) format("woff2");font-weight:700;font-display:block;unicode-range:U+F0000-10FFFF}').join('');
 }
 
 const demoSrv = http.createServer((req, res) => {
@@ -870,7 +888,8 @@ wss.on('connection', async (ws, req) => {
       const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
       console.log('[dom   ] post-snapshot focus:', foc);
     } catch (e) {}
-    const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + (obfSess && mode === 'dom' ? obfSess.css : '');
+    const obfCssBlock = (obfSess && mode === 'dom') ? obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) : '';
+    const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + obfCssBlock;
     const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: VIEW_W, h: VIEW_H, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
