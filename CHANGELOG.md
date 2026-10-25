@@ -1,3 +1,15 @@
+# v0.8.2 — obfuscation font base switched to MiSans (TrueType)
+
+Baked the seed pool from MiSans (free-commercial, TrueType, hinted) instead
+of Noto Sans SC (CFF, unhinted): on Windows clients where native rendering
+resolves to local Microsoft YaHei, the CJK glyph difference vs native drops
+from "perceptible" to "side-by-side scrutiny only" (digits/latin already
+pixel-identical via unicode-range; line metrics unchanged). Pool size per
+weight also halves (~3.3MB woff2 vs ~7.9MB). The bake pipeline is
+base-font agnostic: tools/build_obf_font.py + tools/bake_pool.py accept any
+subsettable TTF/OTF; per-platform pools (e.g. HarmonyOS Sans for mac-leaning
+user bases) can be baked the same way.
+
 # v0.8.1 — universal font handling: unicode-range-scoped obfuscation faces
 
 The obfuscation @font-face rules are now scoped with
