@@ -1,12 +1,12 @@
 'use strict';
 /**
- * dom-mirror RBI PoC 服务端 v2 —— 编码演进对比版
+ * dom-mirror RBI 服务端 —— DOM 镜像引擎
  *
- * 三种模式（客户端可运行时切换）：
- *  - jpeg : CDP screencast JPEG 直发（基线）
- *  - webp : CDP screencast WebP 直发（同画质省 30-40%，视 Chromium 支持而定）
- *  - h264 : screencast JPEG → ffmpeg image2pipe → libx264(ultrafast/zerolatency)
- *           → Annex-B over WS → 客户端 WebCodecs 解码（帧间压缩，主攻带宽）
+ * 两种模式（客户端可运行时切换）：
+ *  - dom   : 真文本 DOM 镜像（默认）——服务端序列化 DOM+CSS，客户端原生渲染
+ *            （布局/CSS 动画/悬停/输入全部本地 60fps），增量补丁事件驱动，
+ *            静止页零流量；防抓取由字体混淆编码层承担（PUA 双映射）
+ *  - frame : 像素直出兜底——合成器帧驱动差分，整页 PNG 条带下发（无视频编解码）
  *
  * 链路：客户端浏览器 <--WS--> 本服务 --CDP--> 无头Chromium --HTTP--> 受保护源站(仅回环)
  */
@@ -15,7 +15,6 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
 
@@ -27,24 +26,7 @@ const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
 const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
 let sharp = null; try { sharp = require('sharp'); } catch (e) { console.log('[sharp ] unavailable:', e.message); }
-const DEFAULT_MODE = ['jpeg', 'webp', 'h264', 'dom', 'frame'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'jpeg';
-const FRAME_MIN_INTERVAL = parseInt(process.env.FRAME_MIN_INTERVAL || '33', 10); // 30fps 上限
-// H.264 编码参数按会话视口动态构建（模块级常量会把 1440 会话压到 1280——实测踩过）。
-// 质量：CRF 12 + 30M 上限 → 文字锐利；zerolatency + 无 B 帧 + repeat-headers →
-// 任意时刻接入即可解码，玻璃到玻璃 <50ms（内网）。
-function h264Args() {
-  return [
-    '-hide_banner', '-loglevel', 'error',
-    '-analyzeduration', '0', '-probesize', '1M',
-    '-f', 'image2pipe', '-c:v', 'mjpeg', '-r', '30', '-i', 'pipe:0',
-    '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-    '-profile:v', 'high', '-level', '4.2', '-pix_fmt', 'yuv420p',
-    '-x264-params', 'keyint=60:min-keyint=30:scenecut=0:repeat-headers=1:bframes=0',
-    '-crf', '12', '-maxrate', '30M', '-bufsize', '4M',
-    '-f', 'h264', 'pipe:1',
-  ];
-}
+const DEFAULT_MODE = ['dom', 'frame'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'dom';
 const CHROME_ARGS = [
   '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
   '--disable-gpu', '--hide-scrollbars', '--mute-audio',
@@ -496,11 +478,10 @@ wss.on('connection', async (ws, req) => {
   sessions++;
   console.log(`[sess  ] open (${sessions}/${MAX_SESSIONS})`);
 
-  let page = null, cdp = null, quality = 60, mode = DEFAULT_MODE;
+  let page = null, cdp = null, mode = DEFAULT_MODE;
   let sessionBrowser = null;
   const obfSess = nextObfSession(); // 防抓取字体混淆（dom 模式启用；无池则 null 透明降级）
-  let ffmpeg = null, fedFrames = 0, fedBytes = 0;
-  let lastAckAt = 0, lastInputAt = 0, inputLatMs = null, frameTimes = [], statTimer = null;
+  let lastInputAt = 0, inputLatMs = null, frameTimes = [], statTimer = null;
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
@@ -519,7 +500,6 @@ wss.on('connection', async (ws, req) => {
     if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
     if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
     if (structTimer) { clearTimeout(structTimer); structTimer = null; }
-    stopFFmpeg();
     try { await stopDomMirror(); } catch {}
     try { if (page) await page.close(); } catch {}
     try { if (sessionBrowser) await sessionBrowser.close(); } catch {}
@@ -574,41 +554,21 @@ wss.on('connection', async (ws, req) => {
             }
             break;
           }
-          case 'quality':
-            if (mode !== 'h264' && mode !== 'dom') {
-              quality = Math.max(10, Math.min(95, parseInt(m.q, 10) || 60));
-              await startScreencast();
-              sendJson({ type: 'quality', q: quality });
-            }
-            break;
           case 'mode': {
-            const next = ['jpeg', 'webp', 'h264', 'dom', 'frame'].includes(m.mode) ? m.mode : 'jpeg';
-            const isDomLike = (x) => x === 'dom' || x === 'frame';
-            if (isDomLike(mode) && !isDomLike(next)) {
-              await stopDomMirror();
-              if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
-              if (structTimer) { clearTimeout(structTimer); structTimer = null; structBuf.clear(); }
-            }
-            // frame → 其它模式：帧差分循环与帧流必须死亡（dom 无帧率不变式）
+            // dom（真文本镜像，默认）↔ frame（像素直出兜底）双向可切
+            const next = ['dom', 'frame'].includes(m.mode) ? m.mode : 'dom';
+            // frame → dom：帧差分循环与帧流必须死亡（dom 无帧率不变式）
             if (mode === 'frame' && next !== 'frame') {
               if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
               cdp.send('Page.stopScreencast').catch(() => {});
             }
             mode = next;
-            if (mode === 'h264') { quality = 85; startFFmpeg(); } else { stopFFmpeg(); }
             try {
-              if (isDomLike(mode)) {
-                await cdp.send('Page.stopScreencast').catch(() => {});
-                await startDomMirror();
-              } else {
-                await startScreencast();
-              }
+              await cdp.send('Page.stopScreencast').catch(() => {});
+              await startDomMirror();
               sendJson({ type: 'mode', mode });
             } catch (e) {
-              mode = 'jpeg'; stopFFmpeg(); await stopDomMirror().catch(() => {});
-              await startScreencast();
-              sendJson({ type: 'error', msg: `模式 ${next} 启动失败已回退 JPEG: ${e.message}` });
-              sendJson({ type: 'mode', mode: 'jpeg' });
+              sendJson({ type: 'error', msg: `模式 ${next} 启动失败: ${e.message}` });
             }
             break;
           }
@@ -769,56 +729,6 @@ wss.on('connection', async (ws, req) => {
   const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
   ws.on('message', (raw) => { if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
   const noteInput = () => { lastInputAt = Date.now(); };
-
-  async function startScreencast() {
-    await cdp.send('Page.stopScreencast').catch(() => {});
-    // h264 模式的中间帧用高质量 JPEG（92）：它是送编码器的前置采集，压太狠文字
-    // 在编码前就糊了；分辨率按访客 DPR 保全清晰度
-    await cdp.send('Page.startScreencast', {
-      format: mode === 'webp' ? 'webp' : 'jpeg',
-      quality: mode === 'h264' ? 92 : quality,
-      maxWidth: Math.round(viewW * (mode === 'h264' ? DPR : 1)) || VIEW_W,
-      maxHeight: Math.round(viewH * (mode === 'h264' ? DPR : 1)) || VIEW_H,
-      everyNthFrame: 1,
-    });
-  }
-
-  function startFFmpeg() {
-    if (ffmpeg) return;
-    ffmpeg = spawn('ffmpeg', h264Args(), { stdio: ['pipe', 'pipe', 'pipe'] });
-    const ff = ffmpeg;
-    let errTail = [];
-    ff.stderr.on('data', (d) => {
-      const lines = d.toString().split('\n').filter(Boolean);
-      errTail.push(...lines);
-      if (errTail.length > 8) errTail = errTail.slice(-8);
-    });
-    ff.stdin.on('error', (e) => console.log('[h264  ] stdin error:', e.message));
-    ff.stdout.on('data', (chunk) => {
-      if (ws.readyState === 1) {
-        ws.send(chunk);
-        ws._bytes = (ws._bytes || 0) + chunk.length;
-        ws._chunks = (ws._chunks || 0) + 1;
-      }
-    });
-    ff.on('error', (e) => {
-      console.log('[h264  ] ffmpeg error:', e.message);
-      try { ff.kill(); } catch {}
-      if (ffmpeg === ff) ffmpeg = null;
-    });
-    ff.on('exit', (code, sig) => {
-      console.log(`[h264  ] ffmpeg exit code=${code} sig=${sig} fed=${fedFrames} stdinMB=${(fedBytes/1048576).toFixed(2)}`);
-      if (errTail.length) console.log('[h264  ] stderr tail:', errTail.join(' | ').slice(-500));
-      if (ffmpeg === ff) ffmpeg = null;
-    });
-    console.log('[h264  ] ffmpeg spawned');
-  }
-  function stopFFmpeg() {
-    if (!ffmpeg) return;
-    try { ffmpeg.stdin.end(); } catch {}
-    try { ffmpeg.kill('SIGKILL'); } catch {}
-    ffmpeg = null;
-  }
 
   // ---------- DOM 镜像通道 ----------
   let domActive = false, domExposed = false;
@@ -1296,31 +1206,11 @@ wss.on('connection', async (ws, req) => {
         const now = Date.now();
         if (lastInputAt) { inputLatMs = now - lastInputAt; lastInputAt = 0; }
         frameTimes.push(now);
-        const buf = Buffer.from(data, 'base64');
-        if (mode === 'dom' || mode === 'frame') {
-          // 编码-解码范式：合成器每帧变化即推（60fps 帧回调驱动差分，替代定时器
-          // 轮询截图——10fps 上限与轮询延迟是"卡"的根源）。帧存 pendingFrame，
-          // 差分循环 32ms 消费；立即 ack 保持帧流。静止时无帧 = 零 CPU 零流量。
-          pendingFrame = { data, at: now };
-          setTimeout(() => { cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {}); }, 0);
-          return;
-        }
-        if (mode === 'h264') {
-          if (ffmpeg && ffmpeg.stdin.writable) {
-            fedFrames++; fedBytes += buf.length;
-            if (fedFrames <= 3) console.log(`[h264  ] feed#${fedFrames} ${buf.length}B`);
-            ffmpeg.stdin.write(buf);
-          }
-        } else if (ws.readyState === 1) {
-          ws.send(buf);
-          ws._bytes = (ws._bytes || 0) + buf.length;
-          ws._frames = (ws._frames || 0) + 1;
-        }
-        const wait = Math.max(0, lastAckAt + FRAME_MIN_INTERVAL - now);
-        lastAckAt = now + wait;
-        setTimeout(() => {
-          cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-        }, wait);
+        // 编码-解码范式（frame 模式）：合成器每帧变化即推（60fps 帧回调驱动差分）。
+        // 帧存 pendingFrame，差分循环 32ms 消费；立即 ack 保持帧流。
+        // 静止时无帧 = 零 CPU 零流量。dom 模式不订阅帧流，不会走到这里。
+        pendingFrame = { data, at: now };
+        setTimeout(() => { cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {}); }, 0);
       } catch (e) { /* session may be closing */ }
     });
 
@@ -1405,7 +1295,6 @@ wss.on('connection', async (ws, req) => {
     await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
     sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), url: sessionOrigin, maxSessions: MAX_SESSIONS, mode, prod: prodMode });
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
-    else await startScreencast();
 
     dispatchReady = true;
     for (const raw of queue.splice(0)) enqueue(raw);

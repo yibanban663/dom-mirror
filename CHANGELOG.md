@@ -1,3 +1,15 @@
+# v0.8.0 — remove jpeg/webp/h264 pixel-stream channels
+
+The engine is now dom + frame only:
+- dom (default): real-text DOM mirror with client-native rendering and
+  event-driven patches; anti-scrape via the font-obfuscation encode layer
+- frame: compositor-frame-diffed PNG band fallback (no video codec)
+
+Removed: CDP screencast jpeg/webp direct streaming, the h264 pipeline
+(ffmpeg image2pipe -> libx264 -> Annex-B over WS -> client WebCodecs), the
+client-side H.264 decoder and jpeg/webp frame blitter, quality selector,
+ffmpeg from both Dockerfiles and CI pre-download, get-ffmpeg.sh.
+
 # v0.7.3 — fix: repo Dockerfile is self-contained (CI docker job green again)
 
 The previous pushes overwrote the repo Dockerfile with the production one,
