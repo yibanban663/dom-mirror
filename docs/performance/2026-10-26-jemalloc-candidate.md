@@ -92,3 +92,5 @@ BUSINESS_ALLOCATOR_PROFILE=jemalloc BUSINESS_TEST_SCRIPT=verify-recovery.cjs \
 ## 处置与下一步
 
 保留当前包默认行为与原 64MiB 预算，不增加 Rust/Wasm、进程级定时 GC 或 allocator 默认切换。下一步应针对第 18 轮前后的驻留增长做分配调用栈与映射生命周期归因，并评估低保留量观测方式，先区分业务存活对象、观测器开销与原生空闲页；再决定是否需要改库。宿主安装产物的浏览器业务与恢复验收仍是独立交付缺口，本轮源码镜像中的公开 API 验证不代替 tarball 宿主验收。
+
+后续[第十八轮增长的离线分析与减留存诊断工具](2026-10-26-memory-growth.md)发现该区间的 V8 physical 同步增加；根因仍未证明，尚未运行新模式长测，原预算结果保持不变。

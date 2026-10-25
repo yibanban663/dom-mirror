@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { readTrace } = require('./memory-trace.cjs');
 const root = process.argv[2];
 if (!root) throw new Error('Usage: node tools/summarize-memory.cjs EVIDENCE_ROOT');
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -36,7 +37,7 @@ const groups = [];
 for (const group of plan.groups) {
   const directory = path.join(root, group), item = { group, complete: false }; groups.push(item);
   if (!fs.existsSync(path.join(directory, 'server.json')) || !fs.existsSync(path.join(directory, 'client.json'))) continue;
-  const host = read(path.join(directory, 'server.json')), client = read(path.join(directory, 'client.json'));
+  const host = readTrace(directory, read(path.join(directory, 'server.json'))), client = read(path.join(directory, 'client.json'));
   const baseline = host.checkpoints.find(point => point.phase === 'baseline')?.after;
   if (!baseline) continue;
   item.baseline = { anonMiB: mib(baseline.cgroup.anon), rssMiB: mib(baseline.node.rss), heapMiB: mib(baseline.node.heapUsed),
@@ -71,6 +72,13 @@ for (const group of plan.groups) {
   item.operations = client.cycles.reduce((total, cycle) => total + cycle.operations.length, 0);
   item.sourceReceipts = client.events.length;
   item.hashes = host.hashes;
+  item.traceStorage = host.traceStorage || 'memory';
+  item.traceTreatmentValid = item.traceStorage === (plan.traceStorage || 'memory')
+    && (!plan.mappingCycles || (JSON.stringify(host.mappingCycles) === JSON.stringify(plan.mappingCycles)
+      && plan.mappingCycles.every(cycle => ['smaps.txt', 'v8.json'].every(suffix => {
+        const file = path.join(directory, `${cycle}-postIdle-${suffix}`);
+        return fs.existsSync(file) && fs.statSync(file).size > 0;
+      }))));
   item.image = read(path.join(directory, 'image.json'));
   item.sharpConcurrency = host.sharpConcurrency;
   item.sharpVersions = host.sharpVersions;
@@ -113,7 +121,7 @@ for (const group of plan.groups) {
   item.complete = client.passed && client.cycles.length === plan.cycles && item.cycles.length === plan.cycles
     && item.cycles.every((point, i) => point.cycle === i + 1) && item.receiptsValid && item.nativeTreatmentValid
     && client.cycles.every(cycle => cycle.passed && cycle.operations.length === plan.sessions * plan.operationsPerSessionPerCycle)
-    && item.cycles.every(cycle => cycle.browsersGone) && item.oomKillDelta === 0 && item.treatmentValid && item.sourceMatchesPlan;
+    && item.cycles.every(cycle => cycle.browsersGone) && item.oomKillDelta === 0 && item.treatmentValid && item.sourceMatchesPlan && item.traceTreatmentValid;
   item.error = client.error;
 }
 const consistentSources = new Set(groups.filter(item => item.hashes).map(item => JSON.stringify(item.hashes))).size === 1;

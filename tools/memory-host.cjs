@@ -10,6 +10,7 @@ const { PerformanceObserver } = require('node:perf_hooks');
 const puppeteer = require('puppeteer').default;
 const sharp = require('sharp');
 const { createMirror } = require('..');
+const { createTrace, mappingCycles } = require('./memory-trace.cjs');
 const group = process.env.MEMORY_GROUP || 'default';
 if (!['default', 'gc', 'cache-off', 'gc-cache-off'].includes(group)) throw new Error('Invalid MEMORY_GROUP');
 if (typeof global.gc !== 'function') throw new Error('Run all groups with --expose-gc');
@@ -21,9 +22,12 @@ const native = process.env.MEMORY_NATIVE_PROBE === '1' ? require('./native-memor
 const finalDiagnostics = process.env.MEMORY_FINAL_DIAGNOSTICS === '1';
 if (finalDiagnostics && !native) throw new Error('Final diagnostics require the native probe');
 if (group.includes('cache-off')) sharp.cache(false);
-const browsers = [], samples = [], checkpoints = [], collections = [];
+const browsers = [];
+const trace = createTrace(output, process.env.MEMORY_TRACE_STORAGE || 'memory');
+const mapCycles = mappingCycles(process.env.MEMORY_MAP_CYCLES);
+if (mapCycles.some(cycle => cycle > Number(process.env.MEMORY_CYCLES || 10))) throw Error('Mapping cycle exceeds workload');
 const observer = new PerformanceObserver(list => {
-  for (const entry of list.getEntries()) collections.push({ start: entry.startTime, duration: entry.duration, kind: entry.detail.kind });
+  for (const entry of list.getEntries()) trace.append('collections', { start: entry.startTime, duration: entry.duration, kind: entry.detail.kind });
 });
 observer.observe({ entryTypes: ['gc'] });
 const launch = puppeteer.launch.bind(puppeteer);
@@ -59,7 +63,7 @@ function sample() {
     process: { rssAnonKiB: processStat.RssAnon, rssFileKiB: processStat.RssFile },
     heap: { used: heap.used_heap_size, external: heap.external_memory, nativeContexts: heap.number_of_native_contexts },
     sharpCache: sharp.cache(), sharpCounters: sharp.counters() };
-  samples.push(row);
+  trace.append('samples', row);
   return row;
 }
 function status() {
@@ -67,7 +71,7 @@ function status() {
 }
 function save() {
   const files = ['server.js', 'client/index.html', 'lib/sessions.js', 'tools/fixtures/capacity.html', 'tools/profile-client.cjs',
-    'tools/memory-host.cjs', 'tools/memory-client.cjs', 'tools/verify-docker-memory.sh'];
+    'tools/memory-host.cjs', 'tools/memory-client.cjs', 'tools/verify-docker-memory.sh', 'tools/memory-trace.cjs'];
   if (native) files.push('tools/native-memory.c');
   fs.writeFileSync(path.join(output, 'server.json'), JSON.stringify({ group, node: process.version, originalCache,
     startedPerformanceMs: started,
@@ -76,7 +80,7 @@ function save() {
       VIPS_CONCURRENCY: process.env.VIPS_CONCURRENCY, LD_PRELOAD: process.env.LD_PRELOAD || '',
       MALLOC_CONF: process.env.MALLOC_CONF || '' }, allocator: native.allocatorStats(), binarySha256: crypto.createHash('sha256')
       .update(fs.readFileSync(path.join(__dirname, 'native-memory.node'))).digest('hex') } : null,
-    samples, checkpoints, collections,
+    ...trace.snapshot(), mappingCycles: mapCycles,
     status: status(), hashes: Object.fromEntries(files.map(file => [file, crypto.createHash('sha256')
       .update(fs.readFileSync(path.join(__dirname, '..', file))).digest('hex')])) }, null, 2));
 }
@@ -89,7 +93,8 @@ function nativeSnapshot(row) {
 }
 function saveMappings() {
   if (process.env.MEMORY_MAPS !== '1') return;
-  if (phase !== 'baseline' && phase !== 'finalSettled' && !(phase === 'postIdle' && cycle === Number(process.env.MEMORY_CYCLES))) return;
+  if (phase !== 'baseline' && phase !== 'finalSettled'
+    && !(phase === 'postIdle' && (cycle === Number(process.env.MEMORY_CYCLES) || mapCycles.includes(cycle)))) return;
   const prefix = `${cycle}-${phase}`;
   fs.writeFileSync(path.join(output, prefix + '-smaps.txt'), fs.readFileSync('/proc/self/smaps'));
   fs.writeFileSync(path.join(output, prefix + '-v8.json'), JSON.stringify({ heap: v8.getHeapStatistics(), spaces: v8.getHeapSpaceStatistics(),
@@ -117,9 +122,7 @@ const server = http.createServer(async (req, res) => {
     const after = sample();
     if (inspectNative) nativeSnapshot(after);
     const checkpoint = { cycle, phase, before, after, trimReleased, status: status() };
-    checkpoints.push(checkpoint);
-    // Avoid serializing the growing full trace during measurements; that would add GC pressure.
-    fs.appendFileSync(path.join(output, 'checkpoints.jsonl'), JSON.stringify(checkpoint) + '\n');
+    trace.append('checkpoints', checkpoint);
     saveMappings();
     res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(checkpoint)); return;
   }

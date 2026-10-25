@@ -14,7 +14,8 @@ for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/
 
 for (const name of ['tools/capacity-host.cjs', 'tools/capacity-client.cjs', 'tools/summarize-capacity.cjs',
   'tools/memory-host.cjs', 'tools/memory-client.cjs', 'tools/summarize-memory.cjs', 'tools/verify-frame-baseline.cjs',
-  'tools/summarize-allocator.cjs', 'tools/verify-allocator.cjs', 'tools/verify-select.cjs', 'tools/allocator-business-host.cjs']) {
+  'tools/summarize-allocator.cjs', 'tools/verify-allocator.cjs', 'tools/verify-select.cjs', 'tools/allocator-business-host.cjs',
+  'tools/memory-trace.cjs', 'tools/analyze-memory-growth.cjs']) {
   new vm.Script(fs.readFileSync(path.join(root, name), 'utf8'), { filename: name });
 }
 

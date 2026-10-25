@@ -1,0 +1,852 @@
+{
+  "scope": "Offline checkpoint correlation, not allocation ownership or a new workload measurement",
+  "inputHashes": {
+    "server.json": "4b4f5af49697f7158deeda62198b71a9c95430d9485c786e4f6c05f5b0318af4"
+  },
+  "sourceHashes": {
+    "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+    "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+    "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+    "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+    "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+    "tools/memory-host.cjs": "4aa6373270f1acd1860c5768f33509c7b6a5f58393d1b7db60a1fcf0147fcb61",
+    "tools/memory-client.cjs": "94466370f5c29ce25edcba3ab0fdbba41bafbb3554d08d70cefe8c9044febd3a",
+    "tools/verify-docker-memory.sh": "a6d5fc9f4faa65e47cc65cbf6376108e7b98155c6918bdaf5e0e6956c7b6894b",
+    "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed"
+  },
+  "traceStorage": "memory",
+  "traceRecords": {
+    "samples": 2642,
+    "checkpoints": 184,
+    "collections": 1891,
+    "browsers": 90
+  },
+  "series": [
+    {
+      "cycle": 1,
+      "anonGrowthMiB": 39.6640625,
+      "anonMiB": 74.87890625,
+      "nodeAnonMiB": 74.4921875,
+      "heapUsedMiB": 26.796905517578125,
+      "heapCapacityMiB": 56.46875,
+      "v8PhysicalMiB": 36.75,
+      "externalMiB": 23.2850980758667,
+      "arrayBuffersMiB": 6.287572860717773,
+      "jemallocAllocatedMiB": 33.413856506347656,
+      "jemallocResidentMiB": 40.90625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 39.6640625,
+        "v8PhysicalMiB": 14.4609375,
+        "jemallocResidentMiB": 26.00390625
+      },
+      "gcEventsSincePrevious": 67,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 99,
+        "checkpoints": 7,
+        "gcEvents": 69,
+        "browsers": 3
+      }
+    },
+    {
+      "cycle": 2,
+      "anonGrowthMiB": 45.33984375,
+      "anonMiB": 80.5546875,
+      "nodeAnonMiB": 80.12890625,
+      "heapUsedMiB": 25.651412963867188,
+      "heapCapacityMiB": 55.76171875,
+      "v8PhysicalMiB": 42.93359375,
+      "externalMiB": 22.73669719696045,
+      "arrayBuffersMiB": 5.739171981811523,
+      "jemallocAllocatedMiB": 32.38916778564453,
+      "jemallocResidentMiB": 39.2578125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 5.67578125,
+        "v8PhysicalMiB": 6.18359375,
+        "jemallocResidentMiB": -1.6484375
+      },
+      "gcEventsSincePrevious": 55,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 184,
+        "checkpoints": 13,
+        "gcEvents": 124,
+        "browsers": 6
+      }
+    },
+    {
+      "cycle": 3,
+      "anonGrowthMiB": 48.109375,
+      "anonMiB": 83.32421875,
+      "nodeAnonMiB": 82.8984375,
+      "heapUsedMiB": 27.09326934814453,
+      "heapCapacityMiB": 88.46875,
+      "v8PhysicalMiB": 42.6640625,
+      "externalMiB": 23.362950325012207,
+      "arrayBuffersMiB": 6.365425109863281,
+      "jemallocAllocatedMiB": 33.6846923828125,
+      "jemallocResidentMiB": 40.56640625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 2.76953125,
+        "v8PhysicalMiB": -0.26953125,
+        "jemallocResidentMiB": 1.30859375
+      },
+      "gcEventsSincePrevious": 71,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 269,
+        "checkpoints": 19,
+        "gcEvents": 195,
+        "browsers": 9
+      }
+    },
+    {
+      "cycle": 4,
+      "anonGrowthMiB": 45.109375,
+      "anonMiB": 80.32421875,
+      "nodeAnonMiB": 79.8984375,
+      "heapUsedMiB": 21.907028198242188,
+      "heapCapacityMiB": 84.96484375,
+      "v8PhysicalMiB": 43.15625,
+      "externalMiB": 19.41553497314453,
+      "arrayBuffersMiB": 2.4180097579956055,
+      "jemallocAllocatedMiB": 29.37677764892578,
+      "jemallocResidentMiB": 36.2578125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -3,
+        "v8PhysicalMiB": 0.4921875,
+        "jemallocResidentMiB": -4.30859375
+      },
+      "gcEventsSincePrevious": 58,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 354,
+        "checkpoints": 25,
+        "gcEvents": 253,
+        "browsers": 12
+      }
+    },
+    {
+      "cycle": 5,
+      "anonGrowthMiB": 61.33984375,
+      "anonMiB": 96.5546875,
+      "nodeAnonMiB": 96.12890625,
+      "heapUsedMiB": 27.369956970214844,
+      "heapCapacityMiB": 89.08984375,
+      "v8PhysicalMiB": 58.6015625,
+      "externalMiB": 23.08213520050049,
+      "arrayBuffersMiB": 6.083505630493164,
+      "jemallocAllocatedMiB": 32.756004333496094,
+      "jemallocResidentMiB": 40.06640625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 16.23046875,
+        "v8PhysicalMiB": 15.4453125,
+        "jemallocResidentMiB": 3.80859375
+      },
+      "gcEventsSincePrevious": 58,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 439,
+        "checkpoints": 31,
+        "gcEvents": 311,
+        "browsers": 15
+      }
+    },
+    {
+      "cycle": 6,
+      "anonGrowthMiB": 61.50390625,
+      "anonMiB": 96.71875,
+      "nodeAnonMiB": 96.29296875,
+      "heapUsedMiB": 27.369384765625,
+      "heapCapacityMiB": 88.9140625,
+      "v8PhysicalMiB": 57.93359375,
+      "externalMiB": 23.122753143310547,
+      "arrayBuffersMiB": 6.125227928161621,
+      "jemallocAllocatedMiB": 33.36548614501953,
+      "jemallocResidentMiB": 40.32421875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.1640625,
+        "v8PhysicalMiB": -0.66796875,
+        "jemallocResidentMiB": 0.2578125
+      },
+      "gcEventsSincePrevious": 64,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 524,
+        "checkpoints": 37,
+        "gcEvents": 375,
+        "browsers": 18
+      }
+    },
+    {
+      "cycle": 7,
+      "anonGrowthMiB": 61.6640625,
+      "anonMiB": 96.87890625,
+      "nodeAnonMiB": 96.453125,
+      "heapUsedMiB": 27.625991821289062,
+      "heapCapacityMiB": 90.1640625,
+      "v8PhysicalMiB": 58.69140625,
+      "externalMiB": 23.05984401702881,
+      "arrayBuffersMiB": 6.062318801879883,
+      "jemallocAllocatedMiB": 33.41442108154297,
+      "jemallocResidentMiB": 40.2421875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.16015625,
+        "v8PhysicalMiB": 0.7578125,
+        "jemallocResidentMiB": -0.08203125
+      },
+      "gcEventsSincePrevious": 68,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 609,
+        "checkpoints": 43,
+        "gcEvents": 443,
+        "browsers": 21
+      }
+    },
+    {
+      "cycle": 8,
+      "anonGrowthMiB": 62.36328125,
+      "anonMiB": 97.578125,
+      "nodeAnonMiB": 97.15234375,
+      "heapUsedMiB": 27.64305877685547,
+      "heapCapacityMiB": 89.9140625,
+      "v8PhysicalMiB": 58.6875,
+      "externalMiB": 23.061256408691406,
+      "arrayBuffersMiB": 6.0637311935424805,
+      "jemallocAllocatedMiB": 33.516197204589844,
+      "jemallocResidentMiB": 40.3125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.69921875,
+        "v8PhysicalMiB": -0.00390625,
+        "jemallocResidentMiB": 0.0703125
+      },
+      "gcEventsSincePrevious": 66,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 693,
+        "checkpoints": 49,
+        "gcEvents": 509,
+        "browsers": 24
+      }
+    },
+    {
+      "cycle": 9,
+      "anonGrowthMiB": 53.6484375,
+      "anonMiB": 88.86328125,
+      "nodeAnonMiB": 88.4375,
+      "heapUsedMiB": 18.430221557617188,
+      "heapCapacityMiB": 25.55078125,
+      "v8PhysicalMiB": 25.2734375,
+      "externalMiB": 18.040884971618652,
+      "arrayBuffersMiB": 1.0390262603759766,
+      "jemallocAllocatedMiB": 27.79088592529297,
+      "jemallocResidentMiB": 34.7109375,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -8.71484375,
+        "v8PhysicalMiB": -33.4140625,
+        "jemallocResidentMiB": -5.6015625
+      },
+      "gcEventsSincePrevious": 69,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 778,
+        "checkpoints": 55,
+        "gcEvents": 578,
+        "browsers": 27
+      }
+    },
+    {
+      "cycle": 10,
+      "anonGrowthMiB": 62.32421875,
+      "anonMiB": 97.5390625,
+      "nodeAnonMiB": 97.11328125,
+      "heapUsedMiB": 27.94219970703125,
+      "heapCapacityMiB": 41.4140625,
+      "v8PhysicalMiB": 34,
+      "externalMiB": 23.05767250061035,
+      "arrayBuffersMiB": 6.060147285461426,
+      "jemallocAllocatedMiB": 32.63355255126953,
+      "jemallocResidentMiB": 39.5625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 8.67578125,
+        "v8PhysicalMiB": 8.7265625,
+        "jemallocResidentMiB": 4.8515625
+      },
+      "gcEventsSincePrevious": 72,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 863,
+        "checkpoints": 61,
+        "gcEvents": 650,
+        "browsers": 30
+      }
+    },
+    {
+      "cycle": 11,
+      "anonGrowthMiB": 62.8125,
+      "anonMiB": 98.02734375,
+      "nodeAnonMiB": 97.6015625,
+      "heapUsedMiB": 28.46936798095703,
+      "heapCapacityMiB": 42.21875,
+      "v8PhysicalMiB": 39.97265625,
+      "externalMiB": 23.36353302001953,
+      "arrayBuffersMiB": 6.3660078048706055,
+      "jemallocAllocatedMiB": 32.66673278808594,
+      "jemallocResidentMiB": 39.39453125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.48828125,
+        "v8PhysicalMiB": 5.97265625,
+        "jemallocResidentMiB": -0.16796875
+      },
+      "gcEventsSincePrevious": 66,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 948,
+        "checkpoints": 67,
+        "gcEvents": 716,
+        "browsers": 33
+      }
+    },
+    {
+      "cycle": 12,
+      "anonGrowthMiB": 54.05078125,
+      "anonMiB": 89.265625,
+      "nodeAnonMiB": 88.83984375,
+      "heapUsedMiB": 18.514976501464844,
+      "heapCapacityMiB": 25.55078125,
+      "v8PhysicalMiB": 25.2734375,
+      "externalMiB": 18.1009464263916,
+      "arrayBuffersMiB": 1.0389032363891602,
+      "jemallocAllocatedMiB": 27.9307861328125,
+      "jemallocResidentMiB": 34.89453125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -8.76171875,
+        "v8PhysicalMiB": -14.69921875,
+        "jemallocResidentMiB": -4.5
+      },
+      "gcEventsSincePrevious": 70,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1033,
+        "checkpoints": 73,
+        "gcEvents": 786,
+        "browsers": 36
+      }
+    },
+    {
+      "cycle": 13,
+      "anonGrowthMiB": 54.55859375,
+      "anonMiB": 89.7734375,
+      "nodeAnonMiB": 89.34765625,
+      "heapUsedMiB": 19.045005798339844,
+      "heapCapacityMiB": 29.34375,
+      "v8PhysicalMiB": 27.34375,
+      "externalMiB": 18.038955688476562,
+      "arrayBuffersMiB": 1.0414304733276367,
+      "jemallocAllocatedMiB": 28.445838928222656,
+      "jemallocResidentMiB": 35.44140625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.5078125,
+        "v8PhysicalMiB": 2.0703125,
+        "jemallocResidentMiB": 0.546875
+      },
+      "gcEventsSincePrevious": 58,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1118,
+        "checkpoints": 79,
+        "gcEvents": 844,
+        "browsers": 39
+      }
+    },
+    {
+      "cycle": 14,
+      "anonGrowthMiB": 58.54296875,
+      "anonMiB": 93.7578125,
+      "nodeAnonMiB": 93.33203125,
+      "heapUsedMiB": 17.389930725097656,
+      "heapCapacityMiB": 22.38671875,
+      "v8PhysicalMiB": 22.6015625,
+      "externalMiB": 23.04918098449707,
+      "arrayBuffersMiB": 1.039724349975586,
+      "jemallocAllocatedMiB": 28.2645263671875,
+      "jemallocResidentMiB": 40.015625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 3.984375,
+        "v8PhysicalMiB": -4.7421875,
+        "jemallocResidentMiB": 4.57421875
+      },
+      "gcEventsSincePrevious": 65,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1203,
+        "checkpoints": 85,
+        "gcEvents": 909,
+        "browsers": 42
+      }
+    },
+    {
+      "cycle": 15,
+      "anonGrowthMiB": 55.015625,
+      "anonMiB": 90.23046875,
+      "nodeAnonMiB": 89.8046875,
+      "heapUsedMiB": 18.90997314453125,
+      "heapCapacityMiB": 29.34375,
+      "v8PhysicalMiB": 27.58984375,
+      "externalMiB": 19.41397476196289,
+      "arrayBuffersMiB": 1.0389881134033203,
+      "jemallocAllocatedMiB": 28.938644409179688,
+      "jemallocResidentMiB": 35.98046875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -3.52734375,
+        "v8PhysicalMiB": 4.98828125,
+        "jemallocResidentMiB": -4.03515625
+      },
+      "gcEventsSincePrevious": 71,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1288,
+        "checkpoints": 91,
+        "gcEvents": 980,
+        "browsers": 45
+      }
+    },
+    {
+      "cycle": 16,
+      "anonGrowthMiB": 63.96484375,
+      "anonMiB": 99.1796875,
+      "nodeAnonMiB": 98.75390625,
+      "heapUsedMiB": 28.66826629638672,
+      "heapCapacityMiB": 42.31640625,
+      "v8PhysicalMiB": 37.515625,
+      "externalMiB": 23.05516242980957,
+      "arrayBuffersMiB": 6.056532859802246,
+      "jemallocAllocatedMiB": 32.82569122314453,
+      "jemallocResidentMiB": 39.76171875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 8.94921875,
+        "v8PhysicalMiB": 9.92578125,
+        "jemallocResidentMiB": 3.78125
+      },
+      "gcEventsSincePrevious": 49,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1372,
+        "checkpoints": 97,
+        "gcEvents": 1029,
+        "browsers": 48
+      }
+    },
+    {
+      "cycle": 17,
+      "anonGrowthMiB": 58.0078125,
+      "anonMiB": 93.22265625,
+      "nodeAnonMiB": 92.796875,
+      "heapUsedMiB": 24.235260009765625,
+      "heapCapacityMiB": 56.0234375,
+      "v8PhysicalMiB": 37.26171875,
+      "externalMiB": 19.721598625183105,
+      "arrayBuffersMiB": 2.7240734100341797,
+      "jemallocAllocatedMiB": 29.634368896484375,
+      "jemallocResidentMiB": 36.58203125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -5.95703125,
+        "v8PhysicalMiB": -0.25390625,
+        "jemallocResidentMiB": -3.1796875
+      },
+      "gcEventsSincePrevious": 50,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1458,
+        "checkpoints": 103,
+        "gcEvents": 1079,
+        "browsers": 51
+      }
+    },
+    {
+      "cycle": 18,
+      "anonGrowthMiB": 68.4453125,
+      "anonMiB": 103.66015625,
+      "nodeAnonMiB": 103.2734375,
+      "heapUsedMiB": 29.425209045410156,
+      "heapCapacityMiB": 59.4140625,
+      "v8PhysicalMiB": 48.0625,
+      "externalMiB": 23.06547260284424,
+      "arrayBuffersMiB": 6.0679473876953125,
+      "jemallocAllocatedMiB": 32.58299255371094,
+      "jemallocResidentMiB": 39.2890625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 10.4375,
+        "v8PhysicalMiB": 10.80078125,
+        "jemallocResidentMiB": 2.70703125
+      },
+      "gcEventsSincePrevious": 65,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1543,
+        "checkpoints": 109,
+        "gcEvents": 1144,
+        "browsers": 54
+      }
+    },
+    {
+      "cycle": 19,
+      "anonGrowthMiB": 73.9375,
+      "anonMiB": 109.15234375,
+      "nodeAnonMiB": 108.7265625,
+      "heapUsedMiB": 29.592567443847656,
+      "heapCapacityMiB": 59.1640625,
+      "v8PhysicalMiB": 52.734375,
+      "externalMiB": 23.061674118041992,
+      "arrayBuffersMiB": 6.064148902893066,
+      "jemallocAllocatedMiB": 31.982467651367188,
+      "jemallocResidentMiB": 38.77734375,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 5.4921875,
+        "v8PhysicalMiB": 4.671875,
+        "jemallocResidentMiB": -0.51171875
+      },
+      "gcEventsSincePrevious": 65,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1628,
+        "checkpoints": 115,
+        "gcEvents": 1209,
+        "browsers": 57
+      }
+    },
+    {
+      "cycle": 20,
+      "anonGrowthMiB": 71.22265625,
+      "anonMiB": 106.4375,
+      "nodeAnonMiB": 106.01171875,
+      "heapUsedMiB": 24.637916564941406,
+      "heapCapacityMiB": 88.26953125,
+      "v8PhysicalMiB": 50.09375,
+      "externalMiB": 19.78299617767334,
+      "arrayBuffersMiB": 2.785470962524414,
+      "jemallocAllocatedMiB": 29.892959594726562,
+      "jemallocResidentMiB": 36.8671875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -2.71484375,
+        "v8PhysicalMiB": -2.640625,
+        "jemallocResidentMiB": -1.91015625
+      },
+      "gcEventsSincePrevious": 49,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1712,
+        "checkpoints": 121,
+        "gcEvents": 1258,
+        "browsers": 60
+      }
+    },
+    {
+      "cycle": 21,
+      "anonGrowthMiB": 76.20703125,
+      "anonMiB": 111.421875,
+      "nodeAnonMiB": 110.99609375,
+      "heapUsedMiB": 29.899551391601562,
+      "heapCapacityMiB": 91.42578125,
+      "v8PhysicalMiB": 55.51953125,
+      "externalMiB": 23.059178352355957,
+      "arrayBuffersMiB": 6.061653137207031,
+      "jemallocAllocatedMiB": 31.843109130859375,
+      "jemallocResidentMiB": 38.47265625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 4.984375,
+        "v8PhysicalMiB": 5.42578125,
+        "jemallocResidentMiB": 1.60546875
+      },
+      "gcEventsSincePrevious": 68,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1798,
+        "checkpoints": 127,
+        "gcEvents": 1326,
+        "browsers": 63
+      }
+    },
+    {
+      "cycle": 22,
+      "anonGrowthMiB": 77.3671875,
+      "anonMiB": 112.58203125,
+      "nodeAnonMiB": 112.15625,
+      "heapUsedMiB": 30.05084991455078,
+      "heapCapacityMiB": 91.6640625,
+      "v8PhysicalMiB": 56.6875,
+      "externalMiB": 23.05211067199707,
+      "arrayBuffersMiB": 6.0545854568481445,
+      "jemallocAllocatedMiB": 32.792503356933594,
+      "jemallocResidentMiB": 39.58984375,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 1.16015625,
+        "v8PhysicalMiB": 1.16796875,
+        "jemallocResidentMiB": 1.1171875
+      },
+      "gcEventsSincePrevious": 66,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1883,
+        "checkpoints": 133,
+        "gcEvents": 1392,
+        "browsers": 66
+      }
+    },
+    {
+      "cycle": 23,
+      "anonGrowthMiB": 80.328125,
+      "anonMiB": 115.54296875,
+      "nodeAnonMiB": 115.1171875,
+      "heapUsedMiB": 30.148590087890625,
+      "heapCapacityMiB": 91.9140625,
+      "v8PhysicalMiB": 60.3828125,
+      "externalMiB": 23.063976287841797,
+      "arrayBuffersMiB": 6.066451072692871,
+      "jemallocAllocatedMiB": 32.620643615722656,
+      "jemallocResidentMiB": 39.6171875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 2.9609375,
+        "v8PhysicalMiB": 3.6953125,
+        "jemallocResidentMiB": 0.02734375
+      },
+      "gcEventsSincePrevious": 66,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 1967,
+        "checkpoints": 139,
+        "gcEvents": 1458,
+        "browsers": 69
+      }
+    },
+    {
+      "cycle": 24,
+      "anonGrowthMiB": 80.4375,
+      "anonMiB": 115.65234375,
+      "nodeAnonMiB": 115.2265625,
+      "heapUsedMiB": 30.53569793701172,
+      "heapCapacityMiB": 91.9140625,
+      "v8PhysicalMiB": 60.3828125,
+      "externalMiB": 23.055962562561035,
+      "arrayBuffersMiB": 6.058437347412109,
+      "jemallocAllocatedMiB": 32.23100280761719,
+      "jemallocResidentMiB": 39.08203125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.109375,
+        "v8PhysicalMiB": 0,
+        "jemallocResidentMiB": -0.53515625
+      },
+      "gcEventsSincePrevious": 64,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 2053,
+        "checkpoints": 145,
+        "gcEvents": 1522,
+        "browsers": 72
+      }
+    },
+    {
+      "cycle": 25,
+      "anonGrowthMiB": 80.2734375,
+      "anonMiB": 115.48828125,
+      "nodeAnonMiB": 115.0625,
+      "heapUsedMiB": 30.56639862060547,
+      "heapCapacityMiB": 91.9140625,
+      "v8PhysicalMiB": 60.06640625,
+      "externalMiB": 23.04923725128174,
+      "arrayBuffersMiB": 6.0517120361328125,
+      "jemallocAllocatedMiB": 32.600135803222656,
+      "jemallocResidentMiB": 39.546875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -0.1640625,
+        "v8PhysicalMiB": -0.31640625,
+        "jemallocResidentMiB": 0.46484375
+      },
+      "gcEventsSincePrevious": 62,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 2138,
+        "checkpoints": 151,
+        "gcEvents": 1584,
+        "browsers": 75
+      }
+    },
+    {
+      "cycle": 26,
+      "anonGrowthMiB": 81.00390625,
+      "anonMiB": 116.21875,
+      "nodeAnonMiB": 115.79296875,
+      "heapUsedMiB": 31.161239624023438,
+      "heapCapacityMiB": 91.96875,
+      "v8PhysicalMiB": 59.3828125,
+      "externalMiB": 23.364201545715332,
+      "arrayBuffersMiB": 6.366676330566406,
+      "jemallocAllocatedMiB": 32.511474609375,
+      "jemallocResidentMiB": 39.48828125,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.73046875,
+        "v8PhysicalMiB": -0.68359375,
+        "jemallocResidentMiB": -0.05859375
+      },
+      "gcEventsSincePrevious": 62,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 2223,
+        "checkpoints": 157,
+        "gcEvents": 1646,
+        "browsers": 78
+      }
+    },
+    {
+      "cycle": 27,
+      "anonGrowthMiB": 82.29296875,
+      "anonMiB": 117.5078125,
+      "nodeAnonMiB": 117.08203125,
+      "heapUsedMiB": 31.332321166992188,
+      "heapCapacityMiB": 92.96875,
+      "v8PhysicalMiB": 59.64453125,
+      "externalMiB": 23.361316680908203,
+      "arrayBuffersMiB": 6.363791465759277,
+      "jemallocAllocatedMiB": 33.59580993652344,
+      "jemallocResidentMiB": 40.5390625,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 1.2890625,
+        "v8PhysicalMiB": 0.26171875,
+        "jemallocResidentMiB": 1.05078125
+      },
+      "gcEventsSincePrevious": 66,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 2308,
+        "checkpoints": 163,
+        "gcEvents": 1712,
+        "browsers": 81
+      }
+    },
+    {
+      "cycle": 28,
+      "anonGrowthMiB": 82.40234375,
+      "anonMiB": 117.6171875,
+      "nodeAnonMiB": 117.19140625,
+      "heapUsedMiB": 31.046653747558594,
+      "heapCapacityMiB": 92.4140625,
+      "v8PhysicalMiB": 60.56640625,
+      "externalMiB": 23.05449390411377,
+      "arrayBuffersMiB": 6.056968688964844,
+      "jemallocAllocatedMiB": 32.237396240234375,
+      "jemallocResidentMiB": 38.9375,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.109375,
+        "v8PhysicalMiB": 0.921875,
+        "jemallocResidentMiB": -1.6015625
+      },
+      "gcEventsSincePrevious": 64,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 2392,
+        "checkpoints": 169,
+        "gcEvents": 1776,
+        "browsers": 84
+      }
+    },
+    {
+      "cycle": 29,
+      "anonGrowthMiB": 83.09765625,
+      "anonMiB": 118.3125,
+      "nodeAnonMiB": 117.88671875,
+      "heapUsedMiB": 31.294944763183594,
+      "heapCapacityMiB": 92.81640625,
+      "v8PhysicalMiB": 60.23046875,
+      "externalMiB": 23.048550605773926,
+      "arrayBuffersMiB": 6.049921035766602,
+      "jemallocAllocatedMiB": 32.61613464355469,
+      "jemallocResidentMiB": 39.484375,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": 0.6953125,
+        "v8PhysicalMiB": -0.3359375,
+        "jemallocResidentMiB": 0.546875
+      },
+      "gcEventsSincePrevious": 62,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 2477,
+        "checkpoints": 175,
+        "gcEvents": 1838,
+        "browsers": 87
+      }
+    },
+    {
+      "cycle": 30,
+      "anonGrowthMiB": 78.171875,
+      "anonMiB": 113.38671875,
+      "nodeAnonMiB": 112.9609375,
+      "heapUsedMiB": 26.844322204589844,
+      "heapCapacityMiB": 90.62890625,
+      "v8PhysicalMiB": 60.73828125,
+      "externalMiB": 20.39241600036621,
+      "arrayBuffersMiB": 3.394890785217285,
+      "jemallocAllocatedMiB": 29.45916748046875,
+      "jemallocResidentMiB": 36.10546875,
+      "nativeContexts": 1,
+      "changeSincePrevious": {
+        "anonMiB": -4.92578125,
+        "v8PhysicalMiB": 0.5078125,
+        "jemallocResidentMiB": -3.37890625
+      },
+      "gcEventsSincePrevious": 50,
+      "traceRecordsThroughCheckpoint": {
+        "samples": 2562,
+        "checkpoints": 181,
+        "gcEvents": 1888,
+        "browsers": 90
+      }
+    }
+  ],
+  "finalDiagnostics": [
+    {
+      "phase": "finalIdle",
+      "anonMiB": 114.1953125,
+      "heapUsedMiB": 32.37445068359375,
+      "heapCapacityMiB": 90.62890625,
+      "v8PhysicalMiB": 60.73828125,
+      "jemallocResidentMiB": 37.1796875
+    },
+    {
+      "phase": "finalGc",
+      "anonMiB": 111.01171875,
+      "heapUsedMiB": 17.39672088623047,
+      "heapCapacityMiB": 26.4296875,
+      "v8PhysicalMiB": 23.9375,
+      "jemallocResidentMiB": 37.21875
+    },
+    {
+      "phase": "finalSettled",
+      "anonMiB": 93.5390625,
+      "heapUsedMiB": 18.753883361816406,
+      "heapCapacityMiB": 26.4296875,
+      "v8PhysicalMiB": 25.16796875,
+      "jemallocResidentMiB": 17.82421875
+    }
+  ],
+  "limitations": [
+    "Allocator and V8 statistics may overlap; do not add or subtract them to assign mapping ownership",
+    "Trace record counts do not measure their resident size; original evidence has no cycle-18 full smaps or allocation stacks",
+    "Disk mode still allocates temporary serialization buffers, holds browser scalar records and checkpoint request state, and adds synchronous I/O"
+  ],
+  "provenance": {
+    "evidenceRoot": "/home/Kei/dom-mirror-validation/20261026/jemalloc-thirty/default",
+    "measurementCommit": "3377cf38b2caea7db50f36a2319153d5af4e53a8",
+    "note": "Existing evidence from the prior turn. This commit has not run a new workload.",
+    "analysisSha256": "fab081e1bccee267839f0f3df459cdabbed4c6ad1cd8c5ab3e0879d8873add2b"
+  },
+  "validation": {
+    "historicalReplay": {
+      "scope": "Both storage representations reconstructed from the same historical trace; not a measured new host",
+      "metricsIdentical": true,
+      "missingSampleRejected": true
+    },
+    "tests": 29,
+    "newLongRun": false
+  }
+}

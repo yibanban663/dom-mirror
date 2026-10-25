@@ -30,6 +30,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 proxy_env=(-e HTTP_PROXY= -e HTTPS_PROXY= -e http_proxy= -e https_proxy= -e ALL_PROXY= -e all_proxy=)
 diagnostic_env=(-e "MEMORY_CYCLES=$cycles" -e "MEMORY_NATIVE_PROBE=${MEMORY_NATIVE_PROBE:-0}"
+  -e "MEMORY_TRACE_STORAGE=${MEMORY_TRACE_STORAGE:-memory}" -e "MEMORY_MAP_CYCLES=${MEMORY_MAP_CYCLES:-}"
   -e "MEMORY_FINAL_DIAGNOSTICS=${MEMORY_FINAL_DIAGNOSTICS:-0}" -e "MEMORY_SKIP_TRIM=${MEMORY_SKIP_TRIM:-0}" -e "MEMORY_MAPS=${MEMORY_MAPS:-0}")
 allocator_env=(-e "LD_PRELOAD=${MEMORY_LD_PRELOAD:-}" -e "MALLOC_CONF=${MEMORY_MALLOC_CONF:-}")
 docker image inspect "$image" --format '{{json .Id}}' > "$evidence/image.json"
