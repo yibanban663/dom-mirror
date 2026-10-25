@@ -2,7 +2,7 @@
 
 基于 Chromium 的远程浏览器 DOM 镜像原型。业务页面在服务端执行，客户端接收 DOM/CSS 快照及增量补丁，在本地渲染并回传交互。
 
-当前版本 **0.10.0**，支持 `dom` 和 `frame` 两种模式。旧的 JPEG/WebP/H.264、CanvasKit 通道已经移除，无需 ffmpeg。
+当前版本 **0.10.1**，支持 `dom` 和 `frame` 两种模式。旧的 JPEG/WebP/H.264、CanvasKit 通道已经移除，无需 ffmpeg。
 
 ## 工作方式
 
@@ -91,6 +91,12 @@ IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
 
 覆盖 DOM/frame 的登录、路由和草稿恢复、已落库但未显示确认的提交、同账号会话隔离与关闭、过期后显式重新开始。证据不包含恢复凭据或登录密码。
 
+## frame 编码开销优化
+
+0.10.1 在普通 8-bit RGB/RGBA Chromium PNG 上复用已解码像素进行差分条带裁剪，避免每块重新解码整帧，也不再重复转换输入 base64。有透明键、色彩元数据、灰度、调色板或其他编码的 PNG 继续使用原处理路径。PNG 编码参数和业务协议保持不变。
+
+此前对照确认了多块裁剪的局部收益，但尚未证明任务创建的客户端绘制延迟稳定下降；不承诺整体加速倍数。正式实现与回归结果见 [0.10.1 验收记录](docs/acceptance/frame-codec-0.10.1.md)。调查入口默认 PROFILE_CODEC=production；显式 png 可回放旧裁剪路径，raw 为生产快路径的别名。这些 PROFILE 参数不影响普通 server.js 入口。
+
 ## 可选字体混淆
 
 需要 Python 3、fontTools 和 Brotli 支持。准备有合法再分发许可、包含中文字符的 Regular/Bold TTF 或 OTF 字体：
@@ -128,7 +134,7 @@ mkdir -p assets/obf
 - CSS URL 与选择器重写依赖字符串/正则，嵌套规则、外链 CSS 相对资源及动态 CSSOM 修改需逐站验证。
 - 补丁替换和全量重同步可能影响焦点、选区及交互。`frame` 也不保证消除所有交互兼容问题。
 - 静止业务 DOM 可以不发结构补丁，但统计、ping/pong、滚动兜底消息仍会发送；不是零网络流量。
-- 历史延迟、流量和像素差数据见 Git 历史及 CHANGELOG，仅代表当时场景。本轮未重新做性能或视觉验收，不作为当前版本保证。
+- 历史延迟、流量和像素差数据见 Git 历史及 CHANGELOG，仅代表当时场景。0.10.0 的[单会话性能调查](docs/performance/2026-10-26.md)已记录分段开销和 Rust/Wasm 对照，仍无容量或视觉验收，不作为当前版本性能保证。
 
 本地检查：`npm run check && npm test`。CI 另做 Docker 构建与 HTTP 探活；HTTP 200 只证明壳页面可访问，不能替代真实浏览器会话验收。站点接入需验证登录、输入、导航、滚动、动态样式、断连释放，以及两种通道的截图差异。
 

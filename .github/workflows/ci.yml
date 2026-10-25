@@ -25,6 +25,10 @@ jobs:
           npm audit --omit=dev
       - name: 语法与策略回归检查
         run: npm run check && npm test
+      - name: 性能调查插桩锚点检查
+        run: |
+          node tools/profile-server.cjs --check
+          PROFILE_FRAME_TICK_MS=4 PROFILE_CODEC=png node tools/profile-server.cjs --check
       - name: 客户端结构检查
         run: |
           node -e "

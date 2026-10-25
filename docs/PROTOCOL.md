@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.10.0）
+# WebSocket 协议（实现版本 0.10.1）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
 

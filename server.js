@@ -19,6 +19,7 @@ const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
 const { assetUrl, selectOrigin } = require('./lib/policy');
 const { SessionStore } = require('./lib/sessions');
+const { frameCropInput } = require('./lib/frame-codec');
 
 const DEMO_PORT = parseInt(process.env.DEMO_PORT || '8088', 10);
 const ORIGIN_PORT = parseInt(process.env.ORIGIN_PORT || '8077', 10);
@@ -1196,7 +1197,8 @@ wss.on('session', async (ws, req) => {
       if (!sharp) return null;
       // ensureAlpha：合成器 PNG 可能为 3 通道（RGB），Uint32 视图按 4 字节/像素索引
       // 会越界读 undefined → 恒等误判（实测 tiles=0 的根因）。恒定 RGBA 后视图对齐。
-      const img = sharp(Buffer.from(b64, 'base64')).ensureAlpha();
+      const framePng = Buffer.from(b64, 'base64');
+      const img = sharp(framePng).ensureAlpha();
       const { info, data } = await img.raw().toBuffer({ resolveWithObject: true });
       const W = info.width, H = info.height, CH = info.channels;
       if (!prevRaw || prevW !== W || prevH !== H) {
@@ -1237,11 +1239,10 @@ wss.on('session', async (ws, req) => {
         rects.length = 0;
         rects.push([0, 0, W, H]);
       }
-      const src2 = Buffer.from(b64, 'base64');
       const tiles = [];
       for (const [rx, ry, rw, rh] of rects) {
         if (rw < 2 || rh < 2) continue;
-        const png = await sharp(src2).extract({ left: rx, top: ry, width: rw, height: rh }).png({ compressionLevel: 3 }).toBuffer();
+        const png = await frameCropInput(sharp, framePng, { info, data }).extract({ left: rx, top: ry, width: rw, height: rh }).png({ compressionLevel: 3 }).toBuffer();
         tiles.push({ w: rw, h: rh, cssX: Math.round(rx / DPR) + Math.round(meta.sx || 0), cssY: Math.round(ry / DPR) + Math.round(meta.sy || 0), cssW: rw / DPR, cssH: rh / DPR, url: 'data:image/png;base64,' + png.toString('base64') });
       }
       return { tiles };

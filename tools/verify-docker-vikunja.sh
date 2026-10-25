@@ -3,18 +3,29 @@ set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 image=${IMAGE:-dom-mirror:local}
 test_script=${BUSINESS_TEST_SCRIPT:-verify-vikunja.cjs}
-[[ "$test_script" == verify-vikunja.cjs || "$test_script" == verify-recovery.cjs ]] || exit 2
+[[ "$test_script" == verify-vikunja.cjs || "$test_script" == verify-recovery.cjs || "$test_script" == profile-business.cjs ]] || exit 2
 business_image=vikunja/vikunja@sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576
 evidence=${EVIDENCE_DIR:-"$repo/artifacts/vikunja"}
 run_id="dom-mirror-vikunja-$(date +%s)-$$"
 app="$run_id-app"
 server="$run_id-server"
 client="$run_id-client"
+server_entry=server.js
+server_mount=()
+if [[ "${PROFILE:-0}" == 1 ]]; then
+  server_entry=tools/profile-server.cjs
+  server_mount=(-v "$repo/tools:/app/tools:ro" -v "$repo/server.js:/app/server.js:ro")
+fi
 proxy_env=(-e HTTP_PROXY= -e HTTPS_PROXY= -e http_proxy= -e https_proxy= -e ALL_PROXY= -e all_proxy=)
 mkdir -p "$evidence"
+printf 'cpus=%s\nmemoryMiB=2048\n' "${MIRROR_CPUS:-2}" > "$evidence/mirror-limits.txt"
 cleanup() {
   status=$?
   trap - EXIT
+  if [[ "${PROFILE:-0}" == 1 ]]; then
+    docker stop --time 5 "$server" >/dev/null 2>&1 || true
+    docker cp "$server:/tmp/perf-evidence/." "$evidence/" >/dev/null 2>&1 || true
+  fi
   docker logs "$app" > "$evidence/app.log" 2>&1 || true
   docker logs "$server" > "$evidence/server.log" 2>&1 || true
   docker logs "$client" > "$evidence/client.log" 2>&1 || true
@@ -40,8 +51,10 @@ docker exec "$app" /app/vikunja/vikunja version > "$evidence/app-version.txt"
 docker image inspect "$image" --format '{{json .Id}}' > "$evidence/mirror-image.json"
 printf '%s\n' "$business_image" > "$evidence/app-image.txt"
 docker run -d --name "$server" --network "$run_id" --network-alias mirror \
-  "${proxy_env[@]}" --memory 2g --cpus 2 -e PROD_PRESENTATION=1 \
-  -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e ORIGIN_URL=http://business:3456/ "$image" timeout 330 node server.js >/dev/null
+  "${proxy_env[@]}" --memory 2g --cpus "${MIRROR_CPUS:-2}" -e PROD_PRESENTATION=1 \
+  -e "PROFILE_FRAME_TICK_MS=${PROFILE_FRAME_TICK_MS:-16}" -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "PROFILE_CODEC=${PROFILE_CODEC:-production}" \
+  -e "PROFILE_PATCH_MS=${PROFILE_PATCH_MS:-60}" -e "DEFAULT_MODE=${PROFILE_MODE:-dom}" "${server_mount[@]}" \
+  -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e ORIGIN_URL=http://business:3456/ "$image" timeout 330 node "$server_entry" >/dev/null
 docker exec "$server" node -e '
   (async () => {
     for (let i = 0; i < 40; i++) {
@@ -54,6 +67,6 @@ docker exec "$server" node -e '
 docker run --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" -e BUSINESS_URL=http://business:3456 -e MIRROR_URL=http://mirror:8088/ \
   -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e EVIDENCE_DIR=/tmp/business-evidence -e "CASES=${CASES:-direct,dom,frame}" \
-  -e "DIAGNOSTIC_HOLD_MS=${DIAGNOSTIC_HOLD_MS:-0}" \
+  -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "DIAGNOSTIC_HOLD_MS=${DIAGNOSTIC_HOLD_MS:-0}" \
   -v "$repo/tools:/app/tools:ro" --entrypoint timeout \
   "$image" 270 node "tools/$test_script"
