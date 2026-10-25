@@ -30,11 +30,10 @@ async function button(page, mirror, text) {
     const root = mirror ? document.querySelector('#mirrorHost')?.shadowRoot : document;
     return root && [...root.querySelectorAll('button')].some(e => e.textContent.trim().toLowerCase() === text.toLowerCase());
   }, { timeout: 20000 }, mirror, text);
-  const handle = await page.evaluateHandle((mirror, text) => {
-    const root = mirror ? document.querySelector('#mirrorHost').shadowRoot : document;
-    return [...root.querySelectorAll('button')].find(e => e.textContent.trim().toLowerCase() === text.toLowerCase());
-  }, mirror, text);
-  try { await handle.asElement().click(); } finally { await handle.dispose(); }
+  // Re-resolve after snapshot replacement; a detached handle cannot receive a click.
+  const root = mirror ? "document.querySelector('#mirrorHost').shadowRoot" : 'document';
+  const locate = new Function('return [...' + root + '.querySelectorAll("button")].find(e => e.textContent.trim().toLowerCase() === ' + JSON.stringify(text.toLowerCase()) + ')');
+  await page.locator(locate).setTimeout(20000).click();
 }
 async function run(browser, mode) {
   const result = { mode, steps: [], pass: false, started: new Date().toISOString() };
@@ -75,7 +74,7 @@ async function run(browser, mode) {
     step = 'create';
     const projectPath = (mirror ? '/m' : '') + '/projects/' + project.id;
     await page.waitForSelector(prefix + 'a[href="' + projectPath + '"]', { timeout: 20000 });
-    await page.click(prefix + 'a[href="' + projectPath + '"]');
+    await page.locator(prefix + 'a[href="' + projectPath + '"]').setTimeout(20000).click();
     await page.waitForSelector(prefix + 'a[href^="' + projectPath + '/"]', { timeout: 20000 });
     await page.type(prefix + 'textarea[placeholder="Add a task…"]', title, { delay: 15 });
     await page.keyboard.press('Enter');
@@ -87,12 +86,7 @@ async function run(browser, mode) {
       const root = mirror ? document.querySelector('#mirrorHost').shadowRoot : document;
       return [...root.querySelectorAll('a,span')].some(e => e.textContent.trim() === title);
     }, { timeout: 20000 }, mirror, title);
-    const task = await page.evaluateHandle((mirror, title) => {
-      const root = mirror ? document.querySelector('#mirrorHost').shadowRoot : document;
-      return [...root.querySelectorAll('a,span')].find(e => e.textContent.trim() === title);
-    }, mirror, title);
-    await task.asElement().click();
-    await task.dispose();
+    await page.locator(prefix + '::-p-text(' + title + ')').setTimeout(20000).click();
     await button(page, mirror, 'Set Priority');
     await page.waitForSelector(prefix + 'select');
     await page.select(prefix + 'select', '2');
@@ -115,7 +109,7 @@ async function run(browser, mode) {
   } catch (error) {
     result.steps.push({ name: step, pass: false, error: error.message });
     result.trace = trace;
-    console.log('DIAGNOSTIC ' + JSON.stringify({mode, trace:trace.slice(0,8)}));
+    console.log('DIAGNOSTIC ' + JSON.stringify({mode, trace:trace.slice(-20)}));
     await sleep(Math.min(30000, Number(process.env.DIAGNOSTIC_HOLD_MS) || 0));
     if (output) await page.screenshot({ path: path.join(output, mode + '-failure.png'), waitForFonts: false }).catch(() => {});
   } finally {
@@ -140,4 +134,5 @@ async function main() {
   }
   if (results.some(r => !r.pass)) process.exitCode = 1;
 }
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
+module.exports = { api, persisted, button };

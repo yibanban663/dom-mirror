@@ -49,9 +49,13 @@
   table.cmp td:first-child { color:var(--dim); white-space:nowrap; }
   .conn-info { font-size:12px; color:var(--dim); line-height:1.8; }
   .btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; }
+  #connectionNotice { position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:2147483647; max-width:90vw; padding:12px 18px; border:1px solid #8294b0; border-radius:8px; background:#fff; color:#1f2d3d; box-shadow:0 4px 18px #0002; font-size:14px; }
+  #connectionNotice[hidden] { display:none; }
+  #newSession { margin-left:12px; }
 </style>
 </head>
 <body>
+<div id="connectionNotice" role="status"><span id="connectionText">正在连接…</span><button id="newSession" class="btn" hidden>重新开始</button></div>
 <header>
   <div class="logo">影</div>
   <div>
@@ -141,12 +145,22 @@
   const statusEl = document.getElementById('status');
   const curEl = document.getElementById('cur');
   let ws = null, connected = false, lastErr = '', mode = 'dom';
+  let resumeToken = null, retryTimer = null, retryDelay = 500, retryAllowed = true;
 
   let frames = 0, bytes = 0;
   let winBw = [], winFps = [];
   const m = id => document.getElementById(id);
 
   function setStatus(txt, on) { statusEl.textContent = txt; statusEl.className = 'status' + (on ? ' on' : ''); }
+  function availability(online, text) {
+    connected = online;
+    document.getElementById('mirrorScroll').inert = !online;
+    cv.inert = !online;
+    m('connectionNotice').hidden = online;
+    m('connectionText').textContent = text || '';
+    if (online) m('newSession').hidden = true;
+  }
+
   function noteFrame(sz) {
     frames++;
     const now = performance.now();
@@ -688,21 +702,46 @@
 
   // ---------- WS ----------
   function connect() {
+    clearTimeout(retryTimer);
+    m('newSession').hidden = true;
+    availability(false, resumeToken ? '正在恢复会话，请稍候…' : '正在连接…');
     setStatus('连接中…', false);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.binaryType = 'arraybuffer';
-    ws.onopen = () => {
-      connected = true; lastErr = ''; setStatus('会话在线', true); m('mIdle').textContent = 'waiting frame';
-      // 上报本机 DPR 与视口：服务端按访客 DPR+视口渲染像素瓦片，客户端 1:1 显示 → 构造性一致
-      try { ws.send(JSON.stringify({ type: 'hello', dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight })); } catch (e) {}
+    const socket = new WebSocket(`${proto}://${location.host}/ws`);
+    ws = socket;
+    let snapshotReady = false, syncReady = false, snapshotSerial = 0;
+    const activate = () => {
+      if (!snapshotReady || !syncReady || !retryAllowed || ws !== socket || socket.readyState !== 1) return;
+      availability(true); retryDelay = 500; setStatus('会话在线', true);
     };
-    ws.onclose = () => { connected = false; setStatus(lastErr ? ('已断开：' + lastErr) : '已断开', false); m('mIdle').textContent = 'disconnected'; };
-    ws.onerror = () => setStatus('连接错误', false);
-    ws.onmessage = (ev) => {
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => {
+      if (ws !== socket) return;
+      lastErr = '';
+      socket.send(JSON.stringify({ type: 'hello', resume: resumeToken || undefined, dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight }));
+    };
+    socket.onclose = () => {
+      if (ws !== socket) return;
+      availability(false, lastErr || '连接已断开，正在恢复。未确认的操作请恢复后核对。');
+      setStatus('已断开', false);
+      window.__xyDrag = null;
+      m('mIdle').textContent = 'disconnected';
+      if (retryAllowed) {
+        retryTimer = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(5000, retryDelay * 2);
+      }
+    };
+    socket.onerror = () => { if (ws === socket) setStatus('连接错误', false); };
+    socket.onmessage = (ev) => {
+      if (ws !== socket) return;
       {
         try {
           const j = JSON.parse(ev.data);
+          if (j.type === 'session') {
+            resumeToken = j.token;
+            if (j.resumed) { lastTyped.clear(); pendingFocusPatches = []; }
+          }
+          if (j.type === 'sync-ready') { syncReady = true; activate(); }
           if (j.type === 'meta') {
             m('oTitle').textContent = j.title || '-';
             if (j.mode) setMode(j.mode);
@@ -764,6 +803,8 @@
             }
           }
           if (j.type === 'dom-snapshot') {
+            const serial = ++snapshotSerial;
+            snapshotReady = false;
             noteBytes(ev.data.length || ev.data.size || 0);
             noteFrame(0);
             // v3：frame 像素直出才存在条带图层；dom 模式纯镜像本地渲染
@@ -790,8 +831,15 @@
               }
             }
             Promise.all(preload).then(() => {
+              if (ws !== socket || socket.readyState !== 1 || serial !== snapshotSerial) return;
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               buildMirror(j.css, j.html, j.docClass, j.docAttrs);
+              snapshotReady = true;
+              activate();
+              const restoredScroll = document.getElementById('mirrorScroll');
+              restoredScroll.__xySync = true;
+              restoredScroll.scrollLeft = j.sx || 0; restoredScroll.scrollTop = j.sy || 0;
+              setTimeout(() => { restoredScroll.__xySync = false; }, 80);
               // 快照健康自检（v3 dom）：镜像树过小=快照异常，限频请求重同步
               if (!j.frame && (!j.html || j.html.length < 80) && snapSelfCheckRetries < 3) {
                 snapSelfCheckRetries++;
@@ -888,7 +936,15 @@
             // 主题/状态类切换：直改镜像根类名（轻量，不重建）
             mirrorBody.className = 'xy-body ' + (j.cls || '');
           }
-          if (j.type === 'error') { lastErr = j.msg; setStatus('错误: ' + j.msg, false); }
+          if (j.type === 'error') {
+            lastErr = j.msg; setStatus('错误: ' + j.msg, false);
+            if (j.terminal) {
+              retryAllowed = false;
+              clearTimeout(retryTimer);
+              availability(false, j.msg);
+              m('newSession').hidden = false;
+            }
+          }
           if (j.type === 'mode') { setMode(j.mode); lastErr = ''; setStatus('会话在线', true); }
           if (j.type === 'pong') { m('mRtt').textContent = Math.round(performance.now() - j.t); }
           if (j.type === 'sstats') {
@@ -929,7 +985,16 @@
   document.querySelectorAll('.quality button[data-m]').forEach(b => b.addEventListener('click', () => {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: b.dataset.m }));
   }));
-  document.getElementById('reconn').addEventListener('click', () => { try { ws.close(); } catch {} setTimeout(connect, 300); });
+  document.getElementById('reconn').addEventListener('click', () => {
+    if (!retryAllowed) return;
+    clearTimeout(retryTimer);
+    if (ws && ws.readyState === 1) ws.close(); else if (!ws || ws.readyState === 3) connect();
+  });
+  m('newSession').addEventListener('click', () => {
+    resumeToken = null; lastTyped.clear(); pendingFocusPatches = [];
+    retryAllowed = true; retryDelay = 500;
+    connect();
+  });
 
   // ---------- 输入回传 ----------
   let lastMove = 0;
@@ -937,7 +1002,7 @@
     const r = cv.getBoundingClientRect();
     return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
   }
-  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+  function send(o) { if (connected && ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
   cv.addEventListener('mousemove', (e) => {
     const now = performance.now();

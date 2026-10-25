@@ -18,12 +18,14 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
 const { assetUrl, selectOrigin } = require('./lib/policy');
+const { SessionStore } = require('./lib/sessions');
 
 const DEMO_PORT = parseInt(process.env.DEMO_PORT || '8088', 10);
 const ORIGIN_PORT = parseInt(process.env.ORIGIN_PORT || '8077', 10);
 const VIEW_W = parseInt(process.env.VIEW_W || '1280', 10);
 const VIEW_H = parseInt(process.env.VIEW_H || '800', 10);
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
+const SESSION_GRACE_MS = Math.max(0, Math.min(300000, Number(process.env.SESSION_GRACE_MS ?? 60000) || 0));
 const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
 const ALLOWED_ORIGINS = (process.env.RBI_ALLOWED_ORIGINS || '').split(',').filter(Boolean).map(v => new URL(v.trim()).origin);
@@ -106,6 +108,15 @@ const PAGE_HELPERS = `(() => {
     const cloneSelects = clone.tagName === 'SELECT' ? [clone] : [...clone.querySelectorAll('select')];
     cloneSelects.forEach((select, i) => {
       [...select.options].forEach((option, j) => option.toggleAttribute('selected', liveSelects[i].options[j].selected));
+    });
+    const controls = node => /^(INPUT|TEXTAREA)$/.test(node.tagName) ? [node] : [...node.querySelectorAll('input,textarea')];
+    const liveControls = controls(root);
+    controls(clone).forEach((control, i) => {
+      const live = liveControls[i];
+      if (control.tagName === 'TEXTAREA') { control.textContent = live.value; return; }
+      if (control.type === 'password' || control.type === 'file') { control.removeAttribute('value'); return; }
+      if (control.type !== 'hidden') control.setAttribute('value', live.value);
+      if (control.type === 'checkbox' || control.type === 'radio') control.toggleAttribute('checked', live.checked);
     });
     const strip = (el) => {
       for (const a of [...el.attributes]) {
@@ -249,7 +260,7 @@ const PAGE_HELPERS = `(() => {
           frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
         }
       }
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim() };
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim() };
     },
 
     // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
@@ -543,12 +554,40 @@ http.createServer(staticHandler(path.join(__dirname, 'protected')))
   .listen(ORIGIN_PORT, '127.0.0.1', () => console.log(`[origin] protected site on 127.0.0.1:${ORIGIN_PORT} (loopback only)`));
 
 // ---------- 会话 ----------
+const sessionStore = new SessionStore({ limit: MAX_SESSIONS, graceMs: SESSION_GRACE_MS });
 let sessions = 0;
-wss.on('connection', async (ws, req) => {
-  if (sessions >= MAX_SESSIONS) {
-    ws.send(JSON.stringify({ type: 'error', msg: `会话已满（上限 ${MAX_SESSIONS}），请稍后再试` }));
-    ws.close(); return;
-  }
+wss.on('connection', (socket, req) => {
+  socket.on('error', () => {});
+  const reject = (code) => {
+    const messages = {
+      SESSION_EXPIRED: '会话已过期或不可恢复，请核对上次提交结果后重新开始',
+      SESSION_BUSY: '原连接尚未释放，正在重试',
+      SESSION_LIMIT: '会话已满，请稍后重试',
+      INVALID_HANDSHAKE: '连接握手无效，请重新开始',
+    };
+    const terminal = code === 'SESSION_EXPIRED' || code === 'INVALID_HANDSHAKE';
+    if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'error', code, terminal, msg: messages[code] }));
+    socket.close(terminal ? 1008 : 1013);
+  };
+  const timer = setTimeout(() => reject('INVALID_HANDSHAKE'), 3000);
+  socket.once('close', () => clearTimeout(timer));
+  socket.once('message', raw => {
+    clearTimeout(timer);
+    let hello;
+    try { hello = JSON.parse(raw.toString()); } catch { reject('INVALID_HANDSHAKE'); return; }
+    if (!hello || hello.type !== 'hello') { reject('INVALID_HANDSHAKE'); return; }
+    const scope = JSON.stringify([req.rbiOrigin || ORIGIN_URL, req.headers.origin || '']);
+    let claimed;
+    try { claimed = sessionStore.claim(hello.resume, scope, socket); }
+    catch (error) { reject(error.message); return; }
+    const { session, resumed } = claimed;
+    if (!resumed) wss.emit('session', session, req);
+    session.send(JSON.stringify({ type: 'session', token: session.token, resumed, graceMs: SESSION_GRACE_MS }));
+    session.emit('message', raw);
+    if (resumed) session.emit('resume');
+  });
+});
+wss.on('session', async (ws, req) => {
   sessions++;
   console.log(`[sess  ] open (${sessions}/${MAX_SESSIONS})`);
 
@@ -559,8 +598,8 @@ wss.on('connection', async (ws, req) => {
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
-  // 清理必须先于一切 await 注册：setup 期间（最长约 23s）断连也要释放会话槽、关 page、
-  // 清定时器——否则 3 次断连即耗尽 MAX_SESSIONS；无监听的 error 事件还会打崩整个进程
+  // 逻辑会话终止时清理；普通 WS 断线由 SessionStore 保留到恢复或过期。
+  // setup 期间也要登记清理，避免浏览器晚启动后泄漏。
   let dead = false;
   let helloIv = null;
   let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
@@ -574,6 +613,7 @@ wss.on('connection', async (ws, req) => {
     if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
     if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
     if (structTimer) { clearTimeout(structTimer); structTimer = null; }
+    if (fullDebounceT) clearTimeout(fullDebounceT);
     try { await stopDomMirror(); } catch {}
     try { if (page) await page.close(); } catch {}
     try { if (sessionBrowser) await sessionBrowser.close(); } catch {}
@@ -793,6 +833,19 @@ wss.on('connection', async (ws, req) => {
   const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
   ws.on('message', (raw) => { if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
   const noteInput = () => { lastInputAt = Date.now(); };
+  ws.on('resume', () => {
+    if (!dispatchReady) return; // 初始化中的会话仍由首次快照完成同步
+    cmdChain = cmdChain.then(async () => {
+      if (dead || ws.readyState !== 1) return;
+      if (domStarting) await domStarting;
+      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode });
+      structBuf.clear(); lastPatchSent.clear();
+      clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
+      await startDomMirror();
+      sendJson({ type: 'sync-ready' });
+    }).catch(() => ws.close(1011, 'resume failed'));
+  });
+
 
   // ---------- DOM 镜像通道 ----------
   let domActive = false, domExposed = false;
@@ -812,6 +865,7 @@ wss.on('connection', async (ws, req) => {
   ]);
   let lastFullDoneAt = 0, fullDebounceT = null, pendingFull = false;
   function startDomMirror() {
+    if (dead || ws.readyState !== 1) return Promise.resolve();
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
     // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白。
     // 被吞触发必须补发（pendingFull）：full 补丁（如 head 注入懒加载样式表的
@@ -968,7 +1022,7 @@ wss.on('connection', async (ws, req) => {
     }
     const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + obfCssBlock;
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '' });
+    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [] });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -1284,7 +1338,13 @@ wss.on('connection', async (ws, req) => {
 
   try {
     const b = await launchSessionBrowser();
+    if (dead) { await b.close(); return; }
     sessionBrowser = b;
+    b.on('disconnected', () => {
+      if (dead) return;
+      sendJson({ type: 'error', code: 'SESSION_EXPIRED', terminal: true, msg: '服务端浏览器已关闭，请核对上次提交结果后重新开始' });
+      ws.close(1011, 'browser closed');
+    });
     page = await b.newPage();
     cdp = await page.createCDPSession();
     // 临时诊断：会话页面的 API 请求状态（定位登录后数据不加载问题）
@@ -1312,6 +1372,7 @@ wss.on('connection', async (ws, req) => {
     });
 
     statTimer = setInterval(() => {
+      if (dead || ws.readyState !== 1) return;
       const now = Date.now();
       frameTimes = frameTimes.filter(t => now - t < 1000);
       const mr = (ws._chunks || 0) - statLastChunks; statLastChunks = ws._chunks || 0;
@@ -1395,6 +1456,7 @@ wss.on('connection', async (ws, req) => {
 
     dispatchReady = true;
     for (const raw of queue.splice(0)) enqueue(raw);
+    sendJson({ type: 'sync-ready' });
 
   } catch (e) {
     sendJson({ type: 'error', msg: '会话建立失败: ' + e.message });

@@ -2,7 +2,7 @@
 
 基于 Chromium 的远程浏览器 DOM 镜像原型。业务页面在服务端执行，客户端接收 DOM/CSS 快照及增量补丁，在本地渲染并回传交互。
 
-当前版本 **0.9.0**，支持 `dom` 和 `frame` 两种模式。旧的 JPEG/WebP/H.264、CanvasKit 通道已经移除，无需 ffmpeg。
+当前版本 **0.10.0**，支持 `dom` 和 `frame` 两种模式。旧的 JPEG/WebP/H.264、CanvasKit 通道已经移除，无需 ffmpeg。
 
 ## 工作方式
 
@@ -63,7 +63,8 @@ ORIGIN_URL=https://your-site.example/ npm start
 | `ORIGIN_PORT` | `8077` | 内置演示源站端口，仅绑定回环；指定外部源站后仍会启动 |
 | `ORIGIN_URL` | `http://127.0.0.1:8077/` | 初始业务页面与静态资源代理基址 |
 | `DEFAULT_MODE` | `dom` | `dom` / `frame`；无效值回退 `dom` |
-| `MAX_SESSIONS` | `3` | 并发会话上限；每会话启动独立 Chromium 实例 |
+| `MAX_SESSIONS` | `3` | 活跃及断线保留会话的总上限；每会话独立 Chromium |
+| `SESSION_GRACE_MS` | `60000` | 服务端检测到断线后的保留时间（毫秒），范围 0–300000；0 表示不保留 |
 | `VIEW_W` / `VIEW_H` | `1280` / `800` | 初始视口，随后以客户端 hello 上报为准 |
 | `OBFUSCATE` | `1` | 有完整字体池时开启；`0` 关闭 |
 | `PROD_PRESENTATION` | `0` | `1` 隐藏演示面板，仅呈现业务页面；不增加安全保护 |
@@ -71,6 +72,24 @@ ORIGIN_URL=https://your-site.example/ npm start
 | `PUPPETEER_EXECUTABLE_PATH` | Puppeteer 管理 | 自定义浏览器可执行文件 |
 
 网关若使用 `x-rbi-origin`，需要配置 `RBI_ALLOWED_ORIGINS`，并在入口剥除访客同名头，只由可信网关注入。头值只用于选取白名单内的 origin，路径不保留。当前 `/m/*` 和部分 URL 重写仍使用固定 `ORIGIN_URL`，多源站资源路由尚不完整；建议每个源站使用独立实例。
+
+## 短时断线恢复
+
+同一页面的 WebSocket 断开后会自动重试，默认保留原 Chromium 60 秒，登录态、路由及服务端已收到的表单草稿随之保留。重连取得原会话后重新发送全量快照，完成同步才开放操作。客户端不会自动重放输入、点击或提交；提交结果不明确时，应先核对业务记录再决定是否重新操作。
+
+恢复凭据只存于当前页面内存，通过 WS 消息传递，不写 URL、Cookie 或 Web Storage。刷新页面、关闭后重新打开、服务重启或 Chromium 退出均不能恢复。同账号多个页面各用独立会话。密码和文件输入值不会在新快照中回填；断线前尚未送达服务端的修改不保证保留。
+
+断线检测依赖 WS close 或服务端心跳（10 秒一次，未响应的下一轮终止连接），实际网络黑洞的发现有延迟；保留计时从服务端确认断线开始。会话过期会冻结页面并显示“重新开始”，必须手动创建新会话。保留中的浏览器仍占资源和 `MAX_SESSIONS` 名额，关闭页面后也要等待保留期回收；协议客户端可用 `release` 主动结束。此功能不提供提交事务确认或持久会话。
+
+隔离回归（镜像须先从当前源码构建；测试专用保留期为 2 秒）：
+
+```bash
+IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
+  BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery \
+  bash tools/verify-docker-vikunja.sh
+```
+
+覆盖 DOM/frame 的登录、路由和草稿恢复、已落库但未显示确认的提交、同账号会话隔离与关闭、过期后显式重新开始。证据不包含恢复凭据或登录密码。
 
 ## 可选字体混淆
 

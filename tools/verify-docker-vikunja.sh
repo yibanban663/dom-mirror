@@ -2,6 +2,8 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 image=${IMAGE:-dom-mirror:local}
+test_script=${BUSINESS_TEST_SCRIPT:-verify-vikunja.cjs}
+[[ "$test_script" == verify-vikunja.cjs || "$test_script" == verify-recovery.cjs ]] || exit 2
 business_image=vikunja/vikunja@sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576
 evidence=${EVIDENCE_DIR:-"$repo/artifacts/vikunja"}
 run_id="dom-mirror-vikunja-$(date +%s)-$$"
@@ -39,7 +41,7 @@ docker image inspect "$image" --format '{{json .Id}}' > "$evidence/mirror-image.
 printf '%s\n' "$business_image" > "$evidence/app-image.txt"
 docker run -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" --memory 2g --cpus 2 -e PROD_PRESENTATION=1 \
-  -e ORIGIN_URL=http://business:3456/ "$image" timeout 330 node server.js >/dev/null
+  -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e ORIGIN_URL=http://business:3456/ "$image" timeout 330 node server.js >/dev/null
 docker exec "$server" node -e '
   (async () => {
     for (let i = 0; i < 40; i++) {
@@ -51,7 +53,7 @@ docker exec "$server" node -e '
 '
 docker run --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" -e BUSINESS_URL=http://business:3456 -e MIRROR_URL=http://mirror:8088/ \
-  -e EVIDENCE_DIR=/tmp/business-evidence -e "CASES=${CASES:-direct,dom,frame}" \
+  -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e EVIDENCE_DIR=/tmp/business-evidence -e "CASES=${CASES:-direct,dom,frame}" \
   -e "DIAGNOSTIC_HOLD_MS=${DIAGNOSTIC_HOLD_MS:-0}" \
-  -v "$repo/tools/verify-vikunja.cjs:/app/tools/verify-vikunja.cjs:ro" --entrypoint timeout \
-  "$image" 270 node tools/verify-vikunja.cjs
+  -v "$repo/tools:/app/tools:ro" --entrypoint timeout \
+  "$image" 270 node "tools/$test_script"

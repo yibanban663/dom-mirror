@@ -71,6 +71,8 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-scroll.sh
       - name: Vikunja 三通道业务回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh
+      - name: Vikunja 短时断线恢复回归
+        run: IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh
       - name: 保存浏览器回归证据
         if: always()
         uses: actions/upload-artifact@v4
@@ -84,6 +86,13 @@ jobs:
         with:
           name: vikunja-regression
           path: artifacts/vikunja/
+          if-no-files-found: warn
+      - name: 保存恢复回归证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-regression
+          path: artifacts/recovery/
           if-no-files-found: warn
       - name: 清理冒烟容器
         if: always()
