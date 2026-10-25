@@ -2,7 +2,7 @@
 
 基于 Chromium 的远程浏览器 DOM 镜像原型。业务页面在服务端执行，客户端接收 DOM/CSS 快照及增量补丁，在本地渲染并回传交互。
 
-当前版本 **0.8.4**，支持 `dom` 和 `frame` 两种模式。旧的 JPEG/WebP/H.264、CanvasKit 通道已经移除，无需 ffmpeg。
+当前版本 **0.9.0**，支持 `dom` 和 `frame` 两种模式。旧的 JPEG/WebP/H.264、CanvasKit 通道已经移除，无需 ffmpeg。
 
 ## 工作方式
 
@@ -113,6 +113,50 @@ mkdir -p assets/obf
 
 本地检查：`npm run check && npm test`。CI 另做 Docker 构建与 HTTP 探活；HTTP 200 只证明壳页面可访问，不能替代真实浏览器会话验收。站点接入需验证登录、输入、导航、滚动、动态样式、断连释放，以及两种通道的截图差异。
 
+## 滚动与首次点击回归
+
+CI 使用同一个隔离 Docker 回归入口：
+
+```bash
+IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
+```
+
+该命令使用 internal 网络，无宿主端口；分别启动服务端与浏览器容器，自动收集结果和日志并清理。默认结果位于 `artifacts/scroll/`，可通过 `EVIDENCE_DIR` 指定目录。镜像需先从当前源码构建。以下是手动运行方式。
+
+`tools/verify-pointer-scroll.cjs` 用真实鼠标分别点击可见按钮、页面底部按钮、内部滚动容器中的按钮；每项只点一次，不等待滚动同步、不重试。仅对测试源站运行。
+
+先按快速开始构建当前镜像，再启动专用测试实例：
+
+```bash
+docker run --rm --name dom-mirror-scroll-test \
+  -p 127.0.0.1:18089:8088 \
+  -e PROD_PRESENTATION=1 \
+  -e ORIGIN_URL=http://127.0.0.1:8077/scroll.html \
+  -v "$PWD/test/fixtures:/app/protected:ro" dom-mirror:local
+```
+
+另一个终端使用已安装依赖和 Chromium 的源码环境执行：
+
+```bash
+MIRROR_URL=http://127.0.0.1:18089/ \
+  EVIDENCE_DIR=/tmp/dom-mirror-scroll-evidence \
+  node tools/verify-pointer-scroll.cjs
+```
+
+失败时返回非零退出码，证据目录保存 `result.json` 及上行 WS 消息。测试结束后停止专用容器。DOM 模式在 pointerdown 前发送即时滚动同步，服务端串行处理后才派发按压；frame 模式仍以服务端滚动状态为准。
+
+## 真实业务回归：Vikunja
+
+使用固定 digest 的 Vikunja v2.7.1、SQLite 和临时合成账号/任务。准备当前源码构建的镜像后运行：
+
+```bash
+IMAGE=dom-mirror:local bash tools/verify-docker-vikunja.sh
+```
+
+该命令建立 internal 网络，无宿主端口，数据库与文件使用 tmpfs。分别验证直连、DOM、frame 的登录、创建任务、修改优先级为 Medium、标记完成；创建和修改同时检查应用 API 持久化及镜像控件状态。账号密码和 token 仅存于测试进程内存。默认证据保存在 `artifacts/vikunja/`，退出时删除测试容器、网络和临时业务数据。失败返回非零。
+
+CI 也自动运行这项业务回归并保存证据。脚本针对这个固定版本的英文 UI；不代表任意站点兼容。完整结果、限制及版本信息见 [业务验收记录](docs/acceptance/vikunja-2026-10-26.md)。后续阶段见 [实施路线图](docs/ROADMAP.md)。
+
 ## 文件
 
 - `server.js`：HTTP/WS、浏览器会话、序列化、补丁及 PNG 差分。
@@ -120,6 +164,6 @@ mkdir -p assets/obf
 - `client/index.html`：镜像渲染、输入回传及演示面板。
 - `protected/index.html`：内置演示源站。
 - `tools/`：字体构建工具。
-- [协议](docs/PROTOCOL.md)、[变更记录](CHANGELOG.md)、[演示说明](README.demo.md)。
+- [实施路线图](docs/ROADMAP.md)、[协议](docs/PROTOCOL.md)、[变更记录](CHANGELOG.md)、[演示说明](README.demo.md)。
 
 代码采用 [Apache-2.0](LICENSE)；内置 Noto Sans SC 字体采用 [SIL OFL 1.1](assets/FONT-OFL-LICENSE.txt)。自备字体需遵循其自身许可。

@@ -8,3 +8,4 @@ ck/
 assets/obf/
 .venv/
 __pycache__/
+artifacts/

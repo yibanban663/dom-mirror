@@ -213,7 +213,9 @@
     while (n && n !== mirrorBody) {
       const p = n.parentNode;
       if (!p) return null;
-      parts.unshift([...p.childNodes].indexOf(n));
+      const index = [...p.children].indexOf(n);
+      if (index < 0) return null;
+      parts.unshift(index);
       n = p;
     }
     return n === mirrorBody ? parts.join('/') : null;
@@ -222,7 +224,7 @@
     if (!mirrorBody) return null;
     if (path === '' || path === undefined) return mirrorBody;
     let n = mirrorBody;
-    for (const i of String(path).split('/')) { n = n.childNodes[+i]; if (!n) return null; }
+    for (const i of String(path).split('/')) { n = n.children[+i]; if (!n) return null; }
     return n;
   }
   function buildMirror(css, html, docClass, docAttrs) {
@@ -297,13 +299,27 @@
           const r = (t && t.getBoundingClientRect) ? t.getBoundingClientRect() : null;
           return (p !== null && r) ? { path: p, x: r.left, y: r.top } : null;
         };
+        const syncPointerScroll = (target) => {
+          if (frameMode) return; // frame 的滚动以服务端画面为准
+          const ms = document.getElementById('mirrorScroll');
+          const inner = [];
+          for (let el = target.parentElement; el && el !== mirrorBody; el = el.parentElement) {
+            if (el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth) continue;
+            const path = pathOfMirror(el);
+            if (path !== null) inner.push([path, Math.round(el.scrollTop), Math.round(el.scrollLeft)]);
+          }
+          // scroll 事件可能晚于 pointerdown；先发当前实际位置，服务端串行队列
+          // 会先完成滚动，再测量锚点并派发按压，避免首击落在旧视口之外。
+          send({ type: 'scroll', x: ms ? Math.round(ms.scrollLeft) : 0, y: ms ? Math.round(ms.scrollTop) : 0, inner });
+        };
         mirrorRoot.addEventListener('pointerdown', (e) => {
           if (e.button !== 0 || !e.isPrimary) return;
-          window.__xyDrag = anchorOf(e.target);
           // 客户端输入框聚焦：pointer 事件不触发原生聚焦（mousedown 被吞时），
           // 键盘输入需要客户端焦点
           const t = e.target;
-          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) { try { t.focus(); } catch (e2) {} }
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) { try { t.focus({ preventScroll: true }); } catch (e2) {} }
+          syncPointerScroll(t);
+          window.__xyDrag = anchorOf(t);
           const a = window.__xyDrag;
           send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { apath: a.path, ax: a.x, ay: a.y } : {}));
         }, true);

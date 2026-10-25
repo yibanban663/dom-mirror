@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.8.4）
+# WebSocket 协议（实现版本 0.9.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
 
@@ -40,7 +40,11 @@ frame 是画面底板，客户端仍构建镜像 DOM。字段尚在演进，消�
 
 ## 路径与同步
 
-path 是以业务 body 为根的 childNodes 索引串，如 `3/5/1`，空串代表 body。编号跳过注释与 SCRIPT/NOSCRIPT/TEMPLATE，双方必须保持相同过滤规则。canvas 会替换为 img，仍占同一个节点位置。
+path 是以业务 body 为根的元素索引串，如 `3/5/1`，空串代表 body。服务端按 children 编号并跳过 SCRIPT/NOSCRIPT/TEMPLATE；客户端按镜像 children 编号。文本节点和注释不参与编号，避免 Vue 等框架生成的空文本、相邻文本在 HTML 重解析后改变路径。canvas 替换为 img，仍占同一个元素位置。
+
+**0.9.0 的路径语义与 0.8.x childNodes 路径不兼容。必须一起升级服务端与客户端，并重新建立会话；不支持混用旧客户端或复用旧路径。**
+
+DOM 客户端在 pointerdown 之前发送 `scroll`，包括页面位置和目标祖先内部容器位置。服务端按接收顺序串行处理命令，先完成滚动再测量锚点并派发 mouse down；不能依赖浏览器异步 scroll 事件先于 pointerdown 到达。frame 保持服务端滚动为准。
 
 结构变化合并后发送子树补丁；客户端路径失配请求全量快照。重同步、导航和输入可能存在竞态，协议不提供事务序号、确认重传或跨断连恢复；重新连接会创建新浏览器会话。
 

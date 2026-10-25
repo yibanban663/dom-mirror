@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Pointer scroll regression</title>
+<style>
+  body { margin: 0; padding: 20px; font: 16px sans-serif; }
+  button { padding: 12px; }
+  #inner { height: 180px; overflow: auto; border: 1px solid; }
+  #inner-content { height: 1300px; padding: 10px; }
+  #inner-button { margin-top: 1100px; }
+  #gap { height: 1200px; }
+</style>
+<body>
+<!-- Framework placeholder before interactive nodes. -->
+<button id="visible-button">Visible <span id="visible-count">0</span></button>
+<select id="state-select"><option value="0">Unset</option><option value="1">Low</option><option value="2">Medium</option></select>
+<!---->
+<script>window.scrollFixtureReady = true;</script>
+<div id="inner"><div id="inner-content">
+  <!-- Nested framework placeholder. -->
+  <button id="inner-button">Inner <span id="inner-count">0</span></button>
+</div></div>
+<div id="gap"></div>
+<button id="outer-button">Outer <span id="outer-count">0</span></button>
+<script>
+  document.getElementById('state-select').value = '1';
+  for (const id of ['visible-button', 'inner-button', 'outer-button']) {
+    const button = document.getElementById(id);
+    for (const text of ['', ' ', ' ']) button.before(document.createTextNode(text));
+  }
+  for (const kind of ['visible', 'inner', 'outer']) {
+    document.getElementById(kind + '-button').addEventListener('click', () => {
+      const counter = document.getElementById(kind + '-count');
+      counter.textContent = String(Number(counter.textContent) + 1);
+      if (kind === 'visible') {
+        const select = document.getElementById('state-select');
+        select.value = '2';
+        select.setAttribute('data-updated', '1');
+      }
+    });
+  }
+</script>
+</body>
+</html>

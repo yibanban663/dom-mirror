@@ -5,3 +5,4 @@ node_modules
 *.tgz
 *.log
 .env
+artifacts

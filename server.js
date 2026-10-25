@@ -43,7 +43,7 @@ const CHROME_ARGS = [
 ];
 
 // ---------- DOM 镜像：注入到受保护页面的辅助函数 ----------
-// 序列化 = 剥离 script/事件属性 + canvas→位图兜底 + 静态资源 URL 重写(/m 代理) ；路径 = 基于 body 的 childNodes 索引
+// 序列化 = 剥离 script/事件属性 + canvas→位图兜底 + 静态资源 URL 重写(/m 代理) ；路径 = 基于 body 的元素 children 索引
 const PAGE_HELPERS = `(() => {
   // 滚动同步钩子（v3 事件驱动，替代帧差分通道）：页面/内部容器的任何滚动
   // 都以 80ms 节流上报（capture 能收到不冒泡的内层滚动）。必须放在 __xy 守卫
@@ -96,6 +96,17 @@ const PAGE_HELPERS = `(() => {
   }
   function sanitizeClone(root) {
     const clone = root.cloneNode(true);
+    // 注释不参与元素路径，直接删除，避免下发非展示内容。
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_COMMENT);
+    const comments = [];
+    while (walker.nextNode()) comments.push(walker.currentNode);
+    comments.forEach(node => node.remove());
+    // selected 是运行时属性，innerHTML 不会自动带上；显式写回选中状态。
+    const liveSelects = root.tagName === 'SELECT' ? [root] : [...root.querySelectorAll('select')];
+    const cloneSelects = clone.tagName === 'SELECT' ? [clone] : [...clone.querySelectorAll('select')];
+    cloneSelects.forEach((select, i) => {
+      [...select.options].forEach((option, j) => option.toggleAttribute('selected', liveSelects[i].options[j].selected));
+    });
     const strip = (el) => {
       for (const a of [...el.attributes]) {
         if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction') { el.removeAttribute(a.name); continue; }
@@ -145,24 +156,18 @@ const PAGE_HELPERS = `(() => {
     });
     return clone;
   }
-  // 路径编号与镜像树对齐：script/noscript/template 在克隆里被删除，
-  // live 编号必须同样跳过，否则内容前有内联脚本的站点补丁路径全部错位
+  // 只按元素编号：HTML 重解析会丢弃空文本、合并相邻文本，不能使用 childNodes。
   const XY_SKIP = new Set(['SCRIPT', 'NOSCRIPT', 'TEMPLATE']);
+  const pathChildren = (node) => [...node.children].filter(c => !XY_SKIP.has(c.tagName.toUpperCase()));
   function pathOf(node) {
     const parts = [];
     let n = node;
     while (n && n !== document.body) {
-      const p = n.parentNode;
+      const p = n.parentElement;
       if (!p) return null;
-      let idx = 0, hit = false;
-      for (const c of p.childNodes) {
-        if (c === n) { hit = true; break; }
-        // 注释在镜像里被剥除（零明文），live 编号必须同样跳过
-        if (c.nodeType === 8) continue;
-        if (!(c.nodeType === 1 && XY_SKIP.has(c.tagName))) idx++;
-      }
-      if (!hit) return null;
-      parts.unshift(idx);
+      const index = pathChildren(p).indexOf(n);
+      if (index < 0) return null;
+      parts.unshift(index);
       n = p;
     }
     return n === document.body ? parts.join('/') : null;
@@ -189,14 +194,7 @@ const PAGE_HELPERS = `(() => {
       if (path === '') return document.body;
       let n = document.body;
       for (const i of path.split('/')) {
-        let k = +i, m = null;
-        for (const c of n.childNodes) {
-          if (c.nodeType === 8) continue; // 注释已从镜像剥除，编号跳过
-          if (c.nodeType === 1 && XY_SKIP.has(c.tagName)) continue;
-          if (k === 0) { m = c; break; }
-          k--;
-        }
-        n = m;
+        n = pathChildren(n)[+i];
         if (!n) return null;
       }
       return n;

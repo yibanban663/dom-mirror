@@ -23,6 +23,7 @@ COPY client ./client
 COPY protected ./protected
 COPY assets ./assets
 COPY tools ./tools
+COPY test/fixtures ./test/fixtures
 
 RUN npm ci --omit=dev \
  && node -e "(async () => {const p=require('puppeteer');require('fs').accessSync(await p.executablePath());require('ws');const s=require('sharp');console.log('deps ok, sharp', s.versions.vips)})().catch(e => {console.error(e.message);process.exit(1)})"

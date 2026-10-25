@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const root = path.join(__dirname, '..');
 
-for (const name of ['client/index.html', 'protected/index.html']) {
+for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/scroll.html']) {
   const html = fs.readFileSync(path.join(root, name), 'utf8');
   for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
     new vm.Script(match[1], { filename: name });
