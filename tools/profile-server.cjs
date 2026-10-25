@@ -44,7 +44,7 @@ if (patchDelay !== 60) replace('            }, 60);', '            }, ' + patchD
 new vm.Script(source, { filename });
 if (process.argv.includes('--check')) {
   const start = source.indexOf('const PAGE_HELPERS = '), end = source.indexOf('\n// ---------- 静态文件', start);
-  const helpers = vm.runInNewContext(source.slice(start, end) + '\nPAGE_HELPERS;', { ORIGIN_BASE: new URL('http://127.0.0.1:8077/') });
+  const helpers = vm.runInNewContext(source.slice(start, end) + '\nPAGE_HELPERS;', { ORIGIN_BASE: new URL('http://127.0.0.1:8077/'), config: { redactAttributes: [] } });
   new vm.Script(helpers);
   console.log('Profile instrumentation anchors and injected script compile');
 } else {
@@ -52,4 +52,8 @@ if (process.argv.includes('--check')) {
   mod.filename = filename;
   mod.paths = Module._nodeModulePaths(path.dirname(filename));
   mod._compile(source, filename);
+  require('../demo/server').startDemo(mod.exports.createMirror).catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

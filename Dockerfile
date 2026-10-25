@@ -17,7 +17,8 @@ ENV NODE_PATH=/home/pptruser/node_modules \
     PUPPETEER_SKIP_DOWNLOAD=true
 
 WORKDIR /app
-COPY server.js package.json package-lock.json ./
+COPY index.js index.d.ts server.js package.json package-lock.json ./
+COPY demo ./demo
 COPY lib ./lib
 COPY client ./client
 COPY protected ./protected
@@ -29,4 +30,4 @@ RUN npm ci --omit=dev \
  && node -e "(async () => {const p=require('puppeteer');require('fs').accessSync(await p.executablePath());require('ws');const s=require('sharp');console.log('deps ok, sharp', s.versions.vips)})().catch(e => {console.error(e.message);process.exit(1)})"
 
 EXPOSE 8088
-CMD ["node", "server.js"]
+CMD ["node", "demo/server.js"]

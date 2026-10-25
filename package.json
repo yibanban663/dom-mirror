@@ -1,14 +1,18 @@
 {
   "name": "@lizhen-xxaq/dom-mirror",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "Remote browser DOM/CSS mirroring with a PNG frame fallback and optional font obfuscation.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/lizhen-xxaq/dom-mirror.git"
   },
-  "main": "server.js",
+  "main": "index.js",
   "files": [
+    "index.js",
+    "index.d.ts",
+    "demo/",
+    "README.demo.md",
     "server.js",
     "client/",
     "protected/",
@@ -16,10 +20,12 @@
     "docs/",
     "test/fixtures/",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "lib/",
     "tools/",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "examples/"
   ],
   "keywords": [
     "remote-browser-isolation",
@@ -31,9 +37,10 @@
     "puppeteer"
   ],
   "scripts": {
-    "start": "node server.js",
-    "check": "node --check server.js && node --check lib/policy.js && node tools/check.js",
-    "test": "node --test"
+    "start": "node demo/server.js",
+    "check": "node --check index.js && node --check server.js && node --check demo/server.js && node --check lib/options.js && node --check lib/static.js && node --check lib/timers.js && node --check lib/policy.js && node tools/check.js",
+    "test": "node --test",
+    "demo": "node demo/server.js"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -45,5 +52,6 @@
     "puppeteer": "25.16.0",
     "sharp": "0.35.5",
     "ws": "8.22.0"
-  }
+  },
+  "types": "index.d.ts"
 }

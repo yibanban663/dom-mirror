@@ -55,7 +55,7 @@
   </div>
 
   <div class="panel">
-    <h2>近 14 日订单趋势（Canvas 绘制，无任何图表库外发）</h2>
+    <h2>近 14 日订单趋势（Canvas 演示）</h2>
     <canvas id="chart" width="1160" height="180"></canvas>
   </div>
 
@@ -75,11 +75,11 @@
         <thead><tr><th>客户姓名</th><th>手机号</th><th>套餐</th><th>账户余额</th><th>风险评分</th><th>状态</th></tr></thead>
         <tbody id="tbody"></tbody>
       </table>
-      <p style="color:#a0aec0;font-size:12px;margin-top:8px">共 <span id="cnt">0</span> 条 · 数据为演示伪造，仅存在于服务端</p>
+      <p style="color:#a0aec0;font-size:12px;margin-top:8px">共 <span id="cnt">0</span> 条 · 合成演示数据；展示字段会下发客户端</p>
     </div>
 
     <div class="panel calc">
-      <h2>续约报价计算器（业务逻辑，永不外发）</h2>
+      <h2>续约报价计算器（服务端计算）</h2>
       <label>月租（元）</label>
       <input id="rent" type="number" value="199" />
       <label>合约期（月）</label>
@@ -98,7 +98,7 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
-<footer>内网演示源站 · 只应经由 RBI 帧流访问 · 直接暴露即违规</footer>
+<footer>dom-mirror 演示源站 · 仅含合成数据 · 非生产业务系统</footer>
 
 <script>
 // 【演示要点】下面这串"签名密钥"代表页面里的敏感逻辑/凭据。
@@ -146,7 +146,7 @@ document.getElementById('q').addEventListener('input', render);
 document.getElementById('risk').addEventListener('change', render);
 render();
 
-// 报价计算：业务规则留在服务端，客户端只有像素
+// 报价在源站执行，结果经镜像下发客户端
 const GRADE_RATE = { A: 0.9, B: 0.95, C: 1.0 };
 function calc() {
   const rent = parseFloat(document.getElementById('rent').value) || 0;

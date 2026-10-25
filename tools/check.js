@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const root = path.join(__dirname, '..');
 
-for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/scroll.html']) {
+for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/scroll.html', 'test/fixtures/data-boundary.html']) {
   const html = fs.readFileSync(path.join(root, name), 'utf8');
   for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
     new vm.Script(match[1], { filename: name });
@@ -18,7 +18,7 @@ const start = server.indexOf('const PAGE_HELPERS = ');
 const end = server.indexOf('\n// ---------- 静态文件', start);
 if (start < 0 || end < 0) throw new Error('PAGE_HELPERS not found');
 const helpers = vm.runInNewContext(server.slice(start, end) + '\nPAGE_HELPERS;', {
-  ORIGIN_BASE: new URL('http://127.0.0.1:8077/'),
+  ORIGIN_BASE: new URL('http://127.0.0.1:8077/'), config: { redactAttributes: [] },
 });
 new vm.Script(helpers, { filename: 'PAGE_HELPERS' });
 console.log('Client, demo and injected scripts compile');

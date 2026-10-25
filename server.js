@@ -1,49 +1,57 @@
 'use strict';
 /**
- * dom-mirror RBI 服务端 —— DOM 镜像引擎
+ * dom-mirror 可嵌入 DOM 镜像引擎。进程、端口与 Demo 由宿主管理。
  *
  * 两种模式（客户端可运行时切换）：
  *  - dom   : 真文本 DOM 镜像（默认）——服务端序列化 DOM+CSS，客户端原生渲染
  *            （布局/CSS 动画/悬停/输入全部本地 60fps），增量补丁事件驱动，
- *            静止页零流量；防抓取由字体混淆编码层承担（PUA 双映射）
+ *            结构补丁事件驱动；可选字体混淆（PUA 双映射）
  *  - frame : 像素直出兜底——合成器帧驱动差分，整页 PNG 条带下发（无视频编解码）
  *
- * 链路：客户端浏览器 <--WS--> 本服务 --CDP--> 无头Chromium --HTTP--> 受保护源站(仅回环)
+ * 链路：客户端浏览器 <--WS--> 宿主接入 --CDP--> 无头Chromium --HTTP--> 配置源站
  */
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer').default;
 const { assetUrl, selectOrigin } = require('./lib/policy');
 const { SessionStore } = require('./lib/sessions');
 const { frameCropInput } = require('./lib/frame-codec');
 
-const DEMO_PORT = parseInt(process.env.DEMO_PORT || '8088', 10);
-const ORIGIN_PORT = parseInt(process.env.ORIGIN_PORT || '8077', 10);
-const VIEW_W = parseInt(process.env.VIEW_W || '1280', 10);
-const VIEW_H = parseInt(process.env.VIEW_H || '800', 10);
-const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '3', 10);
-const SESSION_GRACE_MS = Math.max(0, Math.min(300000, Number(process.env.SESSION_GRACE_MS ?? 60000) || 0));
-const ORIGIN_URL = process.env.ORIGIN_URL || `http://127.0.0.1:${ORIGIN_PORT}/`;
+const { normalizeOptions } = require('./lib/options');
+const { createStaticFiles } = require('./lib/static');
+const { createTimers } = require('./lib/timers');
+
+function createMirror(options) {
+const config = normalizeOptions(options);
+const {
+  originUrl: ORIGIN_URL, width: VIEW_W, height: VIEW_H,
+  maxSessions: MAX_SESSIONS, sessionGraceMs: SESSION_GRACE_MS,
+  allowedOrigins: ALLOWED_ORIGINS, defaultMode: DEFAULT_MODE,
+} = config;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
-const ALLOWED_ORIGINS = (process.env.RBI_ALLOWED_ORIGINS || '').split(',').filter(Boolean).map(v => new URL(v.trim()).origin);
-let sharp = null; try { sharp = require('sharp'); } catch (e) { console.log('[sharp ] unavailable:', e.message); }
-const DEFAULT_MODE = ['dom', 'frame'].includes(process.env.DEFAULT_MODE) ? process.env.DEFAULT_MODE : 'dom';
+const logger = config.logger;
+let sharp = null; try { sharp = require('sharp'); } catch (e) { logger.log('[sharp ] unavailable:', e.message); }
 const CHROME_ARGS = [
   '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
   '--disable-gpu', '--hide-scrollbars', '--mute-audio',
   '--force-color-profile=srgb', '--font-render-hinting=none',
-  // 禁渲染节流：headless/不可见标签下 rAF 与定时器被节流会冻结 canvas 动画
-  // （实测烽火台球体 96 帧零变化、内容 3.6s 空白——真实前台浏览器无此问题，
-  // 但服务端渲染必须强制活跃）
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
   '--disable-features=CalculateNativeWinOcclusion',
 ];
+let closed = false;
+let closePromise;
+const sessionTasks = new Set();
+const cleanups = new Set();
+const requests = new Set();
+function trackRequest(req) {
+  requests.add(req);
+  req.once('close', () => requests.delete(req));
+  return req;
+}
 
 // ---------- DOM 镜像：注入到受保护页面的辅助函数 ----------
 // 序列化 = 剥离 script/事件属性 + canvas→位图兜底 + 静态资源 URL 重写(/m 代理) ；路径 = 基于 body 的元素 children 索引
@@ -97,6 +105,22 @@ const PAGE_HELPERS = `(() => {
     }
     return hit ? out : s;
   }
+  const REDACT_ATTRIBUTES = new Set(${JSON.stringify(config.redactAttributes)});
+  function stripAttributes(el) {
+    for (const a of [...el.attributes]) {
+      if (REDACT_ATTRIBUTES.has(a.name.toLowerCase())) { el.removeAttribute(a.name); continue; }
+      if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction') { el.removeAttribute(a.name); continue; }
+      // 零明文收口：aria-*/title/alt 是纯文本载体（无视觉作用），一并剥离
+      if (/^(aria-(label|placeholder|description|roledescription|valuetext)|title|alt)$/i.test(a.name)) { el.removeAttribute(a.name); continue; }
+      if (a.name === 'placeholder' && window.__xyObfMap && a.value) {
+        try { el.setAttribute('placeholder', encStr(a.value)); } catch (e) {}
+        continue;
+      }
+      if (a.name === 'href' || a.name === 'src' || a.name === 'action' || a.name === 'poster' || a.name === 'srcset') {
+        try { el.setAttribute(a.name, fixUrl(a.value)); } catch (e) {}
+      }
+    }
+  }
   function sanitizeClone(root) {
     const clone = root.cloneNode(true);
     // 注释不参与元素路径，直接删除，避免下发非展示内容。
@@ -115,29 +139,15 @@ const PAGE_HELPERS = `(() => {
     controls(clone).forEach((control, i) => {
       const live = liveControls[i];
       if (control.tagName === 'TEXTAREA') { control.textContent = live.value; return; }
-      if (control.type === 'password' || control.type === 'file') { control.removeAttribute('value'); return; }
+      if (['hidden', 'password', 'file'].includes(control.type)) { control.removeAttribute('value'); return; }
       if (control.type !== 'hidden') control.setAttribute('value', live.value);
       if (control.type === 'checkbox' || control.type === 'radio') control.toggleAttribute('checked', live.checked);
     });
-    const strip = (el) => {
-      for (const a of [...el.attributes]) {
-        if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction') { el.removeAttribute(a.name); continue; }
-        // 零明文收口：aria-*/title/alt 是纯文本载体（无视觉作用），一并剥离
-        if (/^(aria-(label|placeholder|description|roledescription|valuetext)|title|alt)$/i.test(a.name)) { el.removeAttribute(a.name); continue; }
-        if (a.name === 'placeholder' && window.__xyObfMap && a.value) {
-          try { el.setAttribute('placeholder', encStr(a.value)); } catch (e) {}
-          continue;
-        }
-        if (a.name === 'href' || a.name === 'src' || a.name === 'action' || a.name === 'poster' || a.name === 'srcset') {
-          try { el.setAttribute(a.name, fixUrl(a.value)); } catch (e) {}
-        }
-      }
-    };
     if (clone.querySelectorAll) {
       clone.querySelectorAll('script,noscript,template').forEach(n => n.remove());
-      clone.querySelectorAll('*').forEach(strip);
+      clone.querySelectorAll('*').forEach(stripAttributes);
     }
-    if (clone.nodeType === 1) strip(clone);
+    if (clone.nodeType === 1) stripAttributes(clone);
     // 文本节点编码。TEXTAREA 跳过：输入框值是明文（客户端原样回传源站，编码会污染
     // 输入链路），靠字体端原码点保留渲染照常；STYLE 跳过：CSS 不可编码。
     if (window.__xyObfMap) {
@@ -229,7 +239,9 @@ const PAGE_HELPERS = `(() => {
       let docClass = '', docAttrs = '';
       for (const root of [document.documentElement, document.body]) {
         if (!root) continue;
-        for (const a of root.attributes || []) {
+        const safeRoot = root.cloneNode(false);
+        stripAttributes(safeRoot);
+        for (const a of safeRoot.attributes || []) {
           if (/^on/i.test(a.name) || a.name === 'style' || a.name === 'id') continue;
           if (a.name === 'class') { docClass += ' ' + a.value; continue; }
           docAttrs += ' ' + a.name + '="' + String(a.value).replace(/"/g, '&quot;') + '"';
@@ -277,7 +289,7 @@ const PAGE_HELPERS = `(() => {
         // "翻转→全量重同步→再翻转" 的重建风暴（实测内页每秒多次全量快照，
         // 重建窗口吞点击、打断输入）。
         if (target && record.type === 'attributes' && record.attributeName === 'class') {
-          return { docClass: target.className };
+          return { docClass: REDACT_ATTRIBUTES.has('class') ? '' : target.className };
         }
         return { full: true, why: record.type + ':docEl:' + (record.attributeName || '') + ':' + (target && target.nodeName) };
       }
@@ -309,56 +321,20 @@ const PAGE_HELPERS = `(() => {
 })();`;
 
 // ---------- 静态文件 ----------
-const MIME = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
-  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2',
-};
-// 发送静态文件：按 Accept-Encoding 协商 gzip（引擎 wasm/字体/JS 体积大头，实测 wasm 7MB→2.5MB），
-// 压缩结果按路径缓存（容器内文件不可变）；图片本身已压缩不再 gzip
-const gzCache = new Map();
-function sendFile(req, res, file, ctype, cacheCtl) {
-  fs.readFile(file, (err, buf) => {
-    if (err) { res.writeHead(404); res.end(); return; }
-    const accept = req.headers['accept-encoding'] || '';
-    const canGz = accept.includes('gzip') && buf.length > 1024 && !/image\/(png|jpeg|webp)|font\/woff2/.test(ctype);
-    let entry = gzCache.get(file);
-    if (!entry) { entry = {}; gzCache.set(file, entry); }
-    let out = buf, enc;
-    if (canGz) {
-      if (!entry.gz || entry.rawLen !== buf.length) { entry.rawLen = buf.length; entry.gz = zlib.gzipSync(buf, { level: 6 }); }
-      out = entry.gz; enc = 'gzip';
-    }
-    const h = { 'Content-Type': ctype, 'Cache-Control': cacheCtl, 'Content-Length': out.length };
-    if (enc) h['Content-Encoding'] = enc;
-    res.writeHead(200, h);
-    res.end(out);
-  });
-}
-function staticHandler(root) {
-  return (req, res) => {
-    let p;
-    try { p = decodeURIComponent((req.url || '/').split('?')[0]); }
-    catch { res.writeHead(400); res.end('bad url'); return; }
-    if (p === '/') p = '/index.html';
-    const file = path.join(root, path.normalize(p).replace(/^([/\\])+/, ''));
-    if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
-    sendFile(req, res, file, MIME[path.extname(file)] || 'application/octet-stream',
-      p === '/index.html' ? 'no-store' : 'public, max-age=3600');
-  };
-}
+const { sendFile, staticHandler, clear: clearStaticFiles } = createStaticFiles();
 
 // ---------- Chromium：每会话独立实例 ----------
 // 共享单例下多标签并发截图会间歇产出错位/幽灵瓦片（像素级实测：瓦片内容与坐标
-// 张冠李戴）。独立实例彻底隔离，8 会话上限下内存可承受。
+// 张冠李戴）。使用独立实例；实际容量由宿主按业务测量。
 async function launchSessionBrowser() {
   const b = await puppeteer.launch({
     headless: true,
     args: CHROME_ARGS,
     defaultViewport: { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 },
+    ...config.launchOptions,
   });
-  b.on('disconnected', () => console.log('[chrome] session browser disconnected'));
-  console.log('[chrome] per-session launched:', await b.version());
+  b.on('disconnected', () => logger.log('[chrome] session browser disconnected'));
+  logger.log('[chrome] per-session launched:', await b.version());
   return b;
 }
 
@@ -369,14 +345,14 @@ const KEYMAP = {
 };
 
 // ---------- HTTP + WS ----------
-// /m/* —— 镜像静态资源代理（CSS/字体/图片回源拉取，仅表现层资源，无数据）
+// /m/* —— 扩展名及响应类型受限的静态资源代理，不解析或剔除资源内数据。
 const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? require('https') : require('http');
 function proxyAsset(req, res) {
   // 白名单：只代理表现层静态资源（CSS url() 引用的图片/字体等）。
   // 不加白名单时 GET /m/ 可直接拉到源站整页明文（含页面内密钥）——击穿"数据不出站"
   const u = assetUrl(req.url.slice(2), ORIGIN_BASE);
   if (!u) { res.writeHead(403); res.end('asset allowlist'); return; }
-  const upstream = httpOrigin.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
+  const upstream = trackRequest(httpOrigin.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
     const ct = (up.headers['content-type'] || '').toLowerCase();
     if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300 || /text\/html|json|javascript|xml/.test(ct)) {
       up.resume();
@@ -390,7 +366,7 @@ function proxyAsset(req, res) {
     });
     up.on('error', () => res.destroy());
     up.pipe(res);
-  });
+  }));
   upstream.setTimeout(12000, () => upstream.destroy(new Error('asset timeout')));
   upstream.on('error', () => {
     if (res.headersSent) { res.destroy(); return; }
@@ -405,7 +381,7 @@ function proxyAsset(req, res) {
 // 域=CJK 标点(3000-303F)+基本区(4E00-9FFF)+全角(FF00-FFEF)。
 // 字体由 tools/build_obf_font.py 在构建期烘焙（种子池 assets/obf/），会话创建即生效
 // （零预热）；种子池可扩容，动态按会话构建走同脚本（python3-fonttools）。
-const OBF_ON = process.env.OBFUSCATE !== '0';
+const OBF_ON = config.obfuscate;
 const OBF_POOL_DIR = path.join(__dirname, 'assets', 'obf');
 const OBF_FAMILIES = ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans SC'];
 const obfPool = [];
@@ -417,8 +393,8 @@ try {
     for (const k of Object.keys(permRaw)) plain[parseInt(k, 16)] = parseInt(permRaw[k], 16);
     obfPool.push({ seed, plain, permJson: path.join(OBF_POOL_DIR, f), reg: path.join(OBF_POOL_DIR, f.replace('.json', '.woff2')), bold: path.join(OBF_POOL_DIR, 'bold-s' + seed + '.woff2') });
   }
-  console.log(`[obf   ] pool: ${obfPool.length} seeds ${OBF_ON ? 'ON' : 'OFF'}${obfPool.length ? '' : '（assets/obf 缺失）'}`);
-} catch (e) { console.log('[obf   ] pool unavailable:', e.message); }
+  logger.log(`[obf   ] pool: ${obfPool.length} seeds ${OBF_ON ? 'ON' : 'OFF'}${obfPool.length ? '' : '（assets/obf 缺失）'}`);
+} catch (e) { logger.log('[obf   ] pool unavailable:', e.message); }
 let obfRR = 0;
 const obfSessions = new Map();   // sid -> pool entry（含 .siteFonts 网站字体孪生）
 const obfFontCache = new Map();  // 文件路径 -> Buffer（LRU≤8，~3-8MB/项）
@@ -428,13 +404,13 @@ const obfHttp = ORIGIN_BASE.protocol === 'https:' ? require('https') : require('
 function obfFetchFont(url, timeoutMs = 12000) {
   return new Promise((resolve) => {
     try {
-      const req = obfHttp.get(url, { timeout: timeoutMs }, (r) => {
+      const req = trackRequest(obfHttp.get(url, { timeout: timeoutMs }, (r) => {
         if ((r.statusCode || 0) >= 400) { r.resume(); resolve(null); return; }
         const chunks = [];
         r.on('data', (c) => chunks.push(c));
         r.on('end', () => resolve(Buffer.concat(chunks)));
         r.on('error', () => resolve(null));
-      });
+      }));
       req.on('error', () => resolve(null));
       req.on('timeout', () => { req.destroy(); resolve(null); });
     } catch (e) { resolve(null); }
@@ -456,7 +432,7 @@ async function buildObfTwin(ent, url) {
   const out = `/tmp/obf-twin-${h}.woff2`;
   require('fs').writeFileSync(src, buf);
   const r = await execFileP('python3', [path.join(__dirname, 'tools', 'build_obf_twins.py'), src, ent.permJson, out]);
-  if (!r.ok || !fs.existsSync(out)) { console.log('[obf   ] twin build fail:', url.slice(-40), r.stdout.slice(0, 80)); return null; }
+  if (!r.ok || !fs.existsSync(out)) { logger.log('[obf   ] twin build fail:', url.slice(-40), r.stdout.slice(0, 80)); return null; }
   const outBuf = fs.readFileSync(out);
   if (obfTwinCache.size >= 12) obfTwinCache.delete(obfTwinCache.keys().next().value);
   obfTwinCache.set(key, outBuf);
@@ -500,7 +476,8 @@ function obfFacesCss(sid, fams) {
     + '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/bold.woff2) format("woff2");font-weight:700;font-display:block;unicode-range:U+F0000-10FFFF}').join('');
 }
 
-const demoSrv = http.createServer((req, res) => {
+function handleRequest(req, res) {
+  if (closed) { res.writeHead(503); res.end('mirror closed'); return; }
   if (req.url && req.url.startsWith('/m/obf/')) {
     // 会话混淆字体（池内种子轮换；URL 含会话 id，跨会话不可互换）。
     // site-<i> = 网站自有字体的 PUA 孪生（艺术字逐位还原）
@@ -538,21 +515,33 @@ const demoSrv = http.createServer((req, res) => {
     return;
   }
   return staticHandler(path.join(__dirname, 'client'))(req, res);
-});
+}
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
-demoSrv.on('upgrade', (req, socket, head) => {
+const identities = new WeakMap();
+function handleUpgrade(req, socket, head) {
+  if (closed) { socket.destroy(); return; }
   let pathname = '';
   try { pathname = new URL(req.url, 'http://x').pathname; }
   catch { socket.destroy(); return; }
   if (pathname !== '/ws') { socket.destroy(); return; }
+  if (config.getSessionIdentity) {
+    try {
+      const identity = config.getSessionIdentity(req);
+      if (identity && typeof identity.then === 'function') {
+        Promise.resolve(identity).catch(() => {});
+        throw new TypeError('getSessionIdentity must be synchronous');
+      }
+      if (typeof identity !== 'string' || !identity.trim()) throw new TypeError('missing session identity');
+      identities.set(req, identity);
+    } catch {
+      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+  }
   try { req.rbiOrigin = selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, ALLOWED_ORIGINS); }
   catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-});
-demoSrv.listen(DEMO_PORT, '0.0.0.0', () => console.log(`[demo  ] listening on 0.0.0.0:${DEMO_PORT}`));
-
-http.createServer(staticHandler(path.join(__dirname, 'protected')))
-  .listen(ORIGIN_PORT, '127.0.0.1', () => console.log(`[origin] protected site on 127.0.0.1:${ORIGIN_PORT} (loopback only)`));
+}
 
 // ---------- 会话 ----------
 const sessionStore = new SessionStore({ limit: MAX_SESSIONS, graceMs: SESSION_GRACE_MS });
@@ -577,7 +566,7 @@ wss.on('connection', (socket, req) => {
     let hello;
     try { hello = JSON.parse(raw.toString()); } catch { reject('INVALID_HANDSHAKE'); return; }
     if (!hello || hello.type !== 'hello') { reject('INVALID_HANDSHAKE'); return; }
-    const scope = JSON.stringify([req.rbiOrigin || ORIGIN_URL, req.headers.origin || '']);
+    const scope = JSON.stringify([req.rbiOrigin || ORIGIN_URL, req.headers.origin || '', identities.get(req) ?? null]);
     let claimed;
     try { claimed = sessionStore.claim(hello.resume, scope, socket); }
     catch (error) { reject(error.message); return; }
@@ -588,9 +577,16 @@ wss.on('connection', (socket, req) => {
     if (resumed) session.emit('resume');
   });
 });
-wss.on('session', async (ws, req) => {
+wss.on('session', (ws, req) => {
+  const task = runSession(ws, req);
+  sessionTasks.add(task);
+  task.finally(() => sessionTasks.delete(task)).catch(error => logger.log('[sess  ] setup failed:', error.message));
+});
+async function runSession(ws, req) {
+  const timers = createTimers();
+  const { setTimeout, clearTimeout, setInterval, clearInterval } = timers;
   sessions++;
-  console.log(`[sess  ] open (${sessions}/${MAX_SESSIONS})`);
+  logger.log(`[sess  ] open (${sessions}/${MAX_SESSIONS})`);
 
   let page = null, cdp = null, mode = DEFAULT_MODE;
   let sessionBrowser = null;
@@ -604,29 +600,31 @@ wss.on('session', async (ws, req) => {
   let dead = false;
   let helloIv = null;
   let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
-  const cleanup = async () => {
-    if (dead) return;
+  let cleanupPromise;
+  let cancelHello = () => {};
+  const cleanup = () => {
+    if (cleanupPromise) return cleanupPromise;
     dead = true;
-    sessions--;
-    if (obfSess) obfSessions.delete(obfSess.sid);
-    if (statTimer) clearInterval(statTimer);
-    if (helloIv) clearInterval(helloIv);
-    if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
-    if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
-    if (structTimer) { clearTimeout(structTimer); structTimer = null; }
-    if (fullDebounceT) clearTimeout(fullDebounceT);
-    try { await stopDomMirror(); } catch {}
-    try { if (page) await page.close(); } catch {}
-    try { if (sessionBrowser) await sessionBrowser.close(); } catch {}
-    console.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
+    cancelHello();
+    timers.clear();
+    cleanupPromise = (async () => {
+      sessions--;
+      if (obfSess) obfSessions.delete(obfSess.sid);
+      domActive = false;
+      await Promise.allSettled([page?.close(), sessionBrowser?.close()]);
+      logger.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
+    })();
+    cleanupPromise.finally(() => cleanups.delete(cleanup)).catch(() => {});
+    return cleanupPromise;
   };
+  cleanups.add(cleanup);
   ws.on('close', cleanup);
   ws.on('error', () => {});
 
   // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
   const sessionOrigin = req.rbiOrigin || ORIGIN_URL;
-    console.log('[sess  ] origin =', sessionOrigin);
-    let prodMode = (sessionOrigin !== ORIGIN_URL) || process.env.PROD_PRESENTATION === '1'; // 网关模式/专用实例：访客端隐藏演示壳，只呈现业务页面
+    logger.log('[sess  ] origin =', sessionOrigin);
+    let prodMode = (sessionOrigin !== ORIGIN_URL) || config.presentation === 'embedded'; // 网关模式/专用实例：访客端隐藏演示壳，只呈现业务页面
 
   // 交互后的节流全量重同步定时器
   let domResyncTimer = null;
@@ -683,7 +681,7 @@ wss.on('session', async (ws, req) => {
           case 'dom': {
             // 客户端镜像 DOM 上的真实交互 → 服务端真实页面元素
             noteInput();
-            if (m.kind === 'click') console.log('[dbg] dom click path=' + m.path);
+            if (m.kind === 'click') logger.log('[dbg] dom click path=' + m.path);
             const ok = await page.evaluate((kind, path, value) => {
               let el = window.__xy.find(path);
               // 镜像里的文字占位符(data-xy-space)与源站文本节点同位：文本节点不能 click，
@@ -884,7 +882,7 @@ wss.on('session', async (ws, req) => {
       return Promise.resolve();
     }
     domStartAt = Date.now();
-    console.log('[dbg] startDomMirror <- ' + (new Error().stack.split('\n')[2] || '?').trim().replace(/^at /, ''));
+    logger.log('[dbg] startDomMirror <- ' + (new Error().stack.split('\n')[2] || '?').trim().replace(/^at /, ''));
     domStarting = (async () => {
       try { await doStartDomMirror(); }
       finally {
@@ -915,7 +913,7 @@ wss.on('session', async (ws, req) => {
             const rest = patches.filter(p => p && p.docClass === undefined);
             if (!rest.length) return;
             if (rest.some(p => p && p.full)) {
-              console.log('[dbg] full patch why:', patches.filter(p => p && p.full).map(p => p.why || '?').slice(0, 3).join(' | ').slice(0, 200));
+              logger.log('[dbg] full patch why:', patches.filter(p => p && p.full).map(p => p.why || '?').slice(0, 3).join(' | ').slice(0, 200));
               // 全量重同步也必须走瓦片化路径（明文快照在瓦片模式下是防御漏洞）
               await startDomMirror();
               return;
@@ -938,7 +936,7 @@ wss.on('session', async (ws, req) => {
               structBuf.clear();
               // 异步兜底：截图超时/导航销毁上下文一旦以 unhandled rejection
               // 冒泡会击穿整个网关进程（Node>=15 默认退出）
-              try { await tilesPatches(batch); } catch (e) { console.log('[patch] batch err:', e && e.message); }
+              try { await tilesPatches(batch); } catch (e) { logger.log('[patch] batch err:', e && e.message); }
             }, 60);
           } catch (e) {}
         });
@@ -960,7 +958,7 @@ wss.on('session', async (ws, req) => {
     // 该会话从此零补丁零触发（实测 css 永久冻结的一种成因）。先挂可观测窗口
     // 覆盖整个快照期；PAGE_HELPERS 注入加超时防导航竞态悬挂。
     await withTimeout(page.evaluate(PAGE_HELPERS), 8000, 'helpers').catch((e) => {
-      console.log('[dom   ] helpers inject fail:', e && e.message);
+      logger.log('[dom   ] helpers inject fail:', e && e.message);
     });
     await page.evaluate(() => {
       if (window.__xyObs) window.__xyObs.disconnect();
@@ -983,11 +981,11 @@ wss.on('session', async (ws, req) => {
     const snap = await withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot');
     try {
       const diag = await page.evaluate(() => window.__xyCssDiag || null);
-      if (diag) console.log(`[snapcss] ${diag.url} links=${diag.hrefs.length}(${diag.hrefs.map(h => h.split('/').pop()).join(',')}) kf=${diag.kf} cssLen=${diag.styleLen + diag.linkLen}`);
+      if (diag) logger.log(`[snapcss] ${diag.url} links=${diag.hrefs.length}(${diag.hrefs.map(h => h.split('/').pop()).join(',')}) kf=${diag.kf} cssLen=${diag.styleLen + diag.linkLen}`);
     } catch (e) {}
     try {
       const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
-      console.log('[dom   ] post-snapshot focus:', foc);
+      logger.log('[dom   ] post-snapshot focus:', foc);
     } catch (e) {}
     let siteFaces = '';
     if (obfSess && mode === 'dom') {
@@ -1018,7 +1016,7 @@ wss.on('session', async (ws, req) => {
         ent.siteFonts = built;
         siteFaces = built.map((x, i) =>
           '@font-face{font-family:"' + x.fam.replace(/"/g, '') + '";src:url(/m/obf/' + obfSess.sid + '/site-' + i + '.woff2) format("woff2");font-weight:' + x.w + ';font-display:block;unicode-range:U+F0000-10FFFF}').join('');
-        console.log(`[obf   ] site-font twins: ${built.map(x => x.fam + '/' + Math.round(x.buf.length / 1024) + 'KB').join(', ')}`);
+        logger.log(`[obf   ] site-font twins: ${built.map(x => x.fam + '/' + Math.round(x.buf.length / 1024) + 'KB').join(', ')}`);
       } else ent.siteFonts = null;
     }
     const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
@@ -1027,7 +1025,7 @@ wss.on('session', async (ws, req) => {
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
-    console.log('[dom   ] mirror started');
+    logger.log('[dom   ] mirror started');
     lastCssSig = null; // 快照即最新基线，下一拍重定（含懒加载样式表）
     // v3：dom 模式无帧流（客户端本地渲染，更新全部事件驱动——补丁/滚动同步/
     // canvas 元素捕获）；帧差分通道仅属于显式 frame（像素直出）模式
@@ -1075,7 +1073,7 @@ wss.on('session', async (ws, req) => {
         } catch (e) {}
       }
       return out2;
-    }, items), 5000, 'patchReal').catch((e) => { console.log('[patch] real err:', e && e.message); return null; });
+    }, items), 5000, 'patchReal').catch((e) => { logger.log('[patch] real err:', e && e.message); return null; });
     if (!out || !out.length) return;
     if (ws.readyState !== 1) return;
     // 轮询自更新常产生逐字节相同的结果（像素一致 → data URL 一致）：
@@ -1291,7 +1289,7 @@ wss.on('session', async (ws, req) => {
     diffTimer = setInterval(async () => {
       if (diffBusy) return;
       if (dead || mode !== 'frame' || !domActive || !page || !cdp || ws.readyState !== 1) return;
-      pfSeen++; if (pfSeen % 62 === 0) { console.log('[diffv2] tick ok, pfLogged=' + pfLogged); pfLogged = 0; }
+      pfSeen++; if (pfSeen % 62 === 0) { logger.log('[diffv2] tick ok, pfLogged=' + pfLogged); pfLogged = 0; }
       if (domStarting) {
         if (!domStartAt) domStartAt = Date.now();
         else if (Date.now() - domStartAt > 8000) { domStarting = null; domStartAt = 0; }
@@ -1305,7 +1303,7 @@ wss.on('session', async (ws, req) => {
           lastFrameAt2 = Date.now();
           cdp.send('Page.stopScreencast').catch(() => {});
           cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {});
-          console.log('[diffv2] screencast watchdog restarted');
+          logger.log('[diffv2] screencast watchdog restarted');
         }
         return;
       }
@@ -1316,7 +1314,7 @@ wss.on('session', async (ws, req) => {
         // 每 ~200ms 刷新一次 meta（holes/scrollers/scroll）
         const now = Date.now();
         if (now - metaAt > 200) { metaAt = now; fetchMeta(!!lastInputAt && (Date.now() - lastInputAt < 800)); }
-        const out = await diffFrame(pf.data).catch((e2) => { console.log('[diffv2] frame err:', e2 && e2.message); return null; });
+        const out = await diffFrame(pf.data).catch((e2) => { logger.log('[diffv2] frame err:', e2 && e2.message); return null; });
         if (!out) return;
         const holesNow = JSON.stringify(meta.holes || []);
         const holesMoved = holesNow !== lastHoles;
@@ -1347,17 +1345,19 @@ wss.on('session', async (ws, req) => {
       ws.close(1011, 'browser closed');
     });
     page = await b.newPage();
+    if (dead) { await page.close(); return; }
     cdp = await page.createCDPSession();
+    if (dead) return;
     // 临时诊断：会话页面的 API 请求状态（定位登录后数据不加载问题）
     page.on('response', (r) => {
       try {
         const u = r.url();
         if (r.status() >= 300 || /assistant|api|auth/.test(u)) {
-          console.log('[net   ]', r.status(), r.request().method(), u.slice(0, 90));
+          logger.log('[net   ]', r.status(), r.request().method(), u.slice(0, 90));
         }
       } catch (e) {}
     });
-    page.on('pageerror', (e) => { try { console.log('[pageerr]', String(e && e.message).slice(0, 140)); } catch (e2) {} });
+    page.on('pageerror', (e) => { try { logger.log('[pageerr]', String(e && e.message).slice(0, 140)); } catch (e2) {} });
 
     cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
       try {
@@ -1399,7 +1399,7 @@ wss.on('session', async (ws, req) => {
             if (sig !== null) {
               if (lastCssSig === null) lastCssSig = sig;
               else if (sig !== lastCssSig) {
-                console.log('[snapcss] set changed:', String(lastCssSig).slice(0, 90), '->', sig.slice(0, 90));
+                logger.log('[snapcss] set changed:', String(lastCssSig).slice(0, 90), '->', sig.slice(0, 90));
                 startDomMirror().catch(() => {});
               }
             }
@@ -1437,6 +1437,8 @@ wss.on('session', async (ws, req) => {
 
     // 等客户端上报 DPR（超时回落 1）：服务端按访客 DPR 渲染 → 瓦片 1:1 显示 → 构造性一致
     const hello = await new Promise((res) => {
+      cancelHello = () => res({ dpr: 1 });
+      if (dead) { cancelHello(); return; }
       const t = setTimeout(() => { clearInterval(helloIv); res({ dpr: 1 }); }, 3000);
       helloIv = setInterval(() => {
         const i = queue.findIndex((r) => { try { return JSON.parse(r.toString()).type === 'hello'; } catch { return false; } });
@@ -1446,6 +1448,7 @@ wss.on('session', async (ws, req) => {
         }
       }, 100);
     });
+    if (dead) return;
     DPR = Math.max(1, Math.min(3, parseFloat(hello.dpr) || 1));
     // 首次 hello 同时带回访客视口：服务端按访客真实视口渲染，镜像才与直连构图一致
     if (hello.w) viewW = Math.max(320, Math.min(2560, parseInt(hello.w, 10) || viewW));
@@ -1464,12 +1467,26 @@ wss.on('session', async (ws, req) => {
     try { await cleanup(); } catch {}
     try { ws.close(); } catch {}
   }
-});
+}
 
-// 兜底：任何漏网的异步拒绝只记录不退出（单会话故障不得击穿网关）
-process.on('unhandledRejection', (e) => { console.log('[main  ] unhandledRejection:', e && e.message); });
+function close() {
+  if (closePromise) return closePromise;
+  closed = true;
+  closePromise = (async () => {
+    for (const session of [...sessionStore.entries.values()]) session.close(1001, 'mirror closing');
+    for (const socket of wss.clients) socket.terminate();
+    for (const request of requests) request.destroy();
+    await Promise.allSettled([...sessionTasks, ...[...cleanups].map(cleanup => cleanup())]);
+    await new Promise(resolve => wss.close(resolve));
+    obfSessions.clear();
+    obfFontCache.clear();
+    obfTwinCache.clear();
+    clearStaticFiles();
+  })();
+  return closePromise;
+}
 
-process.on('SIGTERM', async () => {
-  console.log('[main  ] SIGTERM, shutting down');
-  process.exit(0);
-});
+return { handleRequest, handleUpgrade, close };
+}
+
+module.exports = { createMirror };

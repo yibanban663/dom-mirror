@@ -1,194 +1,176 @@
-# dom-mirror
+<p align="center">
+  <img src="docs/assets/logo.png" width="144" alt="dom-mirror logo">
+</p>
+<h1 align="center">dom-mirror</h1>
+<p align="center">Run the page on the server. Mirror its DOM in the browser.</p>
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
-基于 Chromium 的远程浏览器 DOM 镜像原型。业务页面在服务端执行，客户端接收 DOM/CSS 快照及增量补丁，在本地渲染并回传交互。
+A **Node.js library** for embedding remote browser mirroring into your own application. Each session runs an independent Chromium; the client receives DOM/CSS snapshots and incremental updates, renders them locally, and sends interactions back. A standalone Demo is included for exploration and regression testing.
 
-当前版本 **0.10.1**，支持 `dom` 和 `frame` 两种模式。旧的 JPEG/WebP/H.264、CanvasKit 通道已经移除，无需 ffmpeg。
+**Source version: 0.11.0 · Node.js ≥ 22.12 · Apache-2.0**
 
-## 工作方式
+The source version does not imply an npm release. This is an experimental library, with the compatibility and security boundaries described below.
 
-```text
-访客浏览器                         Node.js 服务
-Shadow DOM 本地渲染 ← WebSocket → 每会话独立 Chromium → 业务源站
-                   快照 / 补丁 / 输入
-图片、CSS、字体      ← /m/* 代理 ← ORIGIN_URL 所在源站
+![Illustration of DOM structure and incremental updates becoming a mirrored browser view](docs/assets/mirroring-illustration.png)
+
+## How it works
+
+```mermaid
+flowchart LR
+    Client[Client browser] <-->|Snapshots, patches, input| Host[Your Node.js host + dom-mirror]
+    Host <-->|CDP| Chromium[Chromium per session]
+    Chromium <-->|HTTP / HTTPS| App[Source application]
+    Client -->|Images and fonts via /m/*| Host
 ```
 
-- `dom`（默认）：发送清理后的 DOM/CSS；MutationObserver 收集变化，合并子树补丁；canvas 按需转为图片。
-- `frame`：服务端合成器驱动 PNG 差分条带，作为画面兜底。仍使用镜像 DOM 和交互管线，并非完全不下发 DOM 的纯像素隔离。
-- 鼠标按压、移动、释放通过 CDP 派发，附带元素路径锚点校正；输入值通过原生 setter 与 input/change 事件回写，特殊按键通过 CDP 派发。
-- 滚动双向同步，导航、结构漂移和样式表集合变化可触发全量重同步。
-- 可选字体混淆：将部分中文和标点替换为会话 PUA 码点，再通过配套字体显示。
+| Mode | What happens |
+| --- | --- |
+| **`dom`** — default | Cleaned DOM/CSS is rendered in a client-side Shadow DOM. Mutations become patches; canvas content is captured as needed. |
+| **`frame`** — fallback | Chromium-generated PNG tiles provide the page appearance. Mirrored DOM and the interaction pipeline are still present. |
 
-## 快速开始
+- **Local rendering:** DOM-mode scrolling, CSS hover and animations can run locally; business interactions are sent back to Chromium.
+- **Incremental updates:** structure changes are coalesced into patches. Statistics and heartbeats still generate traffic on an otherwise static page.
+- **Short reconnects:** the same page can resume its in-memory browser session after a brief WebSocket interruption. Commands are never automatically replayed.
+- **Explicit ownership:** importing the package starts no listeners or browsers. The host creates instances and closes them explicitly.
+- **Optional font obfuscation:** available with a separately built font pool; it is not encryption.
+
+## Embed the library
+
+Build an installable tarball from this checkout:
+
+```bash
+git clone https://github.com/yibanban663/dom-mirror.git
+cd dom-mirror
+PUPPETEER_SKIP_DOWNLOAD=true npm ci
+npm pack
+```
+
+Install the generated file in your host project:
+
+```bash
+npm install /path/to/lizhen-xxaq-dom-mirror-0.11.0.tgz
+```
+
+Chromium and its system libraries must be available in the host environment. If your environment manages Chromium separately, use `PUPPETEER_SKIP_DOWNLOAD=true` during installation and pass its path through `launchOptions.executablePath`.
+
+```js
+const http = require('node:http');
+const { createMirror } = require('@lizhen-xxaq/dom-mirror');
+
+const mirror = createMirror({
+  originUrl: 'https://your-site.example/',
+  maxSessions: 3,
+  sessionGraceMs: 60_000,
+  redactAttributes: ['data-private'], // Optional host-owned metadata.
+});
+
+const server = http.createServer(mirror.handleRequest);
+server.on('upgrade', mirror.handleUpgrade);
+server.listen(8088, '127.0.0.1');
+
+// During host shutdown, stop accepting requests, await mirror.close(),
+// then finish closing the host's HTTP connections.
+```
+
+`createMirror()` is lazy: Chromium starts only for a valid session. Instances have independent session stores and limits. `close()` is idempotent, waits for session cleanup and late browser startup, and leaves the host HTTP server under the host's control. TypeScript declarations are included.
+
+The built-in client currently requires **the root path of a dedicated origin**, with `/ws`, `/m/*` and `/f/*`. Arbitrary subpath mounting is not supported. Authentication, TLS and WebSocket Origin checks belong in the host, before these handlers are called.
+
+See the [complete host example](examples/host.cjs), [API reference and migration notes — Chinese](docs/API.md), and [WebSocket protocol — Chinese](docs/PROTOCOL.md).
+
+## Run the Demo
+
+The original standalone startup is now the **Demo**, not the package API. `npm start`, `npm run demo` and the Docker default all run `demo/server.js`.
 
 ### Docker
 
 ```bash
 docker build -t dom-mirror:local .
-docker run --rm -p 127.0.0.1:18088:8088 dom-mirror:local
+docker run --rm --name dom-mirror-demo \
+  --memory 2g --cpus 2 \
+  -p 127.0.0.1:18088:8088 dom-mirror:local
 ```
 
-访问 `http://127.0.0.1:18088/`，默认镜像容器内置演示页。接入自己的站点：
+Open **http://127.0.0.1:18088/**. The built-in source is a synthetic customer dashboard: orders, a canvas chart, customer search and a renewal quote calculator. It requires no login and contains no real business records. The current Demo interface is Chinese; both README files describe the same implementation.
 
-```bash
-docker run --rm -p 127.0.0.1:18088:8088 \
-  -e ORIGIN_URL=https://your-site.example/ \
-  -e DEFAULT_MODE=dom \
-  dom-mirror:local
-```
-
-容器内的 `127.0.0.1` 指向容器自身。外部业务源站必须能从容器内访问。默认无混淆字体池，文字按原文显示。
-
-### 本地源码
-
-需要 Node.js 22.12+、npm，以及 Chromium 所需的系统库。
+### From source
 
 ```bash
 npm ci
 npx puppeteer browsers install chrome
-npm run check
-npm test
-ORIGIN_URL=https://your-site.example/ npm start
+npm run demo
 ```
 
-显式运行 browsers install 可确保匹配的浏览器已下载，不依赖 npm 是否允许 postinstall 脚本。使用已有 Chromium 时可设置 `PUPPETEER_SKIP_DOWNLOAD=true` 安装，跳过 browsers install，并在启动时设置 `PUPPETEER_EXECUTABLE_PATH`。容器已包含浏览器及系统依赖。
+Open **http://127.0.0.1:8088/**. Chromium's system libraries are also required; the Docker image already includes them. To mirror a different source, set `ORIGIN_URL` when starting the Demo. The source must be reachable from the server/container.
 
-项目目前为独立服务，`require()` 会启动监听，尚未提供可嵌入其他 Node 服务的 SDK。
+### A concrete walkthrough
 
-## 配置
+| Step | Action | Expected result |
+| --- | --- | --- |
+| 1 | Open the Demo in DOM mode | The customer table contains **12** synthetic rows. |
+| 2 | Type `138` in the customer search field | The table filters to **1** row. |
+| 3 | Set monthly rent to `299`, leaving 24 months and grade A | The server-side calculator returns **￥6,458.40**. |
+| 4 | Click the PNG fallback / `frame` button | The existing session switches to PNG appearance updates. It still carries mirrored DOM. |
 
-| 环境变量 | 默认值 | 说明 |
-|---|---|---|
-| `DEMO_PORT` | `8088` | 镜像 HTTP/WS 监听端口，绑定 `0.0.0.0` |
-| `ORIGIN_PORT` | `8077` | 内置演示源站端口，仅绑定回环；指定外部源站后仍会启动 |
-| `ORIGIN_URL` | `http://127.0.0.1:8077/` | 初始业务页面与静态资源代理基址 |
-| `DEFAULT_MODE` | `dom` | `dom` / `frame`；无效值回退 `dom` |
-| `MAX_SESSIONS` | `3` | 活跃及断线保留会话的总上限；每会话独立 Chromium |
-| `SESSION_GRACE_MS` | `60000` | 服务端检测到断线后的保留时间（毫秒），范围 0–300000；0 表示不保留 |
-| `VIEW_W` / `VIEW_H` | `1280` / `800` | 初始视口，随后以客户端 hello 上报为准 |
-| `OBFUSCATE` | `1` | 有完整字体池时开启；`0` 关闭 |
-| `PROD_PRESENTATION` | `0` | `1` 隐藏演示面板，仅呈现业务页面；不增加安全保护 |
-| `RBI_ALLOWED_ORIGINS` | 空 | 逗号分隔的源站 origin 白名单；为空时拒绝带 `x-rbi-origin` 的会话 |
-| `PUPPETEER_EXECUTABLE_PATH` | Puppeteer 管理 | 自定义浏览器可执行文件 |
+**DOM mode — actual local capture:**
 
-网关若使用 `x-rbi-origin`，需要配置 `RBI_ALLOWED_ORIGINS`，并在入口剥除访客同名头，只由可信网关注入。头值只用于选取白名单内的 origin，路径不保留。当前 `/m/*` 和部分 URL 重写仍使用固定 `ORIGIN_URL`，多源站资源路由尚不完整；建议每个源站使用独立实例。
+![Built-in Demo running in DOM mode with the synthetic customer dashboard and mode controls](docs/assets/demo-dom.png)
 
-## 短时断线恢复
+**After real keyboard input — one matching customer and the updated quote:**
 
-同一页面的 WebSocket 断开后会自动重试，默认保留原 Chromium 60 秒，登录态、路由及服务端已收到的表单草稿随之保留。重连取得原会话后重新发送全量快照，完成同步才开放操作。客户端不会自动重放输入、点击或提交；提交结果不明确时，应先核对业务记录再决定是否重新操作。
+![Actual Demo after searching for 138 and changing monthly rent to 299](docs/assets/demo-interaction.png)
 
-恢复凭据只存于当前页面内存，通过 WS 消息传递，不写 URL、Cookie 或 Web Storage。刷新页面、关闭后重新打开、服务重启或 Chromium 退出均不能恢复。同账号多个页面各用独立会话。密码和文件输入值不会在新快照中回填；断线前尚未送达服务端的修改不保证保留。
+See the [Demo guide](README.demo.md) for the frame screenshot, configuration, capture provenance and the exact reproduction command. These are real browser captures, not generated UI mockups. They demonstrate this synthetic page, not general application compatibility or performance guarantees.
 
-断线检测依赖 WS close 或服务端心跳（10 秒一次，未响应的下一轮终止连接），实际网络黑洞的发现有延迟；保留计时从服务端确认断线开始。会话过期会冻结页面并显示“重新开始”，必须手动创建新会话。保留中的浏览器仍占资源和 `MAX_SESSIONS` 名额，关闭页面后也要等待保留期回收；协议客户端可用 `release` 主动结束。此功能不提供提交事务确认或持久会话。
+## Session and host boundaries
 
-隔离回归（镜像须先从当前源码构建；测试专用保留期为 2 秒）：
+- A disconnected session is retained for **60 seconds by default**, starting when the server detects disconnection. Retained sessions count against `maxSessions`.
+- Resume tokens stay in the current page's memory. Reloading the page, reopening it, a process restart or Chromium exit does not restore the session.
+- Unacknowledged business operations must be checked against the source application; inputs, clicks and submissions are not replayed.
+- Hosts can bind resume to a verified user/tenant key with `getSessionIdentity(req)`. Without this opt-in hook, the instance remains anonymous. Client-supplied identity fields are not trusted.
+- The host owns authentication, TLS, rate limits, user quotas and deployment. The package supplies the mirror engine and its lifecycle; it is not a complete gateway product.
+
+The identity hook rejects missing identities before WS upgrade and prevents another host identity from using a known resume token. It does not authenticate HTTP resource requests or revoke already-open connections; the host must close them after logout or permission changes. See the [identity boundary test](docs/acceptance/session-identity-2026-10-26.md).
+
+## Security and compatibility
+
+**Treat the current Demo as a controlled validation environment.**
+
+This layer does not repair authorization, injection or business-logic flaws in the source application. If the source remains directly reachable by untrusted clients, they may bypass the mirror. Reduced client-side visibility is not evidence of resistance to a penetration test; no general scanner effectiveness result is claimed.
+
+- Displayed text, DOM/CSS, attributes, ordinary input values and hidden DOM text may reach the client. There is no promise that all business data stays on the server.
+- `frame` is **not a DOM-free pixel-only channel**. Font obfuscation is reversible and is not encryption.
+- HTML cleanup is not an audited general-purpose sanitizer. Static asset filtering is not a complete navigation, subresource or network access policy.
+- There is no built-in authentication provider, rate limiting or WS Origin validation. Hosts must implement these controls; the optional identity hook consumes the host's verified identity.
+- Default Chromium arguments include `--no-sandbox`; the Demo Docker image runs as root. Browser and network isolation need additional hardening for untrusted content.
+- Uploads/downloads, clipboard, popups, IME, iframes, Shadow DOM, rich text and virtual scrolling do not have complete compatibility guarantees.
+- Each session owns a Chromium instance. The default limit of three sessions is configuration, not measured capacity.
+
+Hidden input `value` attributes are excluded from mirrored snapshots and patches by default. Hosts can additionally remove named attributes with `redactAttributes`; the source page is unchanged. This does not filter hidden text, CSS, resource bodies or pixels. See the [measured data boundary](docs/acceptance/data-boundary-2026-10-26.md) for the observations and limits.
+
+## Development and evidence
 
 ```bash
+npm run check
+npm test
+node tools/verify-package.cjs
+
+# After building the current Docker image:
+IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
+IMAGE=dom-mirror:local bash tools/verify-docker-data-boundary.sh
+IMAGE=dom-mirror:local bash tools/verify-docker-session-identity.sh
+IMAGE=dom-mirror:local bash tools/verify-docker-vikunja.sh
 IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
   BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery \
   bash tools/verify-docker-vikunja.sh
 ```
 
-覆盖 DOM/frame 的登录、路由和草稿恢复、已落库但未显示确认的提交、同账号会话隔离与关闭、过期后显式重新开始。证据不包含恢复凭据或登录密码。
+The tarball check installs the actual package in a separate temporary host; it does not launch Chromium. Browser regressions use isolated Docker environments. Vikunja tests cover login, task creation, priority changes and completion, with separate persistence assertions. CI is configured to run these checks and retain browser evidence; use the result for the relevant commit.
 
-## frame 编码开销优化
+The frame codec reuses decoded pixels for ordinary RGB/RGBA PNG crops and falls back for other encodings. Measurements show a **local encoding benefit**, not a demonstrated stable end-to-end speedup. Multi-session capacity and sustained operation remain to be validated.
 
-0.10.1 在普通 8-bit RGB/RGBA Chromium PNG 上复用已解码像素进行差分条带裁剪，避免每块重新解码整帧，也不再重复转换输入 base64。有透明键、色彩元数据、灰度、调色板或其他编码的 PNG 继续使用原处理路径。PNG 编码参数和业务协议保持不变。
+Further reading: [roadmap](docs/ROADMAP.md) · [Vikunja acceptance](docs/acceptance/vikunja-2026-10-26.md) · [recovery acceptance](docs/acceptance/recovery-2026-10-26.md) · [codec acceptance](docs/acceptance/frame-codec-0.10.1.md) · [performance investigation](docs/performance/2026-10-26.md) · [font setup](docs/FONTS.md) · [changelog](CHANGELOG.md). These historical reports identify the versions they tested.
 
-此前对照确认了多块裁剪的局部收益，但尚未证明任务创建的客户端绘制延迟稳定下降；不承诺整体加速倍数。正式实现与回归结果见 [0.10.1 验收记录](docs/acceptance/frame-codec-0.10.1.md)。调查入口默认 PROFILE_CODEC=production；显式 png 可回放旧裁剪路径，raw 为生产快路径的别名。这些 PROFILE 参数不影响普通 server.js 入口。
+## License
 
-## 可选字体混淆
-
-需要 Python 3、fontTools 和 Brotli 支持。准备有合法再分发许可、包含中文字符的 Regular/Bold TTF 或 OTF 字体：
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install 'fonttools[woff]'
-mkdir -p assets/obf
-.venv/bin/python tools/build_obf_font.py /path/Regular.ttf 861001 \
-  assets/obf/reg-s861001.woff2 assets/obf/reg-s861001.json
-.venv/bin/python tools/build_obf_font.py /path/Bold.ttf 861001 \
-  assets/obf/bold-s861001.woff2 assets/obf/bold-s861001.json
-```
-
-每组种子的 Regular/Bold 必须采用相同字符覆盖，否则映射可能不一致。重启服务加载字体池；Docker 构建时会复制 `assets/`。本地构建网站自有字体孪生时，服务会调用 PATH 中的 `python3`，需保证该解释器也能导入 fontTools。
-
-批量烘焙可将两份基础字体放在当前目录，命名为 `NotoSansSC-Reg.ttf`、`NotoSansSC-Bold.ttf`，再运行 `python3 tools/bake_pool.py 4 assets/obf`。
-
-**字体混淆不是加密。** 客户端必须取得字体，且字体保留原码点与 PUA 到同一字形的映射，可恢复文字。ASCII、数字、输入框值及域外字符不混淆。它只增加直接提取部分文字的成本，也会影响复制、搜索和无障碍体验。
-
-## 安全边界
-
-- DOM 序列化会删除 script/noscript/template、on* 事件属性、srcdoc、formaction 和部分文本辅助属性，但不是经过完整安全验证的 HTML sanitizer。
-- 可见文本、DOM 结构、CSS、输入值、隐藏字段及自定义属性可能下发。源站若把密钥或非展示数据放入 DOM/CSS，本服务不会自动识别并移除。不能承诺“所有业务数据不出服务器”。
-- 业务页面脚本在服务端执行，Cookie 和浏览器存储不会作为通用同步项直接下发；页面自己展示的会话数据仍可能进入镜像。
-- `/m/*` 限制为固定源站的静态资源扩展名，拒绝重定向及 HTML/JSON/JS/XML 响应，并设置超时；这不是完整的内容安全策略。源站需避免通过静态资源路径返回敏感信息。
-- 外链、iframe、内联样式等仍需进一步收口。Shadow DOM 用于样式隔离，不是安全沙箱。
-- `/ws` 没有内建用户鉴权、速率限制或 WebSocket Origin 校验。部署入口需完成认证、TLS、连接限制与来源控制；业务站点导航和子资源也没有完整的网络访问白名单。
-- Chromium 当前使用 `--no-sandbox`，Docker 以 root 运行。适用范围是可信、受控源站的验证环境；处理不可信网页前需另行加固运行隔离。
-
-## 已知限制与验收
-
-- 每会话独立浏览器，内存和 CPU 成本需要按真实业务压测；默认 3 会话不代表已验证的容量指标。
-- checkbox/radio 的专门 checked 同步、上传下载、剪贴板、弹窗、多窗口、iframe、Shadow DOM、复杂富文本与虚拟滚动尚无完整兼容性保证。
-- CSS URL 与选择器重写依赖字符串/正则，嵌套规则、外链 CSS 相对资源及动态 CSSOM 修改需逐站验证。
-- 补丁替换和全量重同步可能影响焦点、选区及交互。`frame` 也不保证消除所有交互兼容问题。
-- 静止业务 DOM 可以不发结构补丁，但统计、ping/pong、滚动兜底消息仍会发送；不是零网络流量。
-- 历史延迟、流量和像素差数据见 Git 历史及 CHANGELOG，仅代表当时场景。0.10.0 的[单会话性能调查](docs/performance/2026-10-26.md)已记录分段开销和 Rust/Wasm 对照，仍无容量或视觉验收，不作为当前版本性能保证。
-
-本地检查：`npm run check && npm test`。CI 另做 Docker 构建与 HTTP 探活；HTTP 200 只证明壳页面可访问，不能替代真实浏览器会话验收。站点接入需验证登录、输入、导航、滚动、动态样式、断连释放，以及两种通道的截图差异。
-
-## 滚动与首次点击回归
-
-CI 使用同一个隔离 Docker 回归入口：
-
-```bash
-IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
-```
-
-该命令使用 internal 网络，无宿主端口；分别启动服务端与浏览器容器，自动收集结果和日志并清理。默认结果位于 `artifacts/scroll/`，可通过 `EVIDENCE_DIR` 指定目录。镜像需先从当前源码构建。以下是手动运行方式。
-
-`tools/verify-pointer-scroll.cjs` 用真实鼠标分别点击可见按钮、页面底部按钮、内部滚动容器中的按钮；每项只点一次，不等待滚动同步、不重试。仅对测试源站运行。
-
-先按快速开始构建当前镜像，再启动专用测试实例：
-
-```bash
-docker run --rm --name dom-mirror-scroll-test \
-  -p 127.0.0.1:18089:8088 \
-  -e PROD_PRESENTATION=1 \
-  -e ORIGIN_URL=http://127.0.0.1:8077/scroll.html \
-  -v "$PWD/test/fixtures:/app/protected:ro" dom-mirror:local
-```
-
-另一个终端使用已安装依赖和 Chromium 的源码环境执行：
-
-```bash
-MIRROR_URL=http://127.0.0.1:18089/ \
-  EVIDENCE_DIR=/tmp/dom-mirror-scroll-evidence \
-  node tools/verify-pointer-scroll.cjs
-```
-
-失败时返回非零退出码，证据目录保存 `result.json` 及上行 WS 消息。测试结束后停止专用容器。DOM 模式在 pointerdown 前发送即时滚动同步，服务端串行处理后才派发按压；frame 模式仍以服务端滚动状态为准。
-
-## 真实业务回归：Vikunja
-
-使用固定 digest 的 Vikunja v2.7.1、SQLite 和临时合成账号/任务。准备当前源码构建的镜像后运行：
-
-```bash
-IMAGE=dom-mirror:local bash tools/verify-docker-vikunja.sh
-```
-
-该命令建立 internal 网络，无宿主端口，数据库与文件使用 tmpfs。分别验证直连、DOM、frame 的登录、创建任务、修改优先级为 Medium、标记完成；创建和修改同时检查应用 API 持久化及镜像控件状态。账号密码和 token 仅存于测试进程内存。默认证据保存在 `artifacts/vikunja/`，退出时删除测试容器、网络和临时业务数据。失败返回非零。
-
-CI 也自动运行这项业务回归并保存证据。脚本针对这个固定版本的英文 UI；不代表任意站点兼容。完整结果、限制及版本信息见 [业务验收记录](docs/acceptance/vikunja-2026-10-26.md)。后续阶段见 [实施路线图](docs/ROADMAP.md)。
-
-## 文件
-
-- `server.js`：HTTP/WS、浏览器会话、序列化、补丁及 PNG 差分。
-- `lib/policy.js`：资源 URL 与源站选择策略。
-- `client/index.html`：镜像渲染、输入回传及演示面板。
-- `protected/index.html`：内置演示源站。
-- `tools/`：字体构建工具。
-- [实施路线图](docs/ROADMAP.md)、[协议](docs/PROTOCOL.md)、[变更记录](CHANGELOG.md)、[演示说明](README.demo.md)。
-
-代码采用 [Apache-2.0](LICENSE)；内置 Noto Sans SC 字体采用 [SIL OFL 1.1](assets/FONT-OFL-LICENSE.txt)。自备字体需遵循其自身许可。
+Code: [Apache-2.0](LICENSE). Bundled Noto Sans SC fonts: [SIL OFL 1.1](assets/FONT-OFL-LICENSE.txt). Supplied fonts must have suitable redistribution rights. Logo and illustration sources are documented in [visual asset notes](docs/assets/README.md).

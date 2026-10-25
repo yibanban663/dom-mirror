@@ -1,6 +1,8 @@
-# WebSocket 协议（实现版本 0.10.1）
+# WebSocket 协议（实现版本 0.11.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
+
+宿主配置 `getSessionIdentity` 时，在 WS 升级前验证非空身份，失败返回 HTTP 401。身份参与服务端恢复 scope，不增加协议字段；hello 中自报身份不参与授权。不配置时仍为匿名模式。
 
 单条上行消息上限 64 KiB，超过时连接由 ws 关闭。首次消息必须在 3 秒内发送 `hello`，无效握手关闭连接；后续上行 JSON 应为对象，非法 JSON、null 和数组忽略。尚无协议版本协商或稳定 SDK 兼容承诺。
 

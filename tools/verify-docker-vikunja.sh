@@ -10,7 +10,7 @@ run_id="dom-mirror-vikunja-$(date +%s)-$$"
 app="$run_id-app"
 server="$run_id-server"
 client="$run_id-client"
-server_entry=server.js
+server_entry=demo/server.js
 server_mount=()
 if [[ "${PROFILE:-0}" == 1 ]]; then
   server_entry=tools/profile-server.cjs
