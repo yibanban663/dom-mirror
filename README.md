@@ -131,3 +131,8 @@ WS 协议消息定义见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Chengdu Yuzhian Technology Co., Ltd.（成都演示系统有限公司）
+
+## 字体许可
+
+- 代码：Apache-2.0（见 LICENSE）
+- assets/ 内置 Noto Sans SC 字体（演示源站渲染用）：SIL OFL 1.1（见 assets/FONT-OFL-LICENSE.txt）
