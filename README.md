@@ -130,7 +130,7 @@ See the [Demo guide](README.demo.md) for the frame screenshot, configuration, ca
 - Hosts can bind resume to a verified user/tenant key with `getSessionIdentity(req)`. Without this opt-in hook, the instance remains anonymous. Client-supplied identity fields are not trusted.
 - The host owns authentication, TLS, rate limits, user quotas and deployment. The package supplies the mirror engine and its lifecycle; it is not a complete gateway product.
 
-The identity hook rejects missing identities before WS upgrade and prevents another host identity from using a known resume token. It does not authenticate HTTP resource requests or revoke already-open connections; the host must close them after logout or permission changes. See the [identity boundary test](docs/acceptance/session-identity-2026-10-26.md).
+The identity hook rejects missing identities before WS upgrade and prevents another host identity from using a known resume token. It does not authenticate HTTP resource requests or automatically revoke open connections. On logout or permission changes, first deny admission with the old host credentials, then call `await mirror.revokeIdentity(identity)` to end that identity's current sessions, or `await mirror.revokeSession(token)` for one session. These methods invalidate resume tokens and await page/browser cleanup. See the [API contract](docs/API.md#宿主主动撤销).
 
 ## Security and compatibility
 

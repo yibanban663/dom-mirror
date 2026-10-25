@@ -26,6 +26,10 @@ export interface MirrorOptions {
 export interface Mirror {
   handleRequest(req: IncomingMessage, res: ServerResponse): void;
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+  /** Revoke one active or retained session by its sensitive resume token; await resource cleanup. */
+  revokeSession(token: string): Promise<boolean>;
+  /** Revoke all current sessions and pending WS handshakes for this exact host identity. Returns session count. */
+  revokeIdentity(identity: string): Promise<number>;
   /** Idempotent; closes package resources, never the host HTTP server. */
   close(): Promise<void>;
 }

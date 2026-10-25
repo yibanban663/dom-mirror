@@ -545,8 +545,11 @@ function handleUpgrade(req, socket, head) {
 
 // ---------- 会话 ----------
 const sessionStore = new SessionStore({ limit: MAX_SESSIONS, graceMs: SESSION_GRACE_MS });
+const sessionLifecycles = new WeakMap();
+const socketIdentities = new WeakMap();
 let sessions = 0;
 wss.on('connection', (socket, req) => {
+  socketIdentities.set(socket, identities.get(req));
   socket.on('error', () => {});
   const reject = (code) => {
     const messages = {
@@ -563,6 +566,7 @@ wss.on('connection', (socket, req) => {
   socket.once('close', () => clearTimeout(timer));
   socket.once('message', raw => {
     clearTimeout(timer);
+    if (closed || socket.readyState !== 1) return;
     let hello;
     try { hello = JSON.parse(raw.toString()); } catch { reject('INVALID_HANDSHAKE'); return; }
     if (!hello || hello.type !== 'hello') { reject('INVALID_HANDSHAKE'); return; }
@@ -578,11 +582,14 @@ wss.on('connection', (socket, req) => {
   });
 });
 wss.on('session', (ws, req) => {
-  const task = runSession(ws, req);
+  const lifecycle = { identity: identities.get(req) };
+  sessionLifecycles.set(ws, lifecycle);
+  const task = runSession(ws, req, lifecycle);
+  lifecycle.task = task;
   sessionTasks.add(task);
   task.finally(() => sessionTasks.delete(task)).catch(error => logger.log('[sess  ] setup failed:', error.message));
 });
-async function runSession(ws, req) {
+async function runSession(ws, req, lifecycle) {
   const timers = createTimers();
   const { setTimeout, clearTimeout, setInterval, clearInterval } = timers;
   sessions++;
@@ -618,6 +625,7 @@ async function runSession(ws, req) {
     return cleanupPromise;
   };
   cleanups.add(cleanup);
+  lifecycle.cleanup = cleanup;
   ws.on('close', cleanup);
   ws.on('error', () => {});
 
@@ -822,6 +830,7 @@ async function runSession(ws, req) {
         }
   };
   const handleRaw = async (raw) => {
+    if (dead) return;
     let m; try { m = JSON.parse(raw.toString()); } catch { return; }
     if (!m || typeof m !== 'object' || Array.isArray(m)) return;
     try {
@@ -1469,6 +1478,36 @@ async function runSession(ws, req) {
   }
 }
 
+async function revokeSessions(selected) {
+  const pending = [];
+  for (const session of selected) {
+    const socket = session.socket;
+    session.close(1008, 'session revoked');
+    socket?.terminate();
+    const lifecycle = sessionLifecycles.get(session);
+    pending.push(lifecycle?.task, lifecycle?.cleanup());
+  }
+  await Promise.allSettled(pending);
+  return selected.length;
+}
+
+async function revokeSession(token) {
+  if (typeof token !== 'string' || !token.trim()) throw new TypeError('token must be a non-empty string');
+  const session = sessionStore.entries.get(token);
+  return (await revokeSessions(session ? [session] : [])) > 0;
+}
+
+async function revokeIdentity(identity) {
+  if (typeof identity !== 'string' || !identity.trim()) throw new TypeError('identity must be a non-empty string');
+  const selected = [...sessionStore.entries.values()].filter(session => sessionLifecycles.get(session)?.identity === identity);
+  const result = revokeSessions(selected);
+  // Includes authenticated transports that have not sent their first hello yet.
+  for (const socket of wss.clients) {
+    if (socketIdentities.get(socket) === identity) socket.terminate();
+  }
+  return result;
+}
+
 function close() {
   if (closePromise) return closePromise;
   closed = true;
@@ -1486,7 +1525,7 @@ function close() {
   return closePromise;
 }
 
-return { handleRequest, handleUpgrade, close };
+return { handleRequest, handleUpgrade, revokeSession, revokeIdentity, close };
 }
 
 module.exports = { createMirror };

@@ -48,6 +48,8 @@ try {
           }));
           const mirror = createMirror({ originUrl, obfuscate: false, logger: { log() {} } });
           mirrors.push(mirror);
+          assert.equal(await mirror.revokeSession('unknown'), false);
+          assert.equal(await mirror.revokeIdentity('unknown'), 0);
           const server = http.createServer((req, res) => {
             if (req.url === '/host') { res.end('host'); return; }
             mirror.handleRequest(req, res);

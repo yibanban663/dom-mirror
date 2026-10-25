@@ -130,7 +130,7 @@ npm run demo
 - 宿主可用 `getSessionIdentity(req)` 将恢复绑定到已验证的用户/租户键；未配置时仍为匿名模式，不信任客户端附带的身份字段。
 - 鉴权、TLS、限流、用户配额和部署由宿主负责；本包提供镜像引擎与生命周期，不建设完整网关产品。
 
-身份回调在 WS 升级前拒绝缺失身份，并阻止其他宿主身份使用已知恢复 token；它不保护 HTTP 资源，也不会自动撤销已有连接。注销或权限变化后，宿主仍需关闭受影响连接，详见[身份边界验收](docs/acceptance/session-identity-2026-10-26.md)。
+身份回调在 WS 升级前拒绝缺失身份，并阻止其他宿主身份使用已知恢复 token；它不保护 HTTP 资源，也不会自动撤销已有连接。注销或权限变化时，宿主应先阻止旧凭据继续入场，再调用 `await mirror.revokeIdentity(identity)` 终止该身份的现有会话；也可用 `await mirror.revokeSession(token)` 撤销单个会话。接口作废恢复 token 并等待页面与浏览器清理，详见[接入 API](docs/API.md#宿主主动撤销)。
 
 ## 安全边界
 

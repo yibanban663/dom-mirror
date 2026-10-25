@@ -83,7 +83,29 @@ server.on('upgrade', (req, socket, head) => {
 });
 ```
 
-异步鉴权由宿主先完成；包的身份回调保持同步。该回调只处理 WS 入场及恢复归属，**不保护 HTTP 资源、不实现登录、不持续重验已建立连接，也不自动撤销活跃 WS**。注销、禁用账号或变更权限后，宿主还需主动关闭受影响的连接。源站业务权限也仍由源站校验。实际前后对照见[身份边界验收](acceptance/session-identity-2026-10-26.md)。
+异步鉴权由宿主先完成；包的身份回调保持同步。该回调只处理 WS 入场及恢复归属，**不保护 HTTP 资源、不实现登录、不持续重验已建立连接，也不自动撤销活跃 WS**。宿主需要在注销、禁用账号或变更权限时调用下面的撤销接口。源站业务权限也仍由源站校验。身份绑定的历史前后对照见[身份边界验收](acceptance/session-identity-2026-10-26.md)。
+
+## 宿主主动撤销
+
+- `revokeSession(token): Promise<boolean>`：以恢复 token 精确选择一个在线或断线保留会话，存在返回 `true`，不存在或已撤销返回 `false`。匿名模式也可使用；token 属于敏感凭据，宿主若保存它应避免进入日志或公开接口。
+- `revokeIdentity(identity): Promise<number>`：按 `getSessionIdentity` 返回的完整字符串精确匹配，撤销本实例该身份的全部在线和断线保留会话，并关闭已进入本实例、尚未发送 hello 的同身份 WS。返回选中的逻辑会话数；未完成握手的连接不计数。未配置身份回调时返回 `0`。
+
+两种方法都在调用时立即作废选中会话的恢复 token、阻止后续指令派发、终止传输连接，然后等待相关初始化及页面/浏览器清理。空字符串、纯空白或非字符串参数使 Promise 以 `TypeError` 拒绝。选择范围仅限当前 mirror 实例，不跨进程广播；重复调用已撤销的目标返回 `false` / `0`。实例关闭后也返回 `false` / `0`。
+
+宿主注销处理示意（`revokeHostCredentials` 由宿主实现）：
+
+```js
+// This key must exactly match getSessionIdentity(req).
+const identity = JSON.stringify([user.tenantId, user.id]);
+await revokeHostCredentials(user); // Reject old credentials on HTTP and WS first.
+const endedSessions = await mirror.revokeIdentity(identity);
+```
+
+撤销不是永久封禁：若宿主继续接受同一个身份的新连接，它仍可创建新会话。宿主尚未完成的异步鉴权也在包的控制范围之外，需要在调用 `handleUpgrade` 前重新检查凭据状态。若希望只注销一次登录，身份键应包含登录会话 ID 或版本；仅用租户/用户键会撤销该用户在本实例的所有登录会话。权限变更时同样应先更新宿主策略，再撤销相关会话。
+
+已派发给源站的请求或已提交的业务操作不能撤回；撤销不会回滚数据或清除已展示给客户端的信息，也不注销源站自身的登录凭据。仍需宿主和源站共同处理。初始化/清理等待依赖 Puppeteer 完成，宿主应配置有限的启动超时。
+
+当前回归使用真实本地 HTTP/WS 与替身浏览器，覆盖在线/断线会话、握手窗口、身份及实例隔离、恢复拒绝、晚启动和异步资源清理；本轮未重新执行真实 Chromium 业务验收。
 
 ## 关闭与故障
 
@@ -99,4 +121,4 @@ server.on('upgrade', (req, socket, head) => {
 - `node server.js` 不再启动；体验 Demo 改用 `npm run demo` 或 `node demo/server.js`。`npm start` 和默认 Docker 启动仍运行 Demo。
 - `ORIGIN_URL`、`MAX_SESSIONS` 等环境变量由 Demo 转为工厂参数，依赖包调用者直接传参数。
 - Demo 默认保留演示控件；依赖包默认 `embedded`。WS 消息格式与 0.10.1 相同，没有新增传输通道。
-- 推荐按固定源站创建实例；用户系统、持续授权和活跃连接撤销归宿主，事件/错误契约及更多真实宿主验收仍待完善。
+- 推荐按固定源站创建实例；用户系统与持续授权归宿主，宿主通过撤销接口控制现有会话；事件/错误契约及更多真实宿主验收仍待完善。
