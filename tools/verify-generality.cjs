@@ -35,7 +35,7 @@ async function main() {
             const j = JSON.parse(ev.data);
             window.__bytes[j.type] = (window.__bytes[j.type] || 0) + (ev.data.length || 0);
             if (j.type === 'dom-patches' && Array.isArray(j.patches)) {
-              for (const x of j.patches) if (x.delHead !== undefined || x.prepend !== undefined) window.__shiftPatches++;
+              for (const x of j.patches) if (x.delHead !== undefined || x.prepend !== undefined || x.kidKeep !== undefined) window.__shiftPatches++;
             }
           } catch {}
         });

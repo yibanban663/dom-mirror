@@ -1085,6 +1085,49 @@
         }
         const el = mirrorFind(p.id !== undefined ? p.id : p.path);
         if (!el) throw new Error('id miss');
+        // v0.24 LCS 子序列编辑脚本：kidKeep=保留的旧子元素索引（升序），
+        // kidIns=[新序位置, html]，kidTotal=新子元素数。按新序重排并**复用**
+        // 保留节点（不重建）；任何校验失败按 patch-miss 走重同步（宁重不错）
+        if (p.kidKeep !== undefined) {
+          const olds = [...el.children];
+          let ok = Array.isArray(p.kidKeep) && p.kidKeep.length + (p.kidIns ? p.kidIns.length : 0) === p.kidTotal && olds.length >= p.kidKeep.length;
+          let prevIx = -1;
+          if (ok) for (const ix of p.kidKeep) { if (!Number.isInteger(ix) || ix <= prevIx || ix >= olds.length) { ok = false; break; } prevIx = ix; }
+          if (ok) {
+            const byNew = new Array(p.kidTotal).fill(null);
+            for (const pair of (p.kidIns || [])) {
+              if (!Array.isArray(pair) || pair[0] < 0 || pair[0] >= p.kidTotal || typeof pair[1] !== 'string') { ok = false; break; }
+              byNew[pair[0]] = pair[1];
+            }
+            if (ok) {
+              const finalNodes = [];
+              let ki = 0;
+              for (let ni = 0; ni < p.kidTotal && ok; ni++) {
+                const v = byNew[ni];
+                if (typeof v === 'string') {
+                  const tpl = document.createElement('template');
+                  if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(v); else tpl.innerHTML = v;
+                  const nodes = [...tpl.content.childNodes];
+                  if (nodes.length === 1 && nodes[0].nodeType === 1) finalNodes[ni] = nodes[0];
+                  else ok = false;
+                } else {
+                  const kept = olds[p.kidKeep[ki++]];
+                  if (kept) finalNodes[ni] = kept; else ok = false;
+                }
+              }
+              if (ok && ki === p.kidKeep.length) {
+                for (const c2 of [...el.childNodes]) unregisterSubtree(c2);
+                el.textContent = '';
+                for (const nd of finalNodes) el.appendChild(nd);
+                for (let ni = 0; ni < p.kidTotal; ni++) {
+                  if (typeof byNew[ni] === 'string' && finalNodes[ni]) { try { registerSubtree(finalNodes[ni]); } catch (e2) {} }
+                }
+                continue;
+              }
+            }
+          }
+          throw new Error('kidOps mismatch');
+        }
         // v0.23 窗口平移补丁（虚拟滚动）：delHead+append（下移：删头 k 行+尾部
         // 新增）/ prepend+delTail（上移）。O(增量) 替代整窗 inner 替换
         if (p.delHead !== undefined || p.delTail !== undefined) {

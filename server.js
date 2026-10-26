@@ -2027,6 +2027,39 @@ async function runSession(ws, req, lifecycle) {
               else out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, delTail: shift2 });
               continue;
             }
+            // v0.24 LCS 子序列编辑脚本（kidKeep/kidIns）：覆盖窗口边界与混合
+            // 批次形态（纯平移检测的回退场景）。规范化串整数化后 O(n·m) DP
+            // （n,m≤64），keep=旧序索引（客户端按新序重排并复用保留节点），
+            // ins=[新序位置, 原始 html]。仅元素子节点容器可用（文本节点不参与
+            // children 序列，混入会丢内容）；编码比整窗省 30%+ 才启用
+            const elOnly = [...cl.childNodes].every((n2) => n2.nodeType === 1);
+            if (elOnly && kidsN.length <= 64 && prev.length <= 64) {
+              const idMap = new Map();
+              const a = prev.map((s2) => { if (!idMap.has(s2)) idMap.set(s2, idMap.size); return idMap.get(s2); });
+              const b = kidsN.map((s2) => { if (!idMap.has(s2)) idMap.set(s2, idMap.size); return idMap.get(s2); });
+              const n2 = a.length, m2 = b.length;
+              const dp = [];
+              for (let i2 = 0; i2 <= n2; i2++) dp.push(new Int32Array(m2 + 1));
+              for (let i2 = n2 - 1; i2 >= 0; i2--) for (let j2 = m2 - 1; j2 >= 0; j2--) dp[i2][j2] = a[i2] === b[j2] ? dp[i2 + 1][j2 + 1] + 1 : Math.max(dp[i2 + 1][j2], dp[i2][j2 + 1]);
+              const keepIdx = [];
+              const keptNew = [];
+              let i3 = 0, j3 = 0;
+              while (i3 < n2 && j3 < m2) {
+                if (a[i3] === b[j3]) { keepIdx.push(i3); keptNew.push(j3); i3++; j3++; }
+                else if (dp[i3 + 1][j3] >= dp[i3][j3 + 1]) i3++;
+                else j3++;
+              }
+              const keptSet = new Set(keptNew);
+              const insOps = [];
+              for (let jj = 0; jj < m2; jj++) if (!keptSet.has(jj)) insOps.push([jj, kids[jj]]);
+              const encSize = keepIdx.length * 3 + insOps.reduce((s3, x2) => s3 + x2[1].length + 6, 0) + 40;
+              const innerLen = cl.innerHTML.length;
+              if (keepIdx.length >= 2 && encSize < innerLen * 0.7) {
+                window.__xyKids.set(kidsKey, kidsN);
+                out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, kidKeep: keepIdx, kidIns: insOps, kidTotal: m2 });
+                continue;
+              }
+            }
           }
           window.__xyKids.set(kidsKey, kidsN);
           const html = cl.innerHTML;
