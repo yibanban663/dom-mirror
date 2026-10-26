@@ -7,7 +7,7 @@
 
 供宿主应用嵌入的 **Node.js 远程浏览器 DOM 镜像包**。每个会话运行独立 Chromium；客户端接收 DOM/CSS 快照和增量更新，在本地渲染并回传交互。仓库附带独立 Demo，用于体验与回归验证。
 
-**源码版本：0.11.0 · Node.js ≥ 22.12 · Apache-2.0**
+**源码版本：0.27.0 · Node.js ≥ 22.12 · Apache-2.0**
 
 源码版本不代表已发布 npm。当前为实验阶段的依赖包，兼容性与安全边界见下文。
 
@@ -48,7 +48,7 @@ npm pack
 在宿主项目安装生成的文件：
 
 ```bash
-npm install /path/to/lizhen-xxaq-dom-mirror-0.11.0.tgz
+npm install /path/to/lizhen-xxaq-dom-mirror-0.27.0.tgz
 ```
 
 宿主环境需要 Chromium 及其系统库。若由环境单独管理 Chromium，可在安装时设置 `PUPPETEER_SKIP_DOWNLOAD=true`，并通过 `launchOptions.executablePath` 传入浏览器路径。
@@ -77,6 +77,8 @@ server.listen(8088, '127.0.0.1');
 当前内置客户端要求挂载在**独立 origin 的根路径**，使用 `/ws`、`/m/*` 和 `/f/*`，尚不支持任意子路径挂载。宿主应在调用处理器之前完成鉴权、TLS 与 WebSocket Origin 校验。
 
 详见[完整宿主示例](examples/host.cjs)、[API 与迁移说明](docs/API.md)和 [WebSocket 协议](docs/PROTOCOL.md)。
+
+0.27 新增稳定节点 ID、IME、上传下载、Shadow DOM/iframe 和 canvas 兼容回归。上传使用 32KiB 原始分块，并限制会话总量、并发与过期；Node 侧跨源 iframe 抓取默认关闭，需宿主显式配置 `crossOriginFrameOrigins`，下发内容复用字段过滤策略。宿主仍须限制出站网络。具体限制见 [API 文档](docs/API.md)。
 
 ## 运行 Demo
 

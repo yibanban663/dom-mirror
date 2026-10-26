@@ -364,7 +364,7 @@
   const uploadStates = new Map();   // tid -> {file, fid, sent}
   const downloadStates = new Map(); // id -> {name, chunks, size}
   async function sendFileChunks(tid, file, maxChunk) {
-    const step = Math.max(16 * 1024, Math.min(maxChunk || 48 * 1024, 48 * 1024));
+    const step = Math.max(16 * 1024, Math.min(maxChunk || 32 * 1024, 32 * 1024));
     const buf = new Uint8Array(await file.arrayBuffer());
     for (let off = 0; off < buf.length; off += step) {
       const slice = buf.subarray(off, off + step);

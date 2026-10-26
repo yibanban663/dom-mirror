@@ -20,6 +20,7 @@ const puppeteer = require('puppeteer').default;
 const { assetUrl, selectOrigin } = require('./lib/policy');
 const { SessionStore } = require('./lib/sessions');
 const { frameCropInput } = require('./lib/frame-codec');
+const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
 
 const { normalizeOptions } = require('./lib/options');
 const { createStaticFiles } = require('./lib/static');
@@ -376,6 +377,26 @@ const PAGE_HELPERS = `(() => {
       }
     }
   }
+  function sanitizeData(clone, root = clone) {
+    const controls = node => /^(INPUT|TEXTAREA)$/.test(node.tagName) ? [node] : [...node.querySelectorAll('input,textarea')];
+    const liveControls = controls(root);
+    controls(clone).forEach((control, i) => {
+      const live = liveControls[i];
+      if (control.tagName === 'TEXTAREA') {
+        // v0.15 掩码选项：命中的输入值以等长 * 下发（对齐 hidden/password/file 的
+        // 剔除语义；默认关闭，宿主按业务配置）。交互不受影响——客户端本地输入为
+        // 真实值，掩码只作用于快照/补丁下发侧
+        if (MASK_INPUT_TYPES.has('textarea')) { control.textContent = '*'.repeat(Math.min(32, live.value.length)); return; }
+        control.textContent = live.value; return;
+      }
+      if (['hidden', 'password', 'file'].includes(control.type)) { control.removeAttribute('value'); return; }
+      if (control.type !== 'hidden') control.setAttribute('value', MASK_INPUT_TYPES.has(control.type) ? '*'.repeat(Math.min(32, live.value.length)) : live.value);
+      if (control.type === 'checkbox' || control.type === 'radio') control.toggleAttribute('checked', live.checked);
+    });
+    const elements = [...clone.querySelectorAll('*')];
+    if (clone.nodeType === 1) elements.push(clone);
+    for (const el of elements) for (const name of REDACT_ATTRIBUTES) el.removeAttribute(name);
+  }
   function sanitizeClone(root) {
     // ShadowRoot 不能直接 cloneNode（Chromium 抛错，且 cloneNode 不复制影子子树）：
     // 逐子节点克隆成 fragment；live 查询（selects/controls/canvas）仍走原 root
@@ -393,21 +414,7 @@ const PAGE_HELPERS = `(() => {
     cloneSelects.forEach((select, i) => {
       [...select.options].forEach((option, j) => option.toggleAttribute('selected', liveSelects[i].options[j].selected));
     });
-    const controls = node => /^(INPUT|TEXTAREA)$/.test(node.tagName) ? [node] : [...node.querySelectorAll('input,textarea')];
-    const liveControls = controls(root);
-    controls(clone).forEach((control, i) => {
-      const live = liveControls[i];
-      if (control.tagName === 'TEXTAREA') {
-        // v0.15 掩码选项：命中的输入值以等长 * 下发（对齐 hidden/password/file 的
-        // 剔除语义；默认关闭，宿主按业务配置）。交互不受影响——客户端本地输入为
-        // 真实值，掩码只作用于快照/补丁下发侧
-        if (live.type === 'text' && MASK_INPUT_TYPES.has('textarea')) { control.textContent = '*'.repeat(Math.min(32, live.value.length)); return; }
-        control.textContent = live.value; return;
-      }
-      if (['hidden', 'password', 'file'].includes(control.type)) { control.removeAttribute('value'); return; }
-      if (control.type !== 'hidden') control.setAttribute('value', MASK_INPUT_TYPES.has(control.type) ? '*'.repeat(Math.min(32, live.value.length)) : live.value);
-      if (control.type === 'checkbox' || control.type === 'radio') control.toggleAttribute('checked', live.checked);
-    });
+    sanitizeData(clone, root);
     if (clone.querySelectorAll) {
       clone.querySelectorAll('script,noscript,template').forEach(n => n.remove());
       clone.querySelectorAll('*').forEach(stripAttributes);
@@ -547,7 +554,7 @@ const PAGE_HELPERS = `(() => {
     return n === document.body ? parts.join('/') : null;
   }
   window.__xy = {
-    sanitizeClone, pathOf, idOf,
+    sanitizeClone, sanitizeData, pathOf, idOf,
     // 内部滚动容器收集：可滚动且 scrollTop/Left>0 的元素（id+偏移；path 为并行
     // 回退字段，下一版本删除）。源站 JS 自动滚动（如聊天自动滚到底）必须同步到
     // 代理，否则代理盒子停在未滚动位置，与瓦片/源站错位（实测流式后气泡整体低 4px）
@@ -1248,7 +1255,10 @@ async function runSession(ws, req, lifecycle) {
   // v0.13 文件传输：会话临时目录（上传暂存/下载落地），会话结束即删除
   let sessionUploadDir = null, sessionDownloadDir = null;
   let browserCdpDetached = null;
-  const sessionUploads = new Map();   // tid -> {name,size,got,chunks,fid}
+  const sessionUploads = createUploads(config.upload);
+  setInterval(() => {
+    for (const tid of sessionUploads.expire()) sendJson({ type: 'upload-end', tid, ok: false, error: 'upload expired' });
+  }, Math.min(config.upload.idleTimeoutMs, 1000));
   const sessionDownloads = new Map(); // guid -> {name,received}
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
@@ -1261,6 +1271,7 @@ async function runSession(ws, req, lifecycle) {
   let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
   let driftStreak = 0, lastDriftHeal = 0; // v0.18 分歧自愈：连续漂移计数与限频
   let xframeSecret = null; // v0.25 跨源 iframe 资产代理的会话作用域密钥
+  let xframeBusy = false;
   let xframeTimer = null; // v0.26 跨源 iframe 周期刷新（变化推 outer 补丁）
   let cleanupPromise;
   let cancelHello = () => {};
@@ -1565,42 +1576,29 @@ async function runSession(ws, req, lifecycle) {
             // puppeteer uploadFile（DOM.setFileInputFiles）→ 远端 change
             const tid = String(m.tid || '');
             const name = path.basename(String(m.name || ''));
-            const size = parseInt(m.size, 10);
+            const size = m.size;
             const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1] || '';
             if (!tid || !name || !ext || !UPLOAD_EXTS.has(ext.toLowerCase())) {
               sendJson({ type: 'upload-accept', tid, ok: false, error: 'extension not allowed' });
               break;
             }
-            if (!Number.isFinite(size) || size < 0 || size > UPLOAD_MAX) {
-              sendJson({ type: 'upload-accept', tid, ok: false, error: 'size limit ' + UPLOAD_MAX });
-              break;
-            }
-            sessionUploads.set(tid, { name, size, got: 0, chunks: [], fid: m.fid });
-            sendJson({ type: 'upload-accept', tid, ok: true, maxChunk: 48 * 1024 });
+            try {
+              sessionUploads.begin(tid, { name, size, fid: m.fid });
+              sendJson({ type: 'upload-accept', tid, ok: true, maxChunk: UPLOAD_CHUNK_BYTES });
+            } catch (error) { sendJson({ type: 'upload-accept', tid, ok: false, error: error.message }); }
             break;
           }
           case 'upload-chunk': {
-            const st = sessionUploads.get(String(m.tid || ''));
-            if (!st) break;
-            try {
-              const buf = Buffer.from(String(m.b64 || ''), 'base64');
-              st.got += buf.length;
-              if (st.got > st.size || st.got > UPLOAD_MAX) {
-                sessionUploads.delete(m.tid);
-                sendJson({ type: 'upload-end', tid: m.tid, ok: false, error: 'size mismatch' });
-                break;
-              }
-              st.chunks.push(buf);
-            } catch { sessionUploads.delete(m.tid); }
+            const tid = String(m.tid || '');
+            try { sessionUploads.append(tid, m.b64); }
+            catch (error) { sendJson({ type: 'upload-end', tid, ok: false, error: error.message }); }
             break;
           }
           case 'upload-end': {
             const tid = String(m.tid || '');
-            const st = sessionUploads.get(tid);
-            if (!st) break;
-            sessionUploads.delete(tid);
             noteInput();
             try {
+              const st = sessionUploads.finish(tid);
               const buf = Buffer.concat(st.chunks);
               if (buf.length !== st.size) throw new Error('size mismatch');
               if (!sessionUploadDir) sessionUploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-upload-'));
@@ -1961,6 +1959,8 @@ async function runSession(ws, req, lifecycle) {
       // /m/x/<secret>/<b64(origin)>）→ 存 window.__xyXframe，sanitizeClone 的
       // iframe 分支用它替代占位块。secret 每会话随机；origin 注册表限定"本会话
       // 源站实际嵌入过的源"（防开放代理）。抓取失败保持占位回退
+      if (dead || xframeBusy || !config.crossOriginFrameOrigins.length) return [];
+      xframeBusy = true;
       let xframeChanged = [];
       try {
         const xfCand = await page.evaluate((force) => {
@@ -1975,9 +1975,10 @@ async function runSession(ws, req, lifecycle) {
               if (same || (!force && window.__xyXframe.has(s)) || window.__xyXframe.size >= 16) continue;
               out.push(s);
             }
-            return out;
+            return out.slice(0, 16);
           } catch (e) { return []; }
         }, !!force);
+        if (dead) return [];
         if (xfCand.length) {
           if (!xframeSecret) {
             xframeSecret = crypto.randomBytes(12).toString('hex');
@@ -1987,7 +1988,9 @@ async function runSession(ws, req, lifecycle) {
           const htmls = [];
           for (const raw of xfCand) {
             try {
-              const abs = new URL(raw, sessionOrigin).href;
+              const url = new URL(raw, sessionOrigin);
+              if (dead || url.username || url.password || !config.crossOriginFrameOrigins.includes(url.origin)) continue;
+              const abs = url.href;
               const mod = abs.startsWith('https:') ? httpBoth.https : httpBoth.http;
               const html = await new Promise((resolve) => {
                 const req = trackRequest(mod.get(abs, { timeout: 6000, headers: { 'user-agent': 'rbi-mirror-xframe', accept: 'text/html' } }, (r) => {
@@ -2002,7 +2005,7 @@ async function runSession(ws, req, lifecycle) {
                 req.on('error', () => resolve(null));
                 req.on('timeout', () => { req.destroy(); resolve(null); });
               });
-              if (html) { origins.add(new URL(abs).origin); htmls.push({ url: abs, html }); }
+              if (html && !dead) { origins.add(new URL(abs).origin); htmls.push({ url: abs, html }); }
             } catch (e) {}
           }
           if (htmls.length) {
@@ -2013,7 +2016,7 @@ async function runSession(ws, req, lifecycle) {
               for (const item of list) {
                 try {
                   const doc = new DOMParser().parseFromString(item.html, 'text/html');
-                  doc.querySelectorAll('script, link[rel="preload"], link[rel="prefetch"]').forEach((n2) => n2.remove());
+                  doc.querySelectorAll('script,noscript,template,link[rel="preload"],link[rel="prefetch"]').forEach((n2) => n2.remove());
                   const ifrOrigin = new URL(item.url).origin;
                   const toProxy = (v) => {
                     if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v) || /^\/\//.test('' + v)) return v;
@@ -2035,6 +2038,7 @@ async function runSession(ws, req, lifecycle) {
                       }
                     }
                   }
+                  window.__xy.sanitizeData(doc.body);
                   const styles = [...doc.querySelectorAll('style')].map((s3) => s3.textContent).join('\\n');
                   const sd = '<!doctype html><html><head><style>' + styles + '</style></head>' + doc.body.innerHTML + '</html>';
                   const prevSd = window.__xyXframe.get(item.url);
@@ -2047,6 +2051,7 @@ async function runSession(ws, req, lifecycle) {
           }
         }
       } catch (e) {}
+      finally { xframeBusy = false; }
       return xframeChanged;
   }
     // v0.25/0.26：跨源 iframe 同源化内容预取（首拍全量），周期刷新定时器对
@@ -2618,7 +2623,13 @@ async function runSession(ws, req, lifecycle) {
     cdp.on('Page.downloadProgress', (ev) => {
       const st = sessionDownloads.get(ev.guid);
       if (!st) return;
-      if (ev.state === 'inProgress') { st.received = ev.receivedBytes || 0; return; }
+      if (ev.state === 'inProgress') {
+        st.received = ev.receivedBytes || 0;
+        if (st.received > DOWNLOAD_MAX || ev.totalBytes > DOWNLOAD_MAX) {
+          cdp.send('Browser.cancelDownload', { guid: ev.guid }).catch(() => {});
+        }
+        return;
+      }
       sessionDownloads.delete(ev.guid);
       if (ev.state === 'canceled') {
         sendJson({ type: 'download-end', id: ev.guid, ok: false, error: 'canceled' });
@@ -2630,6 +2641,8 @@ async function runSession(ws, req, lifecycle) {
           const dir = path.resolve(sessionDownloadDir);
           const fp = path.resolve(sessionDownloadDir, st.name);
           if (fp !== dir && !fp.startsWith(dir + path.sep)) throw new Error('bad download path');
+          const size = (await fsp.stat(fp)).size;
+          if (size > DOWNLOAD_MAX) { await fsp.rm(fp, { force: true }); throw new Error('size limit ' + DOWNLOAD_MAX); }
           const buf = await fsp.readFile(fp);
           await fsp.rm(fp, { force: true }).catch(() => {});
           if (buf.length > DOWNLOAD_MAX) throw new Error('size limit ' + DOWNLOAD_MAX);

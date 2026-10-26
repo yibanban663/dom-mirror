@@ -35,7 +35,11 @@
     const file = f.files && f.files[0];
     if (!file) { up.textContent = 'no file'; return; }
     const r = new FileReader();
-    r.onload = () => { up.textContent = 'GOT ' + file.name + ' ' + file.size + 'B: ' + String(r.result).slice(0, 80); };
+    r.onload = async () => {
+      const bytes = await file.arrayBuffer();
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
+      up.textContent = 'GOT ' + file.name + ' ' + file.size + 'B: ' + String(r.result).slice(0, 80) + ' SHA256=' + hash;
+    };
     r.onerror = () => { up.textContent = 'read fail'; };
     r.readAsText(file);
   });

@@ -18,7 +18,7 @@ for (const name of ['tools/capacity-host.cjs', 'tools/capacity-client.cjs', 'too
   'tools/memory-trace.cjs', 'tools/analyze-memory-growth.cjs', 'tools/summarize-trace-pair.cjs', 'tools/memory-v8-preload.cjs',
   'tools/summarize-v8-memory.cjs', 'tools/summarize-v8-pair.cjs', 'tools/prepare-package-business.cjs',
   'tools/package-business-host.cjs', 'tools/verify-package-lifecycle.cjs', 'tools/verify-package-provenance.cjs',
-  'tools/summarize-package-business.cjs']) {
+  'tools/summarize-package-business.cjs', 'tools/verify-xframe-policy.cjs', 'lib/uploads.js', 'tools/generality-result.cjs', 'tools/verify-generality.cjs']) {
   new vm.Script(fs.readFileSync(path.join(root, name), 'utf8'), { filename: name });
 }
 

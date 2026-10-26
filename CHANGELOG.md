@@ -1,5 +1,7 @@
 # v0.27.0
 
+- 合并准入修复：上传原始分块降至 32KiB，增加会话总量/并发/空闲超时及文件数预算；跨源 iframe Node 抓取改为显式宿主白名单并复用字段过滤；移除业务模式重试与浏览器预热，保留首次失败；补 64KiB 以上与 8MiB 上传 SHA-256、默认拒绝及字段过滤回归，同步消费端锁文件版本。
+
 - closed shadow root 定案（可观测范围扩到规范极限）：attachShadow 补丁经
   evaluateOnNewDocument 在页面脚本前安装（parse 期创建的 closed root 也进
   注册表）；序列化以声明式 shadowrootmode=closed 内联；客户端统一
