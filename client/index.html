@@ -616,6 +616,39 @@
           }
         } catch (e) {}
       }
+      // v0.19：HTML5 拖拽转发——镜像上 dragstart/over/drop/end 合成到源站
+      // （dragover/drop 本地 preventDefault，源站为唯一事实源；drop 载荷尽量读取）
+      {
+        let lastOver = 0;
+        const dndSend = (kind, e) => {
+          const t = realTarget(e);
+          const id = t ? idOfMirror(t) : null;
+          const o = { type: 'dnd', kind, x: Math.round(e.clientX), y: Math.round(e.clientY) };
+          if (id !== null) o.id = id;
+          if (kind === 'drop') {
+            try { const txt = e.dataTransfer.getData('text/plain'); if (txt) o.text = txt; } catch (err) {}
+          }
+          send(o);
+        };
+        mirrorRoot.addEventListener('dragstart', (e) => dndSend('start', e), true);
+        mirrorRoot.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          const now = Date.now();
+          if (now - lastOver < 100) return;
+          lastOver = now;
+          dndSend('over', e);
+        }, true);
+        mirrorRoot.addEventListener('drop', (e) => { e.preventDefault(); dndSend('drop', e); }, true);
+        mirrorRoot.addEventListener('dragend', (e) => dndSend('end', e), true);
+      }
+      // v0.19：触摸转发（移动端访客）——本地 preventDefault 防合成鼠标双事件，
+      // 触点坐标送 CDP dispatchTouchEvent，源站按真实触点语义响应
+      {
+        const ptsOf = (e) => [...(e.touches || e.changedTouches || [])].map((t) => [t.clientX, t.clientY]);
+        mirrorRoot.addEventListener('touchstart', (e) => { e.preventDefault(); send({ type: 'touch', kind: 'start', pts: ptsOf(e) }); }, { passive: false, capture: true });
+        mirrorRoot.addEventListener('touchmove', (e) => { e.preventDefault(); send({ type: 'touch', kind: 'move', pts: ptsOf(e) }); }, { passive: false, capture: true });
+        mirrorRoot.addEventListener('touchend', (e) => { e.preventDefault(); send({ type: 'touch', kind: 'end', pts: ptsOf(e) }); }, { passive: false, capture: true });
+      }
       // 内部滚动容器（v3 dom）：本地原生滚动 + 上报滚动位置（capture 收不冒泡
       // 的滚动事件），服务端跟随到同位置——懒加载内容以补丁回来、后续瓦片
       // 裁剪坐标正确。40ms 节流。
@@ -1412,6 +1445,11 @@
                 const el = mirrorFind(p.id);
                 if (!el || !el.tagName) continue;
                 if (p.checked !== undefined && (el.type === 'checkbox' || el.type === 'radio')) el.checked = !!p.checked;
+                if (p.sel !== undefined && Array.isArray(p.sel) && el.tagName === 'SELECT') {
+                  // 多选（option.selected 直改路径）：sel 可独立于 value 下发
+                  for (const o of el.options) o.selected = p.sel.includes(o.value);
+                  continue;
+                }
                 if (p.media !== undefined && (el.tagName === 'VIDEO' || el.tagName === 'AUDIO')) {
                   // 媒态同步（v0.17）：暂停/进度/静音/音量跟随源站。有声 play 受
                   // 自动播放策略限制可能被拒（catch 静默，进度仍同步）；镜像侧
@@ -1462,6 +1500,18 @@
               }
             } catch (e) {}
           }
+          if (j.type === 'focus-sync') {
+            // v0.19：源站 JS 聚焦跟随（autofocus/校验定位）。访客正在文本输入
+            // （输入框/富文本持有焦点=打字中）时不抢；按钮等非输入焦点不阻塞——
+            // 点击"聚焦"按钮后程序化聚焦必须落到镜像输入框
+            try {
+              const el = (j.id !== null && j.id !== undefined) ? mirrorFind(j.id) : null;
+              const ae = mirrorRoot.activeElement;
+              const engaged = !!(ae && ae !== mirrorBody && ae.matches && ae.matches('input, textarea, select, [contenteditable="true"], [contenteditable=""]'));
+              if (el && el.focus && !engaged) el.focus({ preventScroll: true });
+              else if (!el && !engaged && ae && ae.blur) ae.blur();
+            } catch (e) {}
+          }
           if (j.type === 'error') {
             lastErr = j.msg; setStatus('错误: ' + j.msg, false);
             if (j.terminal) {
@@ -1505,7 +1555,19 @@
     m('mFrames').textContent = frames;
     m('mTotal').textContent = (bytes / 1024).toFixed(1);
     if (winFps.length === 0) m('mIdle').textContent = connected ? 'idle' : 'disconnected';
-    if (connected && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+    // v0.19：ping 携带镜像元素指纹（剔除引擎自建层：选区高亮/瓦片图层），
+    // 服务端与源站比对做分歧自愈（Timelapse/Dolos 思想）
+    if (connected && ws.readyState === 1) {
+      let fp = null;
+      try {
+        if (mirrorBody) {
+          const sr = mirrorRoot;
+          const art = sr.querySelectorAll('[data-xy-sel], .xy-tiles, [data-xy-sel] *');
+          fp = mirrorBody.querySelectorAll('*').length - art.length;
+        }
+      } catch (e) {}
+      ws.send(JSON.stringify(fp !== null ? { type: 'ping', t: performance.now(), fp } : { type: 'ping', t: performance.now() }));
+    }
   }, 1000);
 
   document.querySelectorAll('.quality button[data-m]').forEach(b => b.addEventListener('click', () => {

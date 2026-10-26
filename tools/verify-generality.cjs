@@ -81,6 +81,12 @@ async function main() {
       out.checks.pgm_checked = pgm.cbB === true && pgm.rdX === true && pgm.rdY === false;
       out.checks.pgm_value = pgm.s1 === 'three' && pgm.t1 === 'pgm';
       out.pgm = pgm;
+      // 多选 selected 程序化直改（option.selected setter 劫持路径）
+      await page.evaluate(() => window.__click('#selmulti'));
+      out.checks.pgm_multi = await page.waitForFunction(() => {
+        const s2 = window.__q('#s2');
+        return s2 && [...s2.selectedOptions].map(o => o.value).join(',') === 'm2,m3';
+      }, { timeout: 8000 }).then(() => true).catch(() => false);
     }
 
     if (CASE === 'editor') {
@@ -202,6 +208,18 @@ async function main() {
         return !!(sr.querySelector('[data-xy-canvas-stream]') || sr.querySelector('[data-xy-canvas]'));
       });
       out.checks.webgl_node = await page.evaluate(() => window.__qa('[data-xy-canvas-stream], [data-xy-canvas]').length >= 2);
+      // WebGL 可见性门控：off 屏动画画布（top:-9999px）不产生捕获更新——
+      // 其镜像 img 的 src 在 3s 观察窗内保持不变（on 屏画布正常位图通道）
+      out.checks.webgl_offscreen_gated = await page.evaluate(async () => {
+        const imgs = window.__qa('img[data-xy-canvas]');
+        if (imgs.length < 3) return false;
+        const srcs = imgs.map(im => im.src);
+        await new Promise(r => setTimeout(r, 3000));
+        const after = window.__qa('img[data-xy-canvas]').map(im => im.src);
+        if (after.length !== srcs.length) return false;
+        // 文档顺序：c2d(可能指令流canvas) cgl cgl-off —— 最后一个是 off 屏
+        return after[after.length - 1] === srcs[srcs.length - 1];
+      });
       out.checks.table_rows = await page.evaluate(() => window.__qa('#bigtable tr').length >= 2000);
       await page.evaluate(() => window.__click('#bigtable td.hit'));
       out.checks.table_click = await waitRep('row:\\d+', 8000);
@@ -211,6 +229,53 @@ async function main() {
       await settle(900);
       out.checks.term_keys = await page.evaluate(() => /keys:k9/.test(window.__rep()));
       out.report_final = (await rep()).slice(0, 160);
+    }
+
+    if (CASE === 'dnd') {
+      await page.waitForFunction(() => !!window.__q('#item'), { timeout: 20000 });
+      await settle(800);
+      // HTML5 拖拽：镜像上合成 dragstart → dragover(dz) → drop(dz)，载荷 ITEM-A
+      // 应在源站被读取并回显（drop:ITEM-A + 放置区文案）
+      const dnd = await page.evaluate(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const item = sr.querySelector('#item');
+        const dz = sr.querySelector('#dz');
+        if (!item || !dz) return false;
+        const ir = item.getBoundingClientRect();
+        const dr = dz.getBoundingClientRect();
+        const dt = new DataTransfer();
+        dt.setData('text/plain', 'ITEM-A');
+        const mk = (type, el, x, y, d2) => {
+          const ev = new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: d2 || dt });
+          el.dispatchEvent(ev);
+          return ev;
+        };
+        mk('dragstart', item, ir.left + 10, ir.top + 10);
+        mk('dragover', dz, dr.left + 30, dr.top + 20);
+        mk('drop', dz, dr.left + 30, dr.top + 20);
+        mk('dragend', item, ir.left + 10, ir.top + 10);
+        return true;
+      });
+      out.checks.dnd_drop = dnd && await waitRep('drop:ITEM-A', 9000);
+      // 触摸：合成 touchstart（真实移动端访客产生原生事件，此处合成验证链路）
+      await page.evaluate(() => {
+        const tp = window.__q('#tpad');
+        const r = tp.getBoundingClientRect();
+        const t = new Touch({ identifier: 1, target: tp, clientX: r.left + 20, clientY: r.top + 10 });
+        tp.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true, composed: true, touches: [t], targetTouches: [t], changedTouches: [t] }));
+      });
+      out.checks.touch = await waitRep('touch:', 8000);
+      // 程序化焦点：源站 focus() → 镜像光标跟随（focus-sync）
+      await page.evaluate(() => window.__click('#fbtn'));
+      out.checks.focus_sync = await page.waitForFunction(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const ae = sr.activeElement;
+        return !!(ae && (ae.id === 't1'));
+      }, { timeout: 8000 }).then(() => true).catch(() => false);
+      // 分歧自愈：删除 3 个镜像节点制造漂移 → 服务端指纹两拍内自动全量重同步
+      await page.evaluate(() => { for (const id of ['#dz', '#tpad', '#fbtn']) { const el = window.__q(id); if (el) el.remove(); } });
+      out.checks.self_heal = await page.waitForFunction(() => !!window.__q('#dz') && !!window.__q('#fbtn'), { timeout: 15000 }).then(() => true).catch(() => false);
+      out.dnd_final = (await rep()).slice(0, 120);
     }
 
     out.bytes = await page.evaluate(() => window.__bytes).catch(() => ({}));

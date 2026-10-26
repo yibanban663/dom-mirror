@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const root = path.join(__dirname, '..');
 
-for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/scroll.html', 'test/fixtures/data-boundary.html', 'test/fixtures/node-id.html', 'test/fixtures/longtail-p0.html', 'test/fixtures/shadow.html', 'test/fixtures/iframe.html', 'test/fixtures/iframe-child.html', 'test/fixtures/canvas2d.html', 'test/fixtures/enhance.html', 'test/fixtures/gen-forms.html', 'test/fixtures/gen-editor.html', 'test/fixtures/gen-media-pix.html', 'test/fixtures/gen-layout.html', 'test/fixtures/gen-style.html', 'test/fixtures/gen-canvas-key.html', 'tools/fixtures/capacity.html']) {
+for (const name of ['client/index.html', 'protected/index.html', 'test/fixtures/scroll.html', 'test/fixtures/data-boundary.html', 'test/fixtures/node-id.html', 'test/fixtures/longtail-p0.html', 'test/fixtures/shadow.html', 'test/fixtures/iframe.html', 'test/fixtures/iframe-child.html', 'test/fixtures/canvas2d.html', 'test/fixtures/enhance.html', 'test/fixtures/gen-forms.html', 'test/fixtures/gen-editor.html', 'test/fixtures/gen-media-pix.html', 'test/fixtures/gen-layout.html', 'test/fixtures/gen-style.html', 'test/fixtures/gen-canvas-key.html', 'test/fixtures/gen-dnd.html', 'tools/fixtures/capacity.html']) {
   const html = fs.readFileSync(path.join(root, name), 'utf8');
   for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
     new vm.Script(match[1], { filename: name });

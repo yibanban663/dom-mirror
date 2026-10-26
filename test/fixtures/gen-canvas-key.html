@@ -15,6 +15,7 @@
   <h3>画布/大表/键盘</h3>
   <canvas id="c2d" width="120" height="60"></canvas>
   <canvas id="cgl" width="120" height="60"></canvas>
+  <canvas id="cgl-off" width="120" height="60" style="position:absolute;top:-9999px;left:0"></canvas>
   <div id="keys" tabindex="0" style="border:1px dashed #99a;padding:6px;margin-top:8px">键盘捕获器：点我后打字</div>
   <table id="bigtable"></table>
   <div id="report">REPORT:</div>
@@ -29,13 +30,19 @@
       g.fillRect(e.clientX - r.left - 8, e.clientY - r.top - 8, 16, 16);
       report('c2d-drawn');
     });
-    // WebGL：常驻三角形（位图轮询路径）
+    // WebGL：常驻三角形（位图轮询路径）——on屏与 off屏（top:-9999px）各一个，
+    // 都持续动画；off屏必须被可见性门控跳过（不出捕获流量）
     const gl = document.getElementById('cgl').getContext('webgl');
     if (gl) {
       gl.clearColor(0.15, 0.55, 0.35, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       report('gl-init');
     } else report('gl-FAIL');
+    const glo = document.getElementById('cgl-off').getContext('webgl');
+    let ph = 0;
+    if (glo) {
+      (function animOff() { ph += 0.01; glo.clearColor(0.5 + 0.5 * Math.sin(ph), 0.3, 0.7, 1); glo.clear(glo.COLOR_BUFFER_BIT); requestAnimationFrame(animOff); })();
+    }
     // 键盘捕获
     const seq = [];
     document.getElementById('keys').addEventListener('keydown', (e) => {

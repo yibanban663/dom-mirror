@@ -52,12 +52,17 @@
 4. **cssSame 快照**：SPA 路由切换的导航重拍不再重发 ~200KB 相同 css（cssSame 标记+客户端缓存；hello/恢复握手后必发全量）。
 5. **WS permessage-deflate**（阈值 512B）：JSON 文本 5-10× 缩减，浏览器透明协商。
 
-### P2（部分实现）
-6. **补丁粒度细化**（DiffSync 思想落地）：✅ 文本节点级补丁（{id,ti,text}，characterData 只发文本）+ 追加型补丁（{id,append}，纯末尾追加只发新增节点，sanitize 同路）——聊天/日志/表格流从 O(容器) 降为 O(增量)。
-7. **分歧检测自愈**（Timelapse/Dolos 的 divergence detection 思想）：服务端 1Hz 统计源站元素指纹（标签直方图 + 文本节点数），客户端在 sstats 心跳里回带镜像同指纹；漂移超阈值 → 自动全量重同步 + sstats 告警字段（drift）。把"镜像悄悄坏了"变成"自愈+可观测"。（设计定稿，待实现）
-8. **拖拽/触摸**（D5）：HTML5 DnD 合成、触摸事件（移动端访客）。（待做）
-9. **WebGL 帧差捕获**（D6）。（待做）
-10. **焦点/嵌套 iframe 输入复用**（D5，Timelapse 教训清单）。（待做）
+### P2（v0.19 全部落地，基准 7/7 绿）
+6. **补丁粒度细化**（DiffSync 思想落地）：✅ 文本节点级补丁（{id,ti,text}）+ 追加型补丁（{id,append}，ID 注册表判别真追加——同父移动也是 add-only 记录，实测 node-id 回归拦截）。
+7. **分歧检测自愈**（Timelapse/Dolos 技术）：✅ ping 携带镜像元素指纹（剔除引擎自建层与源站 script/spacer），漂移 >max(2,2%) 持续两拍且距上次自愈 >10s → 自动全量重同步（基准：删 3 节点 → 自动恢复）。
+8. **拖拽/触摸**：✅ HTML5 DnD（dragstart/over/drop/end 合成 + text/plain 载荷）；✅ 触摸（touchstart/move/end → CDP dispatchTouchEvent，本地 preventDefault 防合成鼠标双事件）。
+9. **WebGL 可见性门控**：✅（既有行为补断言锁定：off 屏动画画布零捕获，on 屏正常位图通道）。
+10. **焦点同步**：✅ focus-sync（源站程序化聚焦跟随；访客文本输入中不抢）。多选 select 的 option.selected 劫持并入 dom-props.sel。
+
+### 已知边界（记录在案，不计入缺口）
+- 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
+- 跨源 iframe 内容（安全设计：占位符）。
+- closed shadow root（不可观测，规范如此）。
 
 ## 四、验证纪律（对齐用户要求）
 

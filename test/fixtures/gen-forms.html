@@ -26,6 +26,7 @@
   <textarea id="ta1" rows="3"></textarea>
   <button id="dump">汇总</button>
   <button id="prog">程序化改态</button>
+  <button id="selmulti">多选改态</button>
   <div id="state">INIT</div>
   <script>
     // 状态汇总：把表单真实值序列化进 DOM（镜像 patch 回显 = 服务端真实状态的黑盒出口）
@@ -55,6 +56,12 @@
       s1.value = 'three';
       document.getElementById('t1').value = 'pgm';
       dump();
+    });
+    // 多选 selected 直改（option.selected setter 劫持路径）
+    document.getElementById('selmulti').addEventListener('click', () => {
+      const s2 = document.getElementById('s2');
+      s2.options[1].selected = true;
+      s2.options[2].selected = true;
     });
     document.body.addEventListener('change', () => { document.title = 'changed:' + Date.now(); });
   </script>

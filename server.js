@@ -246,7 +246,13 @@ const PAGE_HELPERS = `(() => {
             try {
               if (window.__xy && this.isConnected && this.form !== undefined) {
                 const st = extract(this);
-                if (st) window.__xyPropQ.set(window.__xy.idOf(this), Object.assign({ id: window.__xy.idOf(this) }, st));
+                if (st) {
+                  // extract 可重定向主体（如 option.selected → 所属 select）
+                  const owner = st.__idOf || this;
+                  delete st.__idOf;
+                  const oid = window.__xy.idOf(owner);
+                  window.__xyPropQ.set(oid, Object.assign({ id: oid }, st));
+                }
               }
             } catch (e) {}
           },
@@ -259,6 +265,13 @@ const PAGE_HELPERS = `(() => {
     patchProp(window.HTMLInputElement.prototype, 'value', (el) => ({ value: String(el.value) }));
     patchProp(window.HTMLTextAreaElement.prototype, 'value', (el) => ({ value: String(el.value) }));
     patchProp(window.HTMLSelectElement.prototype, 'value', (el) => ({ value: String(el.value), sel: [...el.selectedOptions].map(o => o.value) }));
+    // v0.18：多选的 option.selected 直改同样对 MutationObserver 不可见——劫持后
+    // 以其所属 select 为主体入队（镜像端按 sel 数组整体应用）
+    patchProp(window.HTMLOptionElement.prototype, 'selected', (el) => {
+      const s = el.closest ? el.closest('select') : null;
+      if (!s) return null;
+      return { __idOf: s, sel: [...s.selectedOptions].map(o => o.value) };
+    });
   }
   if (window.__xy) return;
   // 会话源站 origin（pageHelpersFor 按会话替换；多源会话缺省回退只影响绝对地址改写）
@@ -1148,6 +1161,7 @@ async function runSession(ws, req, lifecycle) {
   let helloIv = null;
   let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
   let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
+  let driftStreak = 0, lastDriftHeal = 0; // v0.18 分歧自愈：连续漂移计数与限频
   let cleanupPromise;
   let cancelHello = () => {};
   const cleanup = () => {
@@ -1202,7 +1216,28 @@ async function runSession(ws, req, lifecycle) {
   let dispatchReady = false;
   const handleCommand = async (m) => {
     switch (m.type) {
-          case 'ping': sendJson({ type: 'pong', t: m.t }); break;
+          case 'ping': {
+            sendJson({ type: 'pong', t: m.t });
+            // v0.18：分歧检测（Timelapse/Dolos 思想）——客户端 ping 携带镜像元素
+            // 指纹，与源站比对；持续漂移两拍且距上次自愈 >10s → 自动全量重同步。
+            // 把"镜像悄悄坏了"变成"自愈+可观测"（sstats 前打一行日志）
+            if (m.fp !== undefined && Number.isFinite(m.fp) && mode === 'dom' && domActive && !dead) {
+              try {
+                const srvFp = await page.evaluate(() => document.body.getElementsByTagName('*').length - document.body.querySelectorAll('script, [data-xy-space]').length);
+                const drift = Math.abs(srvFp - m.fp);
+                if (drift > Math.max(2, srvFp * 0.02)) {
+                  driftStreak++;
+                  if (driftStreak >= 2 && Date.now() - lastDriftHeal > 10000) {
+                    lastDriftHeal = Date.now();
+                    driftStreak = 0;
+                    logger.log(`[drift ] self-heal: server=${srvFp} mirror=${m.fp} delta=${drift}`);
+                    startDomMirror().catch(() => {});
+                  }
+                } else driftStreak = 0;
+              } catch (e) {}
+            }
+            break;
+          }
           case 'hello': {
             // 会话中 DPR/视口变化（缩放、跨屏、拉窗口）：重新模拟并全量重发瓦片；
             // hello 同时是断线恢复握手——客户端 css 缓存已丢，置空必发全量
@@ -1345,6 +1380,44 @@ async function runSession(ws, req, lifecycle) {
               if (m.action !== 'up') await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', text: m.text, key: m.text, unmodifiedText: m.text });
               else await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: m.text });
             }
+            break;
+          }
+          case 'dnd': {
+            // HTML5 拖拽（v0.19）：客户端镜像上 dragstart/over/drop → 源站合成
+            // DragEvent（DataTransfer 带 text/plain 载荷，drop 时可读取）。
+            // dragover/drop 目标按坐标命中（elementFromPoint），与原生语义一致
+            noteInput();
+            try {
+              await page.evaluate((kind, x, y, id, text, types) => {
+                const mk = (t, el) => {
+                  const dt = new DataTransfer();
+                  if (text !== undefined && text !== null) { try { dt.setData('text/plain', String(text)); } catch (e) {} }
+                  const ev = new DragEvent(t, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: dt });
+                  (el || document.body).dispatchEvent(ev);
+                  return ev;
+                };
+                if (kind === 'start') {
+                  const el = id !== undefined ? window.__xy.find(id) : document.elementFromPoint(x, y);
+                  if (el) mk('dragstart', el);
+                } else if (kind === 'over' || kind === 'drop' || kind === 'end') {
+                  const el = document.elementFromPoint(x, y) || document.body;
+                  mk(kind === 'over' ? 'dragover' : kind === 'drop' ? 'drop' : 'dragend', el);
+                }
+              }, m.kind, Math.round(m.x || 0), Math.round(m.y || 0), m.id, m.text, m.types).catch(() => {});
+            } catch (e) {}
+            break;
+          }
+          case 'touch': {
+            // 触摸（v0.19）：客户端 touchstart/move/end → CDP dispatchTouchEvent。
+            // 源站按访客真实触点响应（移动端访客的列表滑动/长按等手势语义）
+            noteInput();
+            try {
+              const pts = Array.isArray(m.pts) ? m.pts.map((p) => ({ x: Math.round(p[0]), y: Math.round(p[1] )})) : [];
+              const type = m.kind === 'start' ? 'touchStart' : m.kind === 'move' ? 'touchMove' : 'touchEnd';
+              const args = { type, touchPoints: pts };
+              if (type === 'touchEnd') { args.touchPoints = []; args.releaseTouchPoints = pts; }
+              await cdp.send('Input.dispatchTouchEvent', args);
+            } catch (e) {}
             break;
           }
           case 'composition': {
@@ -1605,6 +1678,10 @@ async function runSession(ws, req, lifecycle) {
           // v0.17：选区补丁单独下发
           const selPatch = patches.find(p => p && p.__xySel);
           if (selPatch && domActive && ws.readyState === 1) sendJson({ type: 'dom-sel', ...selPatch.__xySel });
+          // v0.18：焦点同步单独下发
+          const focusPatch = patches.find(p => p && p.__xyFocus);
+          if (focusPatch && domActive && ws.readyState === 1) sendJson({ type: 'focus-sync', id: focusPatch.__xyFocus.id });
+          rest = rest.filter(p => p.__xyFocus === undefined);
           // v0.17 带宽：文本节点级/追加型补丁直发（O(增量) 而非 O(容器)）；
           // 追加先行——同批中文本补丁可能指向刚追加内容的子节点，顺序保证注册先于定位
           const appendPatches = patches.filter(p => p && p.append !== undefined);
@@ -1741,6 +1818,24 @@ async function runSession(ws, req, lifecycle) {
             } catch (e) {}
           }, 150);
         });
+      }
+      // v0.18：焦点同步——源站 JS 聚焦字段（autofocus/校验定位）时镜像跟随光标。
+      // 300ms 节流；body/无焦点发 null
+      if (!window.__xyFocusHooked) {
+        window.__xyFocusHooked = true;
+        let fT = null, lastF = undefined;
+        const ping = () => {
+          fT = null;
+          try {
+            const ae = document.activeElement;
+            const id = (ae && ae !== document.body && ae !== document.documentElement && window.__xy) ? window.__xy.idOf(ae) : null;
+            if (id === lastF) return;
+            lastF = id;
+            window.__xyPatch([{ __xyFocus: { id } }]);
+          } catch (e) {}
+        };
+        window.addEventListener('focusin', () => { if (!fT) fT = setTimeout(ping, 300); }, true);
+        window.addEventListener('focusout', () => { if (!fT) fT = setTimeout(ping, 300); }, true);
       }
       // v0.14：现存 shadow root 全量兜底观察（attachShadow patch 覆盖此后新建的）
       if (window.__xy && window.__xy.observeShadows) window.__xy.observeShadows();

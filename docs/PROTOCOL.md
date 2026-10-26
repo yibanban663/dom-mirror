@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.18.0）
+# WebSocket 协议（实现版本 0.19.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。WS 启用 permessage-deflate（阈值 512B，文本快照/补丁典型 5-10× 缩减）。
 
@@ -23,7 +23,9 @@
 | `upload-begin` | `tid,name,size,fid` | 镜像 file input 选择本地文件后发起上传；tid 为客户端生成传输号，fid 为字段节点 id |
 | `upload-chunk` | `tid,b64` | 上传分块（≤48KiB base64）；服务端校验累计大小 |
 | `upload-end` | `tid` | 分块结束；服务端落会话临时目录并 CDP setFileInputFiles 到远端字段 |
-| `ping` | `t` | RTT 探测 |
+| `ping` | `t,fp?` | RTT 探测；fp=镜像元素指纹（剔除引擎自建层），服务端与源站比对做分歧自愈 |
+| `dnd` | `kind,x,y,id?,text?` | v0.19：HTML5 拖拽转发——镜像上 dragstart/over/drop/end 合成到源站（DataTransfer 带 text/plain 载荷；over/drop 目标按坐标命中） |
+| `touch` | `kind,pts` | v0.19：触摸转发——touchstart/move/end 触点坐标 → CDP dispatchTouchEvent（本地 preventDefault 防合成鼠标双事件） |
 | `release` | 无 | 立即结束当前逻辑会话并关闭浏览器；关闭 WS 则进入保留期 |
 
 ## 服务端 → 客户端
@@ -36,8 +38,9 @@
 | `mode` | `mode` | 通道切换确认 |
 | `dom-snapshot` | `css,cssSame?,html,title,w,h,tiles,frame,docClass,docAttrs,sx,sy,scrollers,bodyId` | 全量镜像；html 元素携带 `data-xy-id`，bodyId 为镜像根对应的源站 body id；frame 模式附带 PNG 条带底板。css 按文档序收集（style/link 交错保持原级联顺序，adopted 排最后；同源 @import 服务端递归内联深度≤3），其中 url() 与元素资源 URL 一并改写为 /m 代理路径。cssSame=true 表示 css 与上次快照相同已省略，客户端用缓存（hello/恢复握手后服务端必发全量）。客户端对 css+html 与上一次完全相同的快照跳过整树重建（仅跟随滚动/标题），导航兜底重拍不再整页闪动 |
 | `dom-patches` | `patches` | 子树补丁：`{id,outer|inner}`（整段替换，元素携带 id 与 path，id 为主）；`{id,ti,text}` 文本节点级（characterData 只发文本）；`{id,append}` 追加型（纯末尾新节点只发增量，同 sanitize；既有节点移动不适用——回落 inner 保正确） |
-| `dom-props` | `props` | v0.17：程序化表单/媒体态 `{id,checked?,value?,sel?,media?}`——源站 JS 直改 checked/value 或媒体 play/pause/seek/音量（MutationObserver 盲区）由原型 setter 劫持与媒体事件捕获，60ms 合并下发；客户端静默应用（焦点中元素的 value 跳过防打断）。media={paused,t,muted,vol}，有声播放受自动播放策略限制为已知边界 |
+| `dom-props` | `props` | v0.17：程序化表单/媒体态 `{id,checked?,value?,sel?,media?}`——源站 JS 直改 checked/value/option.selected 或媒体 play/pause/seek/音量（MutationObserver 盲区）由原型 setter 劫持与媒体事件捕获，60ms 合并下发；客户端静默应用（焦点中元素的 value 跳过防打断）。media={paused,t,muted,vol}，有声播放受自动播放策略限制为已知边界 |
 | `dom-sel` | `rects` | v0.18：程序化选区跟随。镜像在 shadow root 内、文档级 Selection 无法跨边界设置——服务端下发选区矩形（Range.getClientRects 页面坐标，≤200 个），客户端绝对定位高亮层随镜像文档流滚动 |
+| `focus-sync` | `id?` | v0.19：源站程序化聚焦跟随（autofocus/校验定位）；访客文本输入中不抢焦点 |
 | `doc-class` | `cls` | 更新镜像根 class |
 | `scroll-sync` | `sx,sy,scrolls` | 服务端滚动位置；scrolls 为 `{id,top,left}` 对象数组 |
 | `canvas-tile` | `id,path,url` | 更新 canvas 对应镜像图片 |

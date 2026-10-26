@@ -1,3 +1,20 @@
+# v0.19.0
+
+- 分歧检测自愈（Timelapse/Dolos 思想）：ping 携带镜像元素指纹（剔除引擎自建层
+  与源站 script/spacer），与源站比对漂移 >max(2,2%) 持续两拍且距上次自愈 >10s
+  时自动全量重同步——把"镜像悄悄坏了"变成"自愈+可观测"。
+- HTML5 拖拽：镜像 dragstart/over/drop/end 合成到源站（DataTransfer 携带
+  text/plain 载荷，over/drop 按坐标命中）；本地 preventDefault 保源站唯一事实源。
+- 触摸转发：touchstart/move/end 触点 → CDP dispatchTouchEvent，本地
+  preventDefault 防合成鼠标双事件（移动端访客手势语义）。
+- 焦点同步（focus-sync）：源站程序化聚焦（autofocus/校验定位）镜像跟随；
+  访客文本输入中不抢焦点。
+- 多选 select 程序化改态：option.selected setter 劫持，以所属 select 为主体
+  并入 dom-props.sel（修复 sel 独立下发时客户端不应用的嵌套分支缺陷）。
+- WebGL 位图捕获可见性门控断言锁定（off 屏动画画布零捕获）。
+- 基准新增 gen-dnd case（拖拽/触摸/焦点/自愈四断言），forms 增多选程序化改态
+  断言，canvas 增离屏门控断言——7 case 全绿；全量回归 12 组通过。
+
 # v0.18.0
 
 - 同源 @import 服务端递归内联（cssInlineImports，深度≤3）：镜像首帧样式完整，
