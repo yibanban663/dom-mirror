@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-media-audio</title>
+  <style>body { font: 14px system-ui, sans-serif; margin: 24px; } #report { margin-top: 12px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; } button { margin-right: 8px; }</style>
+</head>
+<body>
+  <h3>有声媒体跟随（用户激活语义）</h3>
+  <audio id="a1" controls></audio>
+  <button id="play">播放（不静音）</button>
+  <button id="pause">暂停</button>
+  <div id="report">REPORT:</div>
+  <script>
+    // 1s 8bit PCM WAV（JS 构造）——controls 由浏览器原生渲染，默认不静音
+    (function () {
+      const sr = 8000, ch = 1, bits = 8, n = sr, bytes = 44 + n;
+      const buf = new Uint8Array(bytes);
+      const w = (o, s) => { for (let i = 0; i < s.length; i++) buf[o + i] = s.charCodeAt(i); };
+      const u32 = (o, v) => { buf[o] = v & 255; buf[o + 1] = (v >> 8) & 255; buf[o + 2] = (v >> 16) & 255; buf[o + 3] = (v >> 24) & 255; };
+      const u16 = (o, v) => { buf[o] = v & 255; buf[o + 1] = (v >> 8) & 255; };
+      w(0, 'RIFF'); u32(4, 36 + n); w(8, 'WAVE'); w(12, 'fmt ');
+      u32(16, 16); u16(20, 1); u16(22, ch);
+      u32(24, sr); u32(28, sr * ch * bits / 8); u16(32, ch * bits / 8); u16(34, bits);
+      w(36, 'data'); u32(40, n);
+      let bin = '';
+      for (let i = 0; i < bytes; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      const a1 = document.getElementById('a1');
+      a1.src = 'data:audio/wav;base64,' + btoa(bin);
+      a1.muted = false;
+    })();
+    const a1 = document.getElementById('a1');
+    const report = () => {
+      document.getElementById('report').textContent = 'REPORT:audio:' + (a1.paused ? 'paused' : 'playing') + '@' + a1.currentTime.toFixed(2) + (a1.muted ? 'm' : 'u');
+    };
+    document.getElementById('play').addEventListener('click', () => {
+      a1.muted = false;
+      a1.play().then(() => { report(); setTimeout(report, 300); }).catch((e) => { report(); document.getElementById('report').textContent += '|ERR:' + e.name; });
+    });
+    document.getElementById('pause').addEventListener('click', () => { a1.pause(); setTimeout(report, 200); });
+    setTimeout(report, 1500);
+  </script>
+</body>
+</html>

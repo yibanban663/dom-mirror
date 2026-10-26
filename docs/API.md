@@ -1,4 +1,4 @@
-# Node.js 集成 API（0.11.0）
+# Node.js 集成 API（0.27.0）
 
 唯一公共入口为 `createMirror(options)`，支持 CommonJS，并附带 `index.d.ts`。引入包不会监听端口、启动 Chromium 或注册进程级错误/信号处理。实例不读取 Demo 环境变量；Puppeteer 自身的浏览器查找和安装环境配置仍按其行为生效。
 
@@ -24,6 +24,11 @@ const mirror = createMirror({
 | `defaultMode` | `dom` | `dom` 或 `frame` |
 | `presentation` | `embedded` | 隐藏演示壳；`demo` 保留模式切换和统计 |
 | `allowedOrigins` | `[]` | 允许 `x-rbi-origin` 选取的源站列表；不是 WS Origin 校验 |
+| `crossOriginFrameOrigins` | `[]` | 允许 Node 侧抓取的跨源 iframe 源列表；默认仅占位，不允许 URL 凭据；独立于 `allowedOrigins` |
+| `canvasStream` | `true` | 可序列化 2D canvas 指令流，其他画布回退位图 |
+| `maskInputTypes` | `[]` | 指定输入类型的下发值改为最多 32 个星号；textarea 使用 `textarea`，不处理像素或上行数据 |
+| `upload` | 见下文 | 文件扩展名、单文件/会话总量、并发与过期限制 |
+| `download.maxBytes` | `33554432` | 下载单文件上限；进度超限请求取消，完整读入内存前复核大小 |
 | `obfuscate` | `true` | 有字体池时启用；无池自动降级，不提供保密保证 |
 | `redactAttributes` | `[]` | 从镜像元素及 html/body 元数据中剔除指定属性；精确名称、忽略大小写，不接受选择器或通配符 |
 | `getSessionIdentity` | 未配置 | 同步读取宿主已验证的身份；绑定 WS 会话及恢复 scope，空值/异常/Promise 拒绝升级为 401 |
@@ -39,6 +44,12 @@ const mirror = createMirror({
 `redactAttributes: ['data-private']` 作用于全量快照、增量元素补丁和 html/body 元数据，只改变镜像副本。未指定的 `data-*` 保留，避免破坏依赖属性选择器的样式。配置 `class`、`style`、`src` 等属性可能破坏展示或功能，需要宿主逐站验证；这不是通用 sanitizer 或数据防泄漏策略。
 
 此策略不会擦除源站已经画进 PNG 的文字或像素，也不解析 CSS 和资源正文。源站或宿主仍须避免把不应展示的数据放进这些载体。实际观察与复现见[数据边界验收](acceptance/data-boundary-2026-10-26.md)。
+
+## 文件与跨源 iframe 边界
+
+上传默认单文件 8MiB、整个会话累计 16MiB、最多两个待传文件、30 秒无分块进展即过期，每个会话最多接受 64 个待传/已完成文件。会话累计预算可用 `upload.maxTotalBytes` 调整，已完成或已尝试落盘的文件占用预算直到会话结束；失败/过期的未完成传输释放预留量。恢复同一会话不会重置预算。其余选项为 `upload.maxBytes`、`upload.maxConcurrent`、`upload.idleTimeoutMs` 和 `upload.extensions`。这些限制不代替源站病毒扫描和业务配额。
+
+`crossOriginFrameOrigins: ['https://embed.example/']` 显式允许该源的 Node 侧嵌入 HTML 抓取及本会话资源代理；默认空列表只显示占位块。页面中出现 URL 不构成宿主授权；该选项也不是 Chromium 的出站过滤器。抓取不转发源站会话凭据、不跟随重定向；Node 与 Chromium 都需要宿主限制网络访问。跨源 srcdoc 使用与主文档相同的输入值和指定属性过滤，CSS、可见文本、资源正文及像素仍不提供自动敏感识别。
 
 ## 接入宿主
 

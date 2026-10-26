@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>assets-order</title>
+  <link rel="stylesheet" href="assets.css">
+  <!-- 运行时覆盖：文档序在 <link> 之后，同特异性必须胜出（级联顺序回归） -->
+  <style>.box { color: green; }</style>
+</head>
+<body>
+  <div class="box" id="order">ORDER</div>
+  <div id="bg"></div>
+  <div id="fnt">F</div>
+  <!-- 同页自跳转：导航后服务端会重拍 3 次相同快照，客户端必须只重建一次以内 -->
+  <a id="self" href="assets.html">self</a>
+</body>
+</html>

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>iframe child</title>
+<style>
+  body { font: 13px Arial, sans-serif; margin: 8px; color: #233; background: #fbfcfe; }
+  #title { color: #a33; font-weight: bold; }
+  #echo { color: #0a5; min-height: 16px; }
+  input { padding: 4px; }
+</style>
+</head>
+<body>
+<b id="title">CHILD-INIT</b>
+<button id="btn">change</button>
+<input id="in" placeholder="type here" autocomplete="off">
+<div id="echo"></div>
+<script>
+  document.getElementById('btn').addEventListener('click', () => {
+    document.getElementById('title').textContent = 'CHILD-CHANGED-' + Date.now() % 1000;
+  });
+  document.getElementById('in').addEventListener('input', (e) => {
+    document.getElementById('echo').textContent = 'echo:' + e.target.value;
+  });
+</script>
+</body>
+</html>

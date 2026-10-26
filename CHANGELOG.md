@@ -1,3 +1,239 @@
+# v0.27.0
+
+- 合并准入修复：上传原始分块降至 32KiB，增加会话总量/并发/空闲超时及文件数预算；跨源 iframe Node 抓取改为显式宿主白名单并复用字段过滤；移除业务模式重试与浏览器预热，保留首次失败；补 64KiB 以上与 8MiB 上传 SHA-256、默认拒绝及字段过滤回归，同步消费端锁文件版本。
+
+- closed shadow root 定案（可观测范围扩到规范极限）：attachShadow 补丁经
+  evaluateOnNewDocument 在页面脚本前安装（parse 期创建的 closed root 也进
+  注册表）；序列化以声明式 shadowrootmode=closed 内联；客户端统一
+  parseHtml（div+setHTMLUnsafe——template 惰性片段中的声明式 shadow 在插入
+  时不被处理，补丁路径闭盒丢失的根因）。残余不可观测：声明式 closed 模板
+  （HTML 解析器直接挂载无回调），按需走位图兜底。
+- 修复历史空引用：window.__xyObserveShadow 在 attachShadow 包装器中被调用
+  但从未赋值——注入后创建的影子根（含 closed）一直没挂 observer。
+- 有声媒体定案（用户激活语义下完整跟随）：访客在镜像内真实点击后
+  dom-props.media 的不静音 play() 被自动播放策略放行；会话内零交互即自动
+  播放的有声媒体为策略硬限制（静音跟随仍可用）。
+- 基准扩到 11 case：+gen-cshadow（parse 期/注入后/交互视觉回路四断言）
+  +gen-media-audio（不静音播放/进度/暂停四断言）。
+- tools/aggregate-rum.cjs：自然访客 RUM 周度复评工具（网关日志聚合）。
+
+# v0.26.0
+
+- 跨源 iframe 动态刷新通道：prepareXframes(force) 周期重抓（XFRAME_REFRESH_MS
+  默认 15s），内容变化才推宿主 outer 补丁（客户端整替 iframe，srcdoc 随新内容
+  到达）。基准 tick 路由（每 5s 换版本号）断言镜像内版本跟随变化。静态快照
+  语义升级为周期跟随；postMessage 双向驱动仍为快照（记录）。
+- RUM 生产基线扩样：18 会话/41 报告/7 视口——交互到视觉延迟 p50 16.6ms /
+  p95 17.6ms（约一帧），帧时间 16.7/16.7ms 全会话 60fps 锁帧。
+
+# v0.25.0
+
+- 跨源 iframe 同源化（此前占位块）：服务端代理抓取（6s/512KB/text/html，
+  失败回退占位）→ 页内 sanitize（剥 script/事件属性，资产改写为
+  /m/x/<secret>/<b64(origin)>/path）→ srcdoc 内联。会话作用域资产代理 /m/x：
+  secret 每会话随机、origin 注册表只收本会话实际嵌入过的源（防开放代理/
+  SSRF），扩展名/响应类型限制与 /m 一致。基准 gen-xiframe 三断言（srcdoc
+  非占位 / 内容真实渲染含图片经代理加载 / script 剥离）。
+- Vikunja CI 冷启动加固：app DB 写路径预热 + 镜像首 WS 会话预启动 + 客户端
+  失败模式重试一次（冷 runner 偶发红的根治）。
+
+# v0.24.0
+
+- 虚拟列表平移 diff 泛化（LCS 编辑脚本）：纯平移检测之外增补 kidKeep/kidIns
+  ——规范化子串整数化 O(n·m) DP（n,m≤64），keep=旧序索引、ins=[新序位置,
+  原始 html]，编码比整窗省 30%+ 才启用，仅元素子节点容器；客户端按新序重排
+  并复用保留节点（不重建），校验失败按 patch-miss 重同步（宁重不错）。
+  覆盖窗口边界/混合批次形态（此前回退整窗 inner 的余量）：慢滚补丁
+  4.1→2.6KB/步，较 v0.22 基线 14.8KB/步累计 5.7×。
+
+# v0.23.0
+
+- 虚拟列表窗口平移 diff（先量化后动工：改造前慢滚实测 14.8KB/步）：inner 补丁
+  与上次子元素序列比对（规范化串剥离 data-xy-id——整窗重建 id 必变），命中
+  下移/上移形态发 {delHead,append}/{prepend,delTail} O(增量) 补丁，不命中回退
+  整窗；补丁去重同步用规范化串。实测慢滚 14.8→4.1KB/步（3.6×），基准
+  vlist_shiftdiff 断言 ≤5KB/步。RUM 生产基线（6 会话/24 报告：交互到视觉
+  p50 15.6ms/p95 17.4ms，帧 16.7/16.8ms 60fps 锁帧）入档 FIDELITY.md。
+
+# v0.22.0
+
+- WebGL/位图画布自适应快档：可见且动画中的画布捕获节奏 450ms→120ms tick
+  （实测 ~6.3 次/秒，此前 ~2.2）；静止画布指数退避不变（零流量）；离屏
+  画布可见性门控不变（零捕获）。配套：忙守卫防 tick 重入、rAF 门改相邻 tick
+  差分（去掉 260ms 阻塞窗）、捕获列表 600ms 缓存、每秒捕获总数预算 ≤12 封顶
+  CPU。基准 gen-canvas 新增帧率断言（动画位 ≥4 次/秒、静态位 ≤2、离屏位 0）。
+- FIDELITY.md：WebGL 从"已知边界"改为 D6 实测达标。
+
+# v0.21.0
+
+- 真实会话 RUM：客户端采集 240 帧滑窗帧时间（p50/p95）、交互到视觉延迟
+  （交互发送→首个被应用的下行消息，p50/p95）、按消息类型字节与快照/补丁计数。
+  首拍即报、此后 10s 随 ping 心跳下发（服务端 [rum] 日志），pagehide 时
+  sendBeacon POST /rum（[rum-beacon]，≤8KB 收口）；window.__xyRum 可外部抓取。
+- 基准新增 gen_rum 断言（会话必须产生 RUM 日志）。
+- 生产首批真实会话数据（:81/:82 经 ingress）：帧 p50/p95=16.7/16.7ms（60fps
+  锁帧）、交互到视觉延迟 16.6-17.5ms（约一帧）。FIDELITY.md 记录为优化基线。
+
+# v0.20.1
+
+- 修正 body 继承 pin 的 line-height 语义：计算值绝对 px 会把源站"无单位比值"
+  压平（14px 子元素源站 21px、镜像 24px → 表单区整体 +3px 漂移，实测 password
+  top 462.3→465.3）。改为比值（计算 px ÷ body 字号；normal 保持 normal）后
+  表单区元素 rect 与源站逐项全等；生产像素 diff 0.214%（仅剩标题字形边缘
+  2 条 4px 亚像素带，几何与颜色无差）。FIDELITY.md D3 维度据此定案 ✅。
+
+# v0.20.0
+
+- body 继承样式还原：快照携带源站 body 的可继承计算样式（字体/颜色/字距等
+  9 项）钉到镜像根——裸元素不再继承客户端外壳样式（此前未显式设置的属性
+  落到外壳主题色/字体，观感偏差与文本度量偏移成因之一）。
+- 带宽实测基线（真 payload）：deflate 生产登录快照 216.8KB→35.9KB（6.04×，
+  zlib L3）；虚拟列表（1 万行/20 行窗口）每滚一窗补丁 ~0.85KB（压缩前）。
+  tools/measure-deflate.cjs 探针 + gen-vlist 基准 case 固化测量。
+- 基准扩到 8 case：+虚拟列表（滚动换窗功能断言 + 每滚补丁字节数）；
+  gen-style 增 body 继承断言；editor 增键盘型应用首字符回显 RTT 记录。
+
+# v0.19.0
+
+- 分歧检测自愈（Timelapse/Dolos 思想）：ping 携带镜像元素指纹（剔除引擎自建层
+  与源站 script/spacer），与源站比对漂移 >max(2,2%) 持续两拍且距上次自愈 >10s
+  时自动全量重同步——把"镜像悄悄坏了"变成"自愈+可观测"。
+- HTML5 拖拽：镜像 dragstart/over/drop/end 合成到源站（DataTransfer 携带
+  text/plain 载荷，over/drop 按坐标命中）；本地 preventDefault 保源站唯一事实源。
+- 触摸转发：touchstart/move/end 触点 → CDP dispatchTouchEvent，本地
+  preventDefault 防合成鼠标双事件（移动端访客手势语义）。
+- 焦点同步（focus-sync）：源站程序化聚焦（autofocus/校验定位）镜像跟随；
+  访客文本输入中不抢焦点。
+- 多选 select 程序化改态：option.selected setter 劫持，以所属 select 为主体
+  并入 dom-props.sel（修复 sel 独立下发时客户端不应用的嵌套分支缺陷）。
+- WebGL 位图捕获可见性门控断言锁定（off 屏动画画布零捕获）。
+- 基准新增 gen-dnd case（拖拽/触摸/焦点/自愈四断言），forms 增多选程序化改态
+  断言，canvas 增离屏门控断言——7 case 全绿；全量回归 12 组通过。
+
+# v0.18.0
+
+- 同源 @import 服务端递归内联（cssInlineImports，深度≤3）：镜像首帧样式完整，
+  客户端无需二次往返拉 import（跨源 @import 原样保留）。
+- 媒体状态同步（dom-props.media）：play/pause/seek/音量经媒体事件捕获并随
+  dom-props 下发，客户端静默跟随；有声播放受自动播放策略限制为已知边界。
+  基准以静音 WAV（JS 构造）端到端断言 play/seek/pause。
+- 选区镜像（dom-sel）：镜像内容在 shadow root 内、文档级 Selection API 无法
+  跨边界设置（实测）——服务端下发 Range.getClientRects 页面坐标矩形，客户端
+  在 .xy-body 内绝对定位高亮层，随镜像文档流滚动。
+- 带宽·cssSame 快照：SPA 路由切换的导航重拍不再重发相同 css（实测生产登录流
+  仪表盘重试快照 283KB→20.8KB/份，单次导航省 ~790KB 压缩前）；hello/恢复握手
+  后必发全量。
+- 带宽·WS permessage-deflate（阈值 512B）。
+- 带宽·补丁粒度（DiffSync 思想）：文本节点级 {id,ti,text}（characterData 只发
+  文本）与追加型 {id,append}（纯末尾新节点只发增量，同 sanitize 路径）；同父
+  移动到末尾也是 add-only 记录，以"ID 注册表未登记"判别真追加，既有节点移动
+  回落 inner 保正确（node-id 回归实证）。
+- 基准新增断言：媒体 play/seek/pause、程序化选区、追加流+首行原位改文本、
+  程序化表单态；新增流畅度基线输出（帧时间 p50/p95，不计入判定）。
+  保真模型与差距分类落档 docs/FIDELITY.md（六维度+文献映射+分阶段路线）。
+
+# v0.17.0
+
+- 通用性基准 verify-generality：六类业务形态（表单全形态+程序化改态/富文本与键盘
+  应用/响应式图片与媒体属性/固定栏+内层滚动+弹层+原生 dialog/动态样式 @import 与
+  adopted 与后挂 link/2D 画布+WebGL+2000 行大表）以源站↔镜像等价断言回归，
+  逐 case 断言走"服务端真实状态回显"黑盒出口。
+- 相对路径资源改写：fixUrl 对无根斜杠的相对地址按文档基址解析后统一走 /m 代理
+  （此前仅根绝对/绝对源站地址——相对 src 404）；srcset/imagesrcset 多候选逐项
+  改写；CSS image-set("x.png" Nx) 引号串二次扫描覆盖。
+- contenteditable 键入同步（kind `ce`）：客户端本地原生编辑保流畅，内容 120ms
+  节流整体回传，服务端 setInnerHTML+派发 input；iframe 内同路径。
+- 键盘分派上移 document 捕获层：合成 pointer 事件不产生原生聚焦，焦点常留
+  body，keydown 不过 shadow root——键盘型应用（终端/游戏/canvas/页面级快捷键）
+  的字符与功能键此前全量丢失。焦点在输入控件/富文本时仍走本地编辑+值同步
+  （防双输入），并补发 keyup（按键状态类应用需要）。
+- 程序化表单态捕获（rrweb 同款原型 setter 劫持）：源站 JS 直改 checked/value
+  （全选/过滤器/回填）不触发 MutationObserver，此前镜像永久丢态。原型 setter
+  包装捕获，60ms 合并 last-write-wins 下发 dom-props，客户端静默应用（焦点中
+  元素的 value 跳过防打断）。
+- PROTOCOL 0.17.0：dom-props/ce/key text 文档化；check.js 收录新 fixture。
+
+# v0.16.0
+
+- 同内容快照去重：服务端导航后 +600ms/+1500ms 兜底重拍在静态页上产出字节级相同
+  的快照，客户端整树重建三连即"页面像刷新了 3 次"。css+html 与上次完全一致的
+  快照跳过重建，仅跟随滚动/标题；内容变化路径不变。
+- 快照 CSS 按文档序收集：此前 style 全量前置 + link 后置会翻转同特异性规则的
+  级联胜负（运行时注入的 <style> 覆盖被 <link> 反杀）；adopted 样式表按规范
+  排在其余作者样式之后。
+- CSS url() 与资源 URL 代理改写收口：相对 url() 按其所属样式表地址解析后统一
+  改写为 /m 代理（此前仅根绝对路径），webfont/背景图不再因客户端相对地址 404
+  回退系统字体（观感差异的来源之一）。
+- 多源会话资产路由：x-rbi-origin 白名单会话的资源以 /m/o/<base64url(origin)>/
+  path 下发，代理按该段路由到对应白名单源站；短式 /m 固定路由 ORIGIN_URL。
+  PAGE_HELPERS 按会话注入源站前缀（origin 占位符），同一网关可同时镜像多源站。
+- 新增回归 verify-assets（短式/多源改写与路由、未白名单 403、级联顺序、快照
+  去重 3→≤1）与 tools/check-helpers.cjs（注入代码语法校验）；CI 接入。
+
+# v0.15.0
+
+- adoptedStyleSheets 追踪：构造样式表（new CSSStyleSheet + adopted）对 style/link
+  观察器不可见——快照并入 cssRules 规则文本，1Hz CSS 指纹改为逐规则内容哈希
+  （replace/replaceSync 改内容不改规则数也能触发全量重同步）。
+- 输入值掩码（maskInputTypes，默认关闭）：命中类型的输入值以等长 * 下发，
+  hidden/password/file 的整体剔除语义优先；交互不受影响（客户端本地输入为真实值），
+  掩码只作用于服务端下发侧。demo 以 MASK_INPUT_TYPES 环境变量配置。
+- 新增回归 verify-enhance（adopted 收集/内容变化重同步/掩码等长断言）；
+  CI 接入 0.12-0.15 全部六组新回归（node-id/longtail-p0/shadow/iframe/canvas2d/
+  enhance）与证据上传；check.js 收录全部新 fixture 脚本编译。
+
+# v0.14.0
+
+- Shadow DOM：open 影子根以声明式 <template shadowrootmode> 内联（客户端 setHTMLUnsafe
+  解析重建，innerHTML 已不解析声明式影子 DOM）；attachShadow 补丁覆盖注入后新建组件，
+  现存影子根每快照兜底观察；影子内变化上溯最外层宿主重发 outer。修复产品级 shadow
+  retargeting 缺陷：事件穿出影子边界时 e.target 被重定向为宿主，影子内输入此前永远
+  不同步——所有输入类监听改以 composedPath()[0] 取真实目标。
+- 同源 iframe：内容序列化进 srcdoc（同一 sanitize 与 /m 资源改写），客户端在 iframe
+  文档挂同一套转发监听，元素 id 与主文档同一空间；iframe 内指针坐标按 frameElement
+  链换算主视口。跨域 iframe 显示等尺寸占位块（不转发，文档声明）。
+- canvas 2D 指令流：注入后创建的 2D 上下文记录绘制指令（方法/样式/渐变定义+色标/
+  图像/ImageData 序列化），60ms 合并以 canvas-ops 下发，客户端同序重放（图像加载完成
+  整环重放）。不可序列化画布、注入前上下文与 WebGL 回退位图捕获；canvasStream:false
+  可整体关闭。渐变经 create*+addColorStop 指令与 @g 索引引用重建。
+- 新增回归：shadow（声明式影子/影子内点击输入/延迟挂载/影子 canvas 捕获 5 步）、
+  iframe（srcdoc 内联/iframe 内点击输入/跨域占位 4 步）、canvas2d（双模式像素/动画/
+  带宽对比）。既有 node-id/P0/scroll/select/data-boundary/Vikunja 回归保持绿。
+
+# v0.13.0
+
+- IME 中文输入：客户端 compositionstart/update/end 镜像到源站——组合期 CDP
+  Input.imeSetComposition 写入候选串（远端可见拼音过程），上屏 CDP Input.insertText；
+  组合期间抑制普通 input 值同步，拼音串不会作为最终值写进源站字段。input/textarea
+  覆盖，contentEditable 暂不覆盖（文档声明）。
+- 镜像文件上传：本地 File 经 WS 分块（≤48KiB）上行，服务端按宿主配置校验扩展名
+  白名单与大小上限（upload.maxBytes 默认 8MiB），落会话私有临时目录（basename 收口）
+  后经 CDP setFileInputFiles 交给源站字段并派发 change；会话结束临时目录整体删除。
+- 镜像文件下载：Browser.setDownloadBehavior(allow)+eventsEnabled，Page.enable 后订阅
+  downloadWillBegin/downloadProgress；文件落地会话临时目录，完成后 ≤48KiB 分块下行并
+  立即删除服务端副本，客户端 Blob + a[download] 保存；basename+目录包含校验防逃逸，
+  超限/取消走下行 error（download.maxBytes 默认 32MiB）。
+- 新增配置 upload/download（options 校验 + index.d.ts 类型）；协议文档同步
+  composition/composition-commit/upload-*/download-* 消息。
+- 新增回归 tools/verify-longtail-p0.cjs：IME 合成期回显与上屏断言、上传回环
+  （客户端 File → 远端页面读到同名同内容）、下载回环（内容逐字校验）；CI 接入
+  tools/verify-docker-longtail-p0.sh。既有 node-id/scroll/select/data-boundary/
+  Vikunja(direct,dom,frame) 回归保持绿。
+
+# v0.12.0
+
+- 节点 ID 体系替换索引路径定位：源站序列化时按 WeakMap 双向映射分配递增数值
+  id，镜像元素以 data-xy-id 携带，快照带 bodyId。元素移动/插入/删除后 id 不变，
+  列表重排/相邻插入不再引起路径漂移（参考 rrweb Mirror 思路重写）。
+- 补丁（inner/outer）、输入定位（input/change/click）、鼠标锚点（aid/ax/ay）、
+  内部滚动容器（{id,top,left} 对象条目）、canvas 元素捕获（canvas-tile id）
+  全部改按 id 命中；path 字段并行下发仅作过渡回退，下一版本删除。
+- 客户端镜像维护 id→元素映射，结构替换时同步注销/登记子树 id；聚焦补丁挂起
+  判定由路径前缀改为 DOM contains。
+- 新增回归：tools/verify-node-id.cjs（插入/移动/更新/删除混合序列后补丁按 id
+  命中、零 patch-miss、镜像元素携带 data-xy-id），CI 接入
+  tools/verify-docker-node-id.sh；既有 scroll/select/data-boundary 回归保持绿。
+
 # v0.11.0
 
 - 增加实际 npm tarball 独立消费端的真实 Chromium 业务、恢复及关闭验收：移除源码运行目录并禁用 NODE_PATH 回退，核验包与安装文件哈希，保留消费端锁文件；异常产物负对照、活动会话关闭、浏览器回收和宿主 HTTP 存活检查接入 CI，不修改公共 API 或库默认配置。
@@ -153,7 +389,7 @@ Fixes:
 
 Verified on a real external Chromium through the production ingress: fresh
 login now delivers 30/30 keyframes (264KB css), computed-style census shows
-sr-fade-in/sr-view-in/soulraid-spin running in the mirror, and a 4-frame
+sr-fade-in/sr-view-in/sr-spin running in the mirror, and a 4-frame
 burst during view switch measures 6.6%/7.3%/3.5% pixel change (was 0.000%).
 
 # v0.7.1 — fix: obfuscation fonts must register at document level

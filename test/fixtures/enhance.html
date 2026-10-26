@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Enhancements</title>
+<style>
+  body { font: 14px Arial, sans-serif; padding: 24px; color: #16263a; }
+  #target { padding: 14px; border: 1px solid #ccd; border-radius: 6px; margin: 10px 0; }
+  button { padding: 6px 14px; }
+  input { padding: 6px; }
+</style>
+</head>
+<body>
+<h3>adoptedStyleSheets + input masking</h3>
+<div id="target">target-box</div>
+<input id="q" type="text" value="secret-token" autocomplete="off">
+<button id="mk">flip adopted sheet</button>
+<script>
+  // 构造样式表（style/link 观察器不可见）：初始绿色；等镜像 helpers 注入完成
+  // 后再延迟翻红——保证首次快照必然为绿（与 runner 冷启动速度无关）
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync('#target{background-color:#51cf66}');
+  document.adoptedStyleSheets = [sheet];
+  const flip = () => sheet.replaceSync('#target{background-color:#ff6b6b}');
+  const waitXy = () => { if (window.__xy) setTimeout(flip, 1500); else setTimeout(waitXy, 200); };
+  waitXy();
+</script>
+</body>
+</html>

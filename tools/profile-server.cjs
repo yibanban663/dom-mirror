@@ -15,7 +15,7 @@ replace('const b = await launchSessionBrowser();', "const b = await __perf.measu
 replace("await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });", "if (process.env.PROFILE_PRESENTATION === '1') { await page.exposeFunction('__profileTaskMarker', value => __perf.sourceMarker(value)); await page.evaluateOnNewDocument(require('./tools/profile-marker.cjs')); }\n    await __perf.measure('origin.goto', () => page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 }));");
 replace('const clone = sanitizeClone(document.body);', 'const perfStart = performance.now();\n      const clone = sanitizeClone(document.body);\n      const perfCloneEnd = performance.now();');
 replace("let docClass = '', docAttrs = '';", "const perfCssEnd = performance.now();\n      let docClass = '', docAttrs = '';");
-replace("return { css: styleCss +", "return { __profile: { clone: perfCloneEnd - perfStart, css: perfCssEnd - perfCloneEnd, rest: performance.now() - perfCssEnd }, css: styleCss +");
+replace("return { css, html: clone.innerHTML,", "return { __profile: { clone: perfCloneEnd - perfStart, css: perfCssEnd - perfCloneEnd, rest: performance.now() - perfCssEnd }, css, html: clone.innerHTML,");
 replace("await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'frameSheet')", "await __perf.measure('snapshot.captureScreenshot', () => withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'frameSheet'))");
 replace("await withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot');", "await __perf.measure('snapshot.evaluate', () => withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot'));\n    for (const [name, ms] of Object.entries(snap.__profile)) __perf.record('snapshot.page.' + name, ms);");
 replace('const diffFrame = async (b64) => {', 'const diffFrame = async (b64, pf) => {\n      const perfDecodeStart = performance.now();\n      __perf.consumedFrame();');
@@ -29,9 +29,11 @@ replace('      return { tiles };', '      return { tiles, profile: __perf.traceF
 replace("tiles: out.tiles || [], holes:", "_profile: out.profile, tiles: out.tiles || [], holes:");
 replace('const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };',
   'const enqueue = (raw) => { const receivedAt = performance.now(); cmdChain = cmdChain.then(() => { __perf.queued(raw, receivedAt); return handleRaw(raw); }).catch(() => {}); };');
-for (const type of ['dom-snapshot', 'dom-patches', 'anim-tiles']) {
+for (const type of ['dom-patches', 'anim-tiles']) {
   replace("JSON.stringify({ type: '" + type + "'", "__perf.json({ type: '" + type + "'", type === 'anim-tiles' ? 2 : 1);
 }
+// v0.18 起 dom-snapshot payload 为 Object.assign 形态（cssSame 字段）
+replace("JSON.stringify(Object.assign({ type: 'dom-snapshot'", "__perf.json(Object.assign({ type: 'dom-snapshot'");
 replace('await handleCommand(m);', "await __perf.measure('command.' + m.type, () => handleCommand(m));");
 const codec = process.env.PROFILE_CODEC || 'production';
 if (!['production', 'png', 'raw'].includes(codec)) throw new Error('PROFILE_CODEC must be production, png or raw');
@@ -44,7 +46,7 @@ if (patchDelay !== 60) replace('            }, 60);', '            }, ' + patchD
 new vm.Script(source, { filename });
 if (process.argv.includes('--check')) {
   const start = source.indexOf('const PAGE_HELPERS = '), end = source.indexOf('\n// ---------- 静态文件', start);
-  const helpers = vm.runInNewContext(source.slice(start, end) + '\nPAGE_HELPERS;', { ORIGIN_BASE: new URL('http://127.0.0.1:8077/'), config: { redactAttributes: [] } });
+  const helpers = vm.runInNewContext(source.slice(start, end) + '\nPAGE_HELPERS;', { ORIGIN_BASE: new URL('http://127.0.0.1:8077/'), config: { redactAttributes: [], maskInputTypes: [], canvasStream: true } });
   new vm.Script(helpers);
   console.log('Profile instrumentation anchors and injected script compile');
 } else {

@@ -7,7 +7,7 @@
 
 A **Node.js library** for embedding remote browser mirroring into your own application. Each session runs an independent Chromium; the client receives DOM/CSS snapshots and incremental updates, renders them locally, and sends interactions back. A standalone Demo is included for exploration and regression testing.
 
-**Source version: 0.11.0 · Node.js ≥ 22.12 · Apache-2.0**
+**Source version: 0.27.0 · Node.js ≥ 22.12 · Apache-2.0**
 
 The source version does not imply an npm release. This is an experimental library, with the compatibility and security boundaries described below.
 
@@ -48,7 +48,7 @@ npm pack
 Install the generated file in your host project:
 
 ```bash
-npm install /path/to/lizhen-xxaq-dom-mirror-0.11.0.tgz
+npm install /path/to/lizhen-xxaq-dom-mirror-0.27.0.tgz
 ```
 
 Chromium and its system libraries must be available in the host environment. If your environment manages Chromium separately, use `PUPPETEER_SKIP_DOWNLOAD=true` during installation and pass its path through `launchOptions.executablePath`.
@@ -77,6 +77,8 @@ server.listen(8088, '127.0.0.1');
 The built-in client currently requires **the root path of a dedicated origin**, with `/ws`, `/m/*` and `/f/*`. Arbitrary subpath mounting is not supported. Authentication, TLS and WebSocket Origin checks belong in the host, before these handlers are called.
 
 See the [complete host example](examples/host.cjs), [API reference and migration notes — Chinese](docs/API.md), and [WebSocket protocol — Chinese](docs/PROTOCOL.md).
+
+New in 0.27: stable node IDs, IME, uploads/downloads, Shadow DOM/iframe handling and canvas fidelity regressions. Uploads use 32 KiB raw chunks with per-session byte, concurrency and expiry budgets. Node-side cross-origin iframe fetching is disabled unless the host explicitly sets `crossOriginFrameOrigins`; it shares the field-redaction policy. Hosts still control outbound network access. See the [API limits](docs/API.md).
 
 ## Run the Demo
 

@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-forms</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+    #state { margin-top: 16px; padding: 8px; background: #f2f4f8; border-radius: 6px; min-height: 20px; font-family: Consolas, monospace; }
+    label { display: block; margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <h3>表单全形态</h3>
+  <label>text <input id="t1" type="text"></label>
+  <label>number <input id="n1" type="number"></label>
+  <label>date <input id="d1" type="date"></label>
+  <label>range <input id="r1" type="range" min="0" max="100" value="20"></label>
+  <label>color <input id="c1" type="color" value="#3366cc"></label>
+  <label><input type="checkbox" name="cb" value="a"> cb-a</label>
+  <label><input type="checkbox" name="cb" value="b"> cb-b</label>
+  <label><input type="checkbox" name="cb" value="c"> cb-c</label>
+  <label><input type="radio" name="rd" value="x"> rd-x</label>
+  <label><input type="radio" name="rd" value="y"> rd-y</label>
+  <select id="s1"><option value="one">一</option><option value="two">二</option><option value="three">三</option></select>
+  <select id="s2" multiple size="3"><option value="m1">M1</option><option value="m2">M2</option><option value="m3">M3</option></select>
+  <textarea id="ta1" rows="3"></textarea>
+  <button id="dump">汇总</button>
+  <button id="prog">程序化改态</button>
+  <button id="selmulti">多选改态</button>
+  <div id="state">INIT</div>
+  <script>
+    // 状态汇总：把表单真实值序列化进 DOM（镜像 patch 回显 = 服务端真实状态的黑盒出口）
+    const dump = () => {
+      const st = {
+        t1: document.getElementById('t1').value,
+        n1: document.getElementById('n1').value,
+        d1: document.getElementById('d1').value,
+        r1: document.getElementById('r1').value,
+        c1: document.getElementById('c1').value,
+        cb: [...document.querySelectorAll('input[name=cb]:checked')].map(x => x.value).join(','),
+        rd: (document.querySelector('input[name=rd]:checked') || {}).value || '',
+        s1: document.getElementById('s1').value,
+        s2: [...document.getElementById('s2').selectedOptions].map(o => o.value).join(','),
+        ta1: document.getElementById('ta1').value,
+      };
+      document.getElementById('state').textContent = 'STATE:' + JSON.stringify(st);
+    };
+    document.getElementById('dump').addEventListener('click', dump);
+    // 程序化改态（属性 setter 直改，不触发任何属性变更 → MutationObserver 盲区）：
+    // rrweb 用原型 setter 劫持捕获；引擎必须同样劫持才能镜像这类状态变化
+    document.getElementById('prog').addEventListener('click', () => {
+      const cb = document.querySelector('input[name=cb][value=b]');
+      cb.checked = true;
+      document.querySelector('input[name=rd][value=x]').checked = true;
+      const s1 = document.getElementById('s1');
+      s1.value = 'three';
+      document.getElementById('t1').value = 'pgm';
+      dump();
+    });
+    // 多选 selected 直改（option.selected setter 劫持路径）
+    document.getElementById('selmulti').addEventListener('click', () => {
+      const s2 = document.getElementById('s2');
+      s2.options[1].selected = true;
+      s2.options[2].selected = true;
+    });
+    document.body.addEventListener('change', () => { document.title = 'changed:' + Date.now(); });
+  </script>
+</body>
+</html>

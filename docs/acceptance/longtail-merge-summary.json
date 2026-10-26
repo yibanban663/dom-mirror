@@ -1,0 +1,823 @@
+{
+  "capturedAt": "2026-10-26T21:15:00.318Z",
+  "pr": 1,
+  "reviewedHead": "c6fa12232e00f31076f0d3d4c23e51209071bfc5",
+  "version": "0.27.0",
+  "unitTests": 36,
+  "sourceHashes": {
+    "server.js": "13db8cd556fdc1a044b4f66462c6fa18678452ed15be2f01c9cccbe5511cc6e7",
+    "client/index.html": "30fe7ab23d1f8fbd6ab2563898a7d06f27388aff281d7a27eba7ac5e8ab583a9",
+    "lib/uploads.js": "a39a63dd379abed609a6075042b8d7b70b5196bdbd9a08ac31007b75a2fdc5b0",
+    "lib/options.js": "84367de503996d870af1607a40c4e660d20747dd27c3c277142a6a480ba82c22",
+    "demo/server.js": "ab4063b9e523e66fb8efa098bdb93fe054d5584ede80f825a2088a8b3f36bfd4",
+    "tools/verify-vikunja.cjs": "ddb29553afad3e4d7c0948d7e4d3cd1f28a3cd7f41dfbb6de5285a03663f970a"
+  },
+  "xframePolicy": {
+    "pass": true,
+    "results": [
+      {
+        "allowed": false,
+        "pass": true,
+        "nodeFetches": 0
+      },
+      {
+        "allowed": true,
+        "pass": true,
+        "nodeFetches": 1
+      }
+    ]
+  },
+  "p0": {
+    "ime": {
+      "composition": "echo:nihao",
+      "commit": "echo:你好",
+      "pass": true
+    },
+    "upload": {
+      "files": [
+        {
+          "size": 65553,
+          "sha256": "9aabd8f7828f86445ce5c437d9ec2af5c4c5cb6e4eb53d4d62e540073293f3a1",
+          "pass": true
+        },
+        {
+          "size": 8388608,
+          "sha256": "05ec853c4b52ba6131d9ff510c96eb1049bae71b8aa3f006ef2db48924c72ffd",
+          "pass": true
+        }
+      ],
+      "pass": true
+    },
+    "download": {
+      "records": [
+        {
+          "name": "p0-dl.txt",
+          "state": "begin"
+        },
+        {
+          "name": "p0-dl.txt",
+          "state": "begin"
+        },
+        {
+          "name": "p0-dl.txt",
+          "size": 46,
+          "state": "saved",
+          "text": "P0-DOWNLOAD-MARKER abcdefghijklmnopqrstuvwxyz\n"
+        }
+      ],
+      "pass": true
+    },
+    "pass": true,
+    "console": [
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "HOLEDBG setMode dom frameMode=false",
+      "The file at 'blob:http://mirror:8088/e74208e2-f285-4be8-90ff-2ba36aa688d5' was loaded over an insecure connection. This file should be served over HTTPS."
+    ]
+  },
+  "generality": [
+    {
+      "case": "forms",
+      "pass": true,
+      "checks": {
+        "text": true,
+        "number": true,
+        "date": true,
+        "textarea": true,
+        "checkbox": true,
+        "radio": true,
+        "select": true,
+        "pgm_checked": true,
+        "pgm_value": true,
+        "pgm_multi": true
+      },
+      "bytes": {
+        "session": 104,
+        "meta": 93,
+        "dom-snapshot": 4912,
+        "sync-ready": 21,
+        "sstats": 201,
+        "dom-props": 375,
+        "focus-sync": 87,
+        "pong": 113,
+        "dom-patches": 470
+      },
+      "tti": 1726,
+      "state": "STATE:{\"t1\":\"hello镜像\",\"n1\":\"42\",\"d1\":\"2026-10-26\",\"r1\":\"20\",\"c1\":\"#3366cc\",\"cb\":\"a,c\",\"rd\":\"y\",\"s1\":\"two\",\"s2\":\"\",\"ta1\":\"多行文本\"}",
+      "pgm": {
+        "cbB": true,
+        "rdX": true,
+        "rdY": false,
+        "s1": "three",
+        "t1": "pgm"
+      },
+      "perf": {
+        "frameP50": 0.4,
+        "frameP95": 0.5
+      }
+    },
+    {
+      "case": "editor",
+      "pass": true,
+      "checks": {
+        "ce_typing": true,
+        "term_keys": true,
+        "selection": true,
+        "feed_append": true,
+        "feed_text": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 334,
+        "meta": 94,
+        "dom-snapshot": 1337,
+        "sync-ready": 21,
+        "dom-patches": 934,
+        "focus-sync": 112,
+        "pong": 138,
+        "dom-sel": 43
+      },
+      "perf": {
+        "keyRttMs": 77,
+        "frameP50": 0.5,
+        "frameP95": 0.7
+      },
+      "tti": 1816,
+      "seen": "log=LOG:sel-ok keys=KEYS:ab[ArrowLeft][Enter]"
+    },
+    {
+      "case": "media",
+      "pass": true,
+      "checks": {
+        "src": true,
+        "srcset": true,
+        "picture": true,
+        "poster": true,
+        "image_set_bg": true,
+        "media_play": true,
+        "media_seek": true,
+        "media_pause": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 267,
+        "meta": 97,
+        "dom-snapshot": 12298,
+        "sync-ready": 21,
+        "pong": 137,
+        "scroll-sync": 49,
+        "dom-patches": 389,
+        "dom-props": 288,
+        "focus-sync": 29
+      },
+      "tti": 1932,
+      "report": "REPORT:i1:pic-a.png|i2:pic-b.png|i3:pic-c.png|poster:pic-a.png|audio:paused@0.00m|bg:image-set(url(\"http://127.0.0.1:8077/pic",
+      "perf": {
+        "frameP50": 0.4,
+        "frameP95": 0.6
+      }
+    },
+    {
+      "case": "layout",
+      "pass": true,
+      "checks": {
+        "fixed_top": true,
+        "inner_scroll": true,
+        "modal": true,
+        "dialog": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 401,
+        "meta": 94,
+        "dom-snapshot": 2644,
+        "sync-ready": 21,
+        "pong": 176,
+        "scroll-sync": 405,
+        "dom-patches": 1729,
+        "focus-sync": 89
+      },
+      "tti": 1492,
+      "geo": [
+        "GEO:{\"tag\":\"innerscroll\",\"fbTop\":0,\"rowTop\":139,\"innerScroll\":140,\"docScroll\":0,\"overlayVisible\":false,\"dlgOpen\":false}",
+        "GEO:{\"tag\":\"dlg\",\"fbTop\":0,\"rowTop\":139,\"innerScroll\":140,\"docScroll\":0,\"overlayVisible\":false,\"dlgOpen\":true}"
+      ],
+      "perf": {
+        "frameP50": 0.5,
+        "frameP95": 0.6
+      }
+    },
+    {
+      "case": "style",
+      "pass": true,
+      "checks": {
+        "link_css": true,
+        "import_css": true,
+        "adopted_change": true,
+        "late_link": true,
+        "body_inherit": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 594,
+        "meta": 93,
+        "dom-snapshot": 4209,
+        "sync-ready": 21,
+        "pong": 297,
+        "scroll-sync": 49,
+        "dom-patches": 1102,
+        "focus-sync": 56,
+        "mode": 28
+      },
+      "tti": 1911,
+      "reports": [
+        "REPORT:{\"tag\":\"init\",\"bg\":\"rgb(240, 244, 250)\",\"col\":\"rgb(60, 64, 70)\",\"border\":\"rgb(60, 64, 70)\",\"impColor\":\"rgb(180, 60, 30)\",\"impWeight\":\"700\",\"inhFont\":\"Georgia, serif\",\"inhColor\":\"rgb(150, 40, 40",
+        "REPORT:{\"tag\":\"linklate\",\"bg\":\"rgb(240, 244, 250)\",\"col\":\"rgb(9, 96, 168)\",\"border\":\"rgb(30, 150, 90)\",\"impColor\":\"rgb(180, 60, 30)\",\"impWeight\":\"700\",\"inhFont\":\"Georgia, serif\",\"inhColor\":\"rgb(150, 4"
+      ],
+      "perf": {
+        "frameP50": 0.5,
+        "frameP95": 0.6
+      }
+    },
+    {
+      "case": "canvas",
+      "pass": true,
+      "checks": {
+        "canvas2d_report": true,
+        "canvas2d_node": true,
+        "webgl_node": true,
+        "webgl_offscreen_gated": true,
+        "webgl_anim_fps": true,
+        "table_rows": true,
+        "table_click": true,
+        "term_keys": true
+      },
+      "bytes": {
+        "session": 104,
+        "meta": 98,
+        "dom-snapshot": 336015,
+        "sync-ready": 21,
+        "scroll-sync": 49,
+        "sstats": 691,
+        "canvas-tile": 29166,
+        "pong": 285,
+        "canvas-ops": 123,
+        "dom-patches": 265,
+        "focus-sync": 28
+      },
+      "tti": 1476,
+      "perf": {
+        "webglFps": {
+          "animUpdates": 33,
+          "staticUpdates": 0,
+          "offUpdates": 0,
+          "perSec": 8.3
+        },
+        "frameP50": 0.4,
+        "frameP95": 0.6
+      },
+      "report_final": "REPORT:keys:k9[Enter]"
+    },
+    {
+      "case": "dnd",
+      "pass": true,
+      "checks": {
+        "dnd_drop": true,
+        "touch": true,
+        "focus_sync": true,
+        "self_heal": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 198,
+        "meta": 91,
+        "dom-snapshot": 2177,
+        "sync-ready": 21,
+        "pong": 113,
+        "dom-patches": 343,
+        "scroll-sync": 49,
+        "focus-sync": 28
+      },
+      "tti": 1578,
+      "dnd_final": "REPORT:focus:t1",
+      "perf": {
+        "frameP50": 0.5,
+        "frameP95": 0.7
+      }
+    },
+    {
+      "case": "vlist",
+      "pass": true,
+      "checks": {
+        "vlist_updates": true,
+        "vlist_rows": true,
+        "vlist_shiftdiff": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 737,
+        "meta": 93,
+        "dom-snapshot": 3411,
+        "sync-ready": 21,
+        "pong": 360,
+        "scroll-sync": 753,
+        "dom-patches": 48657
+      },
+      "tti": 1736,
+      "initial": "REPORT:first=0;updates=1",
+      "perf": {
+        "vlistPatchBytesScroll1": 18575,
+        "vlistPatchBytesScroll2": 2680,
+        "vlistSlowPerStepBytes": 2740,
+        "vlistShiftPatches": 41,
+        "frameP50": 0.6,
+        "frameP95": 0.7
+      },
+      "vlist_final": "REPORT:first=277;updates=31"
+    },
+    {
+      "case": "xiframe",
+      "pass": true,
+      "checks": {
+        "xframe_srcdoc": true,
+        "xframe_content": true,
+        "xframe_noscript": true,
+        "xframe_dynamic": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 1122,
+        "meta": 95,
+        "dom-snapshot": 1245,
+        "sync-ready": 21,
+        "pong": 485,
+        "scroll-sync": 49,
+        "dom-patches": 766
+      },
+      "tti": 2737,
+      "xframe_tick1": "TICK:358609831",
+      "xframe_debug": {
+        "srcdocHead": "<!doctype html><html><head><style>body{font:13px system-ui,sans-serif;margin:8px;background:#eef7ee}.badge{display:inlin"
+      },
+      "perf": {
+        "frameP50": 0.6,
+        "frameP95": 0.8
+      }
+    },
+    {
+      "case": "cshadow",
+      "pass": true,
+      "checks": {
+        "cshadow_pre_visible": true,
+        "cshadow_post": true,
+        "cshadow_interact": true,
+        "cshadow_interact_visual": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 396,
+        "meta": 95,
+        "dom-snapshot": 1215,
+        "sync-ready": 21,
+        "pong": 188,
+        "scroll-sync": 49,
+        "dom-patches": 748,
+        "focus-sync": 28
+      },
+      "tti": 1746,
+      "cshadow_preGreen": 5818,
+      "cshadow_postBlue": 5749,
+      "cshadow_redAfter": 5808,
+      "cshadow_final": "REPORT:pre-click:on",
+      "perf": {
+        "frameP50": 0.5,
+        "frameP95": 0.7
+      }
+    },
+    {
+      "case": "audio",
+      "pass": true,
+      "checks": {
+        "audio_playing": true,
+        "audio_unmuted": true,
+        "audio_progress": true,
+        "audio_pause": true
+      },
+      "bytes": {
+        "session": 104,
+        "sstats": 198,
+        "meta": 99,
+        "dom-snapshot": 11588,
+        "sync-ready": 21,
+        "pong": 74,
+        "dom-patches": 275,
+        "scroll-sync": 49,
+        "dom-props": 289,
+        "focus-sync": 28
+      },
+      "tti": 1732,
+      "audio_final": "REPORT:audio:playing@0.22u",
+      "perf": {
+        "frameP50": 0.5,
+        "frameP95": 0.7
+      }
+    }
+  ],
+  "legacyEditorRejected": {
+    "case": "editor",
+    "pass": true,
+    "checks": {
+      "ce_typing": true
+    },
+    "bytes": {},
+    "tti": 1500,
+    "error": "Cannot set properties of undefined (setting 'keyRttMs')"
+  },
+  "packageBusiness": {
+    "pass": true,
+    "name": "@lizhen-xxaq/dom-mirror",
+    "version": "0.27.0",
+    "archiveSha256": "e72cafb7b508b4791372f31e0c4a96709bc523cbe1197988f1f70564717b66b4",
+    "integrity": "sha512-/0+SjWdUXfniIt3EnljCpX/HDkfaPxCR8Mqj4tfh9zs8QlkRfQR3/fQXOsWAAiuxm7/kOb+Ru7OkfQi6eq6RgA==",
+    "negative": {
+      "pass": true,
+      "checks": [
+        {
+          "name": "changed-archive",
+          "rejected": true
+        },
+        {
+          "name": "changed-installed-file",
+          "rejected": true
+        },
+        {
+          "name": "source-directory-fallback",
+          "rejected": true
+        },
+        {
+          "name": "node-path-fallback",
+          "rejected": true
+        }
+      ]
+    },
+    "suites": {
+      "core": {
+        "results": [
+          {
+            "mode": "direct",
+            "steps": [
+              {
+                "name": "login",
+                "pass": true
+              },
+              {
+                "name": "create",
+                "pass": true,
+                "task": {
+                  "id": 1,
+                  "title": "UI direct cfe44033",
+                  "done": false
+                }
+              },
+              {
+                "name": "priority",
+                "pass": true,
+                "priority": 2
+              },
+              {
+                "name": "complete",
+                "pass": true,
+                "done": true
+              }
+            ],
+            "pass": true,
+            "started": "2026-10-26T21:11:27.388Z",
+            "projectId": 2,
+            "taskId": 1,
+            "finished": "2026-10-26T21:11:31.232Z"
+          },
+          {
+            "mode": "dom",
+            "steps": [
+              {
+                "name": "login",
+                "pass": true
+              },
+              {
+                "name": "create",
+                "pass": true,
+                "task": {
+                  "id": 2,
+                  "title": "UI dom f39327cc",
+                  "done": false
+                }
+              },
+              {
+                "name": "priority",
+                "pass": true,
+                "priority": 2
+              },
+              {
+                "name": "complete",
+                "pass": true,
+                "done": true
+              }
+            ],
+            "pass": true,
+            "started": "2026-10-26T21:11:31.233Z",
+            "projectId": 4,
+            "taskId": 2,
+            "finished": "2026-10-26T21:11:36.611Z"
+          },
+          {
+            "mode": "frame",
+            "steps": [
+              {
+                "name": "login",
+                "pass": true
+              },
+              {
+                "name": "create",
+                "pass": true,
+                "task": {
+                  "id": 3,
+                  "title": "UI frame 6392cbd3",
+                  "done": false
+                }
+              },
+              {
+                "name": "priority",
+                "pass": true,
+                "priority": 2
+              },
+              {
+                "name": "complete",
+                "pass": true,
+                "done": true
+              }
+            ],
+            "pass": true,
+            "started": "2026-10-26T21:11:36.611Z",
+            "projectId": 6,
+            "taskId": 3,
+            "finished": "2026-10-26T21:11:42.829Z"
+          }
+        ],
+        "lifecycle": {
+          "pass": true,
+          "before": {
+            "name": "@lizhen-xxaq/dom-mirror",
+            "version": "0.27.0",
+            "archiveSha256": "e72cafb7b508b4791372f31e0c4a96709bc523cbe1197988f1f70564717b66b4",
+            "integrity": "sha512-/0+SjWdUXfniIt3EnljCpX/HDkfaPxCR8Mqj4tfh9zs8QlkRfQR3/fQXOsWAAiuxm7/kOb+Ru7OkfQi6eq6RgA==",
+            "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+            "dependencies": {
+              "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+              "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+              "ws": "/consumer/node_modules/ws/index.js"
+            },
+            "verifiedArchiveFiles": 213,
+            "lockSha256": "a876d2ff28f687fb0cf0297961211abe02ab2c3f1700485ce4070e1d939772d4",
+            "node": "v24.21.0",
+            "sourceCheckoutAbsent": true,
+            "loadedModulesInsideConsumer": true,
+            "browsers": [
+              {
+                "pid": 37,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 203,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              }
+            ]
+          },
+          "after": {
+            "name": "@lizhen-xxaq/dom-mirror",
+            "version": "0.27.0",
+            "archiveSha256": "e72cafb7b508b4791372f31e0c4a96709bc523cbe1197988f1f70564717b66b4",
+            "integrity": "sha512-/0+SjWdUXfniIt3EnljCpX/HDkfaPxCR8Mqj4tfh9zs8QlkRfQR3/fQXOsWAAiuxm7/kOb+Ru7OkfQi6eq6RgA==",
+            "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+            "dependencies": {
+              "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+              "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+              "ws": "/consumer/node_modules/ws/index.js"
+            },
+            "verifiedArchiveFiles": 213,
+            "lockSha256": "a876d2ff28f687fb0cf0297961211abe02ab2c3f1700485ce4070e1d939772d4",
+            "node": "v24.21.0",
+            "sourceCheckoutAbsent": true,
+            "loadedModulesInsideConsumer": true,
+            "browsers": [
+              {
+                "pid": 37,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 203,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 428,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              }
+            ]
+          },
+          "activeSessionClosed": true,
+          "repeatedClosePassed": true,
+          "hostRemainsAlive": true,
+          "closedMirrorStatus": 503
+        },
+        "image": "sha256:e14eb1bd71bcad06e8fc48bb619fe622e85cba1cb40223f92a2ff76109360620",
+        "noOOM": true
+      },
+      "recovery": {
+        "results": [
+          {
+            "mode": "dom",
+            "pass": true,
+            "steps": [
+              {
+                "name": "login-route-draft",
+                "pass": true
+              },
+              {
+                "name": "committed-without-ui-confirmation",
+                "pass": true,
+                "taskId": 1,
+                "count": 1
+              },
+              {
+                "name": "same-account-isolation",
+                "pass": true
+              },
+              {
+                "name": "expiry-and-explicit-restart",
+                "pass": true
+              }
+            ]
+          },
+          {
+            "mode": "frame",
+            "pass": true,
+            "steps": [
+              {
+                "name": "login-route-draft",
+                "pass": true
+              },
+              {
+                "name": "committed-without-ui-confirmation",
+                "pass": true,
+                "taskId": 3,
+                "count": 1
+              },
+              {
+                "name": "same-account-isolation",
+                "pass": true
+              },
+              {
+                "name": "expiry-and-explicit-restart",
+                "pass": true
+              }
+            ]
+          }
+        ],
+        "lifecycle": {
+          "pass": true,
+          "before": {
+            "name": "@lizhen-xxaq/dom-mirror",
+            "version": "0.27.0",
+            "archiveSha256": "e72cafb7b508b4791372f31e0c4a96709bc523cbe1197988f1f70564717b66b4",
+            "integrity": "sha512-/0+SjWdUXfniIt3EnljCpX/HDkfaPxCR8Mqj4tfh9zs8QlkRfQR3/fQXOsWAAiuxm7/kOb+Ru7OkfQi6eq6RgA==",
+            "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+            "dependencies": {
+              "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+              "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+              "ws": "/consumer/node_modules/ws/index.js"
+            },
+            "verifiedArchiveFiles": 213,
+            "lockSha256": "a876d2ff28f687fb0cf0297961211abe02ab2c3f1700485ce4070e1d939772d4",
+            "node": "v24.21.0",
+            "sourceCheckoutAbsent": true,
+            "loadedModulesInsideConsumer": true,
+            "browsers": [
+              {
+                "pid": 37,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 198,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 394,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 539,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 704,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 908,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              }
+            ]
+          },
+          "after": {
+            "name": "@lizhen-xxaq/dom-mirror",
+            "version": "0.27.0",
+            "archiveSha256": "e72cafb7b508b4791372f31e0c4a96709bc523cbe1197988f1f70564717b66b4",
+            "integrity": "sha512-/0+SjWdUXfniIt3EnljCpX/HDkfaPxCR8Mqj4tfh9zs8QlkRfQR3/fQXOsWAAiuxm7/kOb+Ru7OkfQi6eq6RgA==",
+            "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+            "dependencies": {
+              "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+              "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+              "ws": "/consumer/node_modules/ws/index.js"
+            },
+            "verifiedArchiveFiles": 213,
+            "lockSha256": "a876d2ff28f687fb0cf0297961211abe02ab2c3f1700485ce4070e1d939772d4",
+            "node": "v24.21.0",
+            "sourceCheckoutAbsent": true,
+            "loadedModulesInsideConsumer": true,
+            "browsers": [
+              {
+                "pid": 37,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 198,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 394,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 539,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 704,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 908,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              },
+              {
+                "pid": 1074,
+                "closed": true,
+                "connected": false,
+                "processGone": true
+              }
+            ]
+          },
+          "activeSessionClosed": true,
+          "repeatedClosePassed": true,
+          "hostRemainsAlive": true,
+          "closedMirrorStatus": 503
+        },
+        "image": "sha256:e14eb1bd71bcad06e8fc48bb619fe622e85cba1cb40223f92a2ff76109360620",
+        "noOOM": true
+      }
+    }
+  },
+  "limits": "Local fixed-image functional and delivery validation; no capacity, long-soak, production deployment or npm publication claim. Archive predates final report and generality harness correction; runtime source hashes are verified above."
+}

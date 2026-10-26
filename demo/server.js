@@ -40,9 +40,12 @@ async function startDemo(createMirror = require('..').createMirror) {
       maxSessions: Number(process.env.MAX_SESSIONS ?? 3),
       sessionGraceMs: Number(process.env.SESSION_GRACE_MS ?? 60000),
       allowedOrigins: (process.env.RBI_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
+      crossOriginFrameOrigins: (process.env.XFRAME_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
       defaultMode: process.env.DEFAULT_MODE || 'dom',
       presentation: process.env.PROD_PRESENTATION === '1' ? 'embedded' : 'demo',
       obfuscate: process.env.OBFUSCATE !== '0',
+      canvasStream: process.env.CANVAS_STREAM !== '0',
+      maskInputTypes: (process.env.MASK_INPUT_TYPES || '').split(',').map(v => v.trim()).filter(Boolean),
     });
     const server = http.createServer(mirror.handleRequest);
     servers.push(server);
