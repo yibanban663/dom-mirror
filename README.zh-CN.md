@@ -156,6 +156,7 @@ npm test
 node tools/verify-package.cjs
 
 # 从当前源码构建 Docker 镜像后：
+IMAGE=dom-mirror:local bash tools/verify-docker-package-business.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-data-boundary.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-session-identity.sh
@@ -166,7 +167,7 @@ IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
   bash tools/verify-docker-vikunja.sh
 ```
 
-tarball 检查会把实际 npm 包安装到独立临时宿主，不启动 Chromium。浏览器回归使用隔离 Docker 环境；Vikunja 流程覆盖登录、创建任务、修改优先级和完成，并独立检查持久化。CI 已配置这些检查及浏览器证据保存，是否通过以对应提交结果为准。
+快速 tarball 检查不启动 Chromium；`verify-docker-package-business.sh` 则将新打包产物安装到独立宿主，移除源码运行目录、禁用 `NODE_PATH` 回退并校验安装文件哈希。随后通过真实浏览器验证 Vikunja 登录、创建、优先级和完成，独立检查持久化，再检查恢复、过期及浏览器回收；关闭镜像实例后宿主 HTTP 仍须存活。浏览器测试使用隔离 Docker 网络，CI 保存包身份、消费端依赖锁、结果和截图。具体结果见[打包产物验收](docs/acceptance/package-business-2026-10-26.md)，远端是否通过以对应提交结果为准。
 
 frame 编码会复用普通 RGB/RGBA PNG 的解码像素，对其他编码保守回退。测量证明了**局部编码收益**，尚未证明稳定的端到端提速。[合成并发测试](docs/performance/2026-10-26-capacity.md)已覆盖 DOM/frame 的 1/3/6 会话：DOM 满足本轮预算，frame 回收后匿名内存预算未稳定通过（单会话一轮略超，3/6 会话均超）。[十轮内存调查](docs/performance/2026-10-26-frame-memory.md)确认强制 GC 和关闭 sharp cache 均未解决匿名内存驻留；分配器参数属于宿主诊断选项，不设为包的默认行为。真实业务容量与长期运行仍待验收。
 
