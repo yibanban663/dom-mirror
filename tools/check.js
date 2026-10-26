@@ -26,7 +26,8 @@ const start = server.indexOf('const PAGE_HELPERS = ');
 const end = server.indexOf('\n// ---------- 静态文件', start);
 if (start < 0 || end < 0) throw new Error('PAGE_HELPERS not found');
 const helpers = vm.runInNewContext(server.slice(start, end) + '\nPAGE_HELPERS;', {
-  ORIGIN_BASE: new URL('http://127.0.0.1:8077/'), config: { redactAttributes: [] },
+  ORIGIN_BASE: new URL('http://127.0.0.1:8077/'),
+  config: { redactAttributes: [], maskInputTypes: [], canvasStream: true },
 });
 new vm.Script(helpers, { filename: 'PAGE_HELPERS' });
 console.log('Client, demo and injected scripts compile');
