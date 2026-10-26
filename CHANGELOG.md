@@ -1,3 +1,23 @@
+# v0.13.0
+
+- IME 中文输入：客户端 compositionstart/update/end 镜像到源站——组合期 CDP
+  Input.imeSetComposition 写入候选串（远端可见拼音过程），上屏 CDP Input.insertText；
+  组合期间抑制普通 input 值同步，拼音串不会作为最终值写进源站字段。input/textarea
+  覆盖，contentEditable 暂不覆盖（文档声明）。
+- 镜像文件上传：本地 File 经 WS 分块（≤48KiB）上行，服务端按宿主配置校验扩展名
+  白名单与大小上限（upload.maxBytes 默认 8MiB），落会话私有临时目录（basename 收口）
+  后经 CDP setFileInputFiles 交给源站字段并派发 change；会话结束临时目录整体删除。
+- 镜像文件下载：Browser.setDownloadBehavior(allow)+eventsEnabled，Page.enable 后订阅
+  downloadWillBegin/downloadProgress；文件落地会话临时目录，完成后 ≤48KiB 分块下行并
+  立即删除服务端副本，客户端 Blob + a[download] 保存；basename+目录包含校验防逃逸，
+  超限/取消走下行 error（download.maxBytes 默认 32MiB）。
+- 新增配置 upload/download（options 校验 + index.d.ts 类型）；协议文档同步
+  composition/composition-commit/upload-*/download-* 消息。
+- 新增回归 tools/verify-longtail-p0.cjs：IME 合成期回显与上屏断言、上传回环
+  （客户端 File → 远端页面读到同名同内容）、下载回环（内容逐字校验）；CI 接入
+  tools/verify-docker-longtail-p0.sh。既有 node-id/scroll/select/data-boundary/
+  Vikunja(direct,dom,frame) 回归保持绿。
+
 # v0.12.0
 
 - 节点 ID 体系替换索引路径定位：源站序列化时按 WeakMap 双向映射分配递增数值

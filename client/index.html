@@ -246,6 +246,33 @@
   // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
   const lastTyped = new Map();
   let viewW = 1280, viewH = 800;
+  // v0.13 文件传输：上行分块状态机 + 下行装配缓冲（供回归/诊断观察）
+  window.__xyUploads = [];
+  window.__xyDownloads = [];
+  const uploadStates = new Map();   // tid -> {file, fid, sent}
+  const downloadStates = new Map(); // id -> {name, chunks, size}
+  async function sendFileChunks(tid, file, maxChunk) {
+    const step = Math.max(16 * 1024, Math.min(maxChunk || 48 * 1024, 48 * 1024));
+    const buf = new Uint8Array(await file.arrayBuffer());
+    for (let off = 0; off < buf.length; off += step) {
+      const slice = buf.subarray(off, off + step);
+      let bin = '';
+      for (let i = 0; i < slice.length; i += 0x8000) bin += String.fromCharCode.apply(null, slice.subarray(i, i + 0x8000));
+      send({ type: 'upload-chunk', tid, b64: btoa(bin) });
+    }
+    send({ type: 'upload-end', tid });
+  }
+  // 镜像 file input 的本地选择 → 上传管线（v0.13）：白名单/大小校验在服务端，
+  // 分块 ≤48KiB 上行；完成后远端页面经 CDP 拿到真实文件，UI 变化以补丁回传。
+  function handleFilePick(input) {
+    const fid = idOfMirror(input);
+    if (fid === null || !input.files || !input.files.length) return;
+    const file = input.files[0];
+    const tid = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    uploadStates.set(tid, { file, fid, sent: false });
+    window.__xyUploads.push({ name: file.name, size: file.size, state: 'begin' });
+    send({ type: 'upload-begin', tid, name: file.name, size: file.size, fid });
+  }
 
   function pathOfMirror(node) {
     const parts = [];
@@ -410,6 +437,8 @@
       mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
       mirrorRoot.addEventListener('input', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
+        // IME 组合期间（isComposing）的 input 携带拼音串，不做值同步
+        if (composing && e.isComposing !== false) return;
         // v4：输入框是真实控件，打字回显原生；值同步服务端（v0.12：按 id 定位）
         const id = idOfMirror(e.target);
         if (id !== null) { lastTyped.set(id, e.target.value); send({ type: 'dom', kind: 'input', id, value: e.target.value }); return; }
@@ -418,10 +447,39 @@
       });
       mirrorRoot.addEventListener('change', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
+        // v0.13：file input 的"值"是本地 fakepath，不做值同步——改走上传管线
+        if (e.target.tagName === 'INPUT' && e.target.type === 'file') { handleFilePick(e.target); return; }
         const id = idOfMirror(e.target);
         if (id !== null) { lastTyped.set(id, e.target.value); send({ type: 'dom', kind: 'change', id, value: e.target.value }); return; }
         const p = pathOfMirror(e.target);
         if (p !== null) { lastTyped.set(p, e.target.value); send({ type: 'dom', kind: 'change', path: p, value: e.target.value }); }
+      });
+      // v0.13 IME：组合期镜像候选串（服务端 CDP imeSetComposition），上屏走
+      // composition-commit（CDP insertText）。组合期间抑制普通 input 值同步，
+      // 拼音串不会被当作最终值写进源站字段；上屏后的最终 input 事件正常同步。
+      let composing = false;
+      const compTarget = (e) => (e.target && e.target.matches && e.target.matches('input, textarea')) ? e.target : null;
+      mirrorRoot.addEventListener('compositionstart', (e) => {
+        if (compTarget(e)) composing = true;
+      });
+      mirrorRoot.addEventListener('compositionupdate', (e) => {
+        const t = compTarget(e);
+        if (!t || !composing) return;
+        const id = idOfMirror(t);
+        if (id === null) return;
+        const text = e.data || '';
+        const s = (t.selectionStart == null) ? text.length : t.selectionStart;
+        const en = (t.selectionEnd == null) ? text.length : t.selectionEnd;
+        send({ type: 'composition', id, text, s, e: en });
+      });
+      mirrorRoot.addEventListener('compositionend', (e) => {
+        if (!composing) return;
+        composing = false;
+        const t = compTarget(e);
+        if (!t) return;
+        const id = idOfMirror(t);
+        if (id === null) return;
+        send({ type: 'composition-commit', id, text: e.data || '' });
       });
       // 焦点落进输入字段时找回重建前的已键入值（重同步重建会清掉克隆里的当前值）
       mirrorRoot.addEventListener('focusin', (e) => {
@@ -801,6 +859,57 @@
           if (j.type === 'session') {
             resumeToken = j.token;
             if (j.resumed) { lastTyped.clear(); pendingFocusPatches = []; }
+          }
+          // v0.13 文件传输：上传握手应答/完成通知，下载装配与保存
+          if (j.type === 'upload-accept') {
+            const st = uploadStates.get(j.tid);
+            if (!st) { /* noop */ }
+            else if (j.ok) sendFileChunks(j.tid, st.file, j.maxChunk).catch(() => {});
+            else {
+              uploadStates.delete(j.tid);
+              window.__xyUploads.push({ name: st.file.name, state: 'rejected', error: j.error });
+            }
+          }
+          if (j.type === 'upload-end') {
+            const st = uploadStates.get(j.tid);
+            uploadStates.delete(j.tid);
+            if (st) window.__xyUploads.push({ name: st.file.name, size: st.file.size, state: j.ok ? 'stored' : 'error', error: j.error });
+          }
+          if (j.type === 'download-begin') {
+            downloadStates.set(j.id, { name: j.name, chunks: [], size: j.size || 0 });
+            window.__xyDownloads.push({ name: j.name, state: 'begin' });
+          }
+          if (j.type === 'download-chunk') {
+            const st = downloadStates.get(j.id);
+            if (st) st.chunks.push(j.b64);
+          }
+          if (j.type === 'download-end') {
+            const st = downloadStates.get(j.id);
+            downloadStates.delete(j.id);
+            if (!st) { /* noop */ }
+            else if (!j.ok) window.__xyDownloads.push({ name: st.name, state: 'error', error: j.error });
+            else {
+              try {
+                const bin = atob(st.chunks.join(''));
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                const blob = new Blob([bytes]);
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = j.name || st.name || 'download';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+                const record = { name: a.download, size: bytes.length, state: 'saved' };
+                if (bytes.length <= 4096) {
+                  try { record.text = bin; } catch (e) {}
+                }
+                window.__xyDownloads.push(record);
+              } catch (e2) {
+                window.__xyDownloads.push({ name: st.name, state: 'error', error: 'assemble failed' });
+              }
+            }
           }
           if (j.type === 'sync-ready') { syncReady = true; activate(); }
           if (j.type === 'meta') {

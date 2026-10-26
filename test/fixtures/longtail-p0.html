@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Longtail P0</title>
+<style>
+  body { font: 14px Arial, sans-serif; padding: 24px; color: #16263a; }
+  section { margin: 18px 0; padding: 12px; border: 1px solid #ccd; border-radius: 8px; }
+  input[type=text] { padding: 8px; width: 260px; }
+  #echo, #up-status { margin-top: 6px; color: #0a5; min-height: 18px; }
+  a { color: #06c; }
+</style>
+</head>
+<body>
+<h3>IME / upload / download</h3>
+<section>
+  <h4>IME</h4>
+  <input id="q" type="text" placeholder="type chinese" autocomplete="off">
+  <div id="echo">echo:</div>
+</section>
+<section>
+  <h4>Upload</h4>
+  <input id="f" type="file">
+  <div id="up-status">no file</div>
+</section>
+<section>
+  <h4>Download</h4>
+  <a id="dl" href="/p0-dl.txt" download>p0-dl.txt</a>
+</section>
+<script>
+  const q = document.getElementById('q');
+  const echo = document.getElementById('echo');
+  q.addEventListener('input', () => { echo.textContent = 'echo:' + q.value; });
+  const f = document.getElementById('f');
+  const up = document.getElementById('up-status');
+  f.addEventListener('change', () => {
+    const file = f.files && f.files[0];
+    if (!file) { up.textContent = 'no file'; return; }
+    const r = new FileReader();
+    r.onload = () => { up.textContent = 'GOT ' + file.name + ' ' + file.size + 'B: ' + String(r.result).slice(0, 80); };
+    r.onerror = () => { up.textContent = 'read fail'; };
+    r.readAsText(file);
+  });
+</script>
+</body>
+</html>

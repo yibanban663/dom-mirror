@@ -11,6 +11,8 @@
  * 链路：客户端浏览器 <--WS--> 宿主接入 --CDP--> 无头Chromium --HTTP--> 配置源站
  */
 const fs = require('fs');
+const fsp = require('fs/promises');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
@@ -30,6 +32,9 @@ const {
   maxSessions: MAX_SESSIONS, sessionGraceMs: SESSION_GRACE_MS,
   allowedOrigins: ALLOWED_ORIGINS, defaultMode: DEFAULT_MODE,
 } = config;
+const UPLOAD_MAX = config.upload.maxBytes;
+const UPLOAD_EXTS = new Set(config.upload.extensions);
+const DOWNLOAD_MAX = config.download.maxBytes;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
 const logger = config.logger;
 let sharp = null; try { sharp = require('sharp'); } catch (e) { logger.log('[sharp ] unavailable:', e.message); }
@@ -629,6 +634,11 @@ async function runSession(ws, req, lifecycle) {
   let sessionBrowser = null;
   const obfSess = nextObfSession(); // 防抓取字体混淆（dom 模式启用；无池则 null 透明降级）
   let lastInputAt = 0, inputLatMs = null, frameTimes = [], statTimer = null;
+  // v0.13 文件传输：会话临时目录（上传暂存/下载落地），会话结束即删除
+  let sessionUploadDir = null, sessionDownloadDir = null;
+  let browserCdpDetached = null;
+  const sessionUploads = new Map();   // tid -> {name,size,got,chunks,fid}
+  const sessionDownloads = new Map(); // guid -> {name,received}
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
@@ -649,6 +659,13 @@ async function runSession(ws, req, lifecycle) {
       if (obfSess) obfSessions.delete(obfSess.sid);
       domActive = false;
       await Promise.allSettled([page?.close(), sessionBrowser?.close()]);
+      sessionUploads.clear();
+      sessionDownloads.clear();
+      if (browserCdpDetached) browserCdpDetached();
+      await Promise.allSettled([
+        sessionUploadDir ? fsp.rm(sessionUploadDir, { recursive: true, force: true }) : null,
+        sessionDownloadDir ? fsp.rm(sessionDownloadDir, { recursive: true, force: true }) : null,
+      ]);
       logger.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
     })();
     cleanupPromise.finally(() => cleanups.delete(cleanup)).catch(() => {});
@@ -801,6 +818,105 @@ async function runSession(ws, req, lifecycle) {
             } else if (m.text) {
               if (m.action !== 'up') await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', text: m.text, key: m.text, unmodifiedText: m.text });
               else await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: m.text });
+            }
+            break;
+          }
+          case 'composition': {
+            // IME 组合镜像（v0.13）：客户端 compositionstart/update → CDP
+            // imeSetComposition 把候选串写进源站焦点字段（远端可见拼音过程）
+            noteInput();
+            try {
+              if (m.id !== undefined || m.path !== undefined) {
+                await page.evaluate((ref) => {
+                  const el = window.__xy.find(ref);
+                  if (el && el.focus && !el.disabled) el.focus();
+                }, m.id !== undefined ? m.id : m.path).catch(() => {});
+              }
+              const text = String(m.text || '');
+              const len = [...text].length;
+              let s = Math.max(0, Math.min(parseInt(m.s, 10) || 0, len));
+              let e = Math.max(s, Math.min(parseInt(m.e, 10) || 0, len));
+              await cdp.send('Input.imeSetComposition', { text, selectionStart: s, selectionEnd: e });
+            } catch (err) { sendJson({ type: 'error', msg: 'composition failed: ' + err.message }); }
+            break;
+          }
+          case 'composition-commit': {
+            // IME 上屏（v0.13）：compositionend → CDP insertText 键入最终文本
+            noteInput();
+            try {
+              if (m.id !== undefined || m.path !== undefined) {
+                await page.evaluate((ref) => {
+                  const el = window.__xy.find(ref);
+                  if (el && el.focus && !el.disabled) el.focus();
+                }, m.id !== undefined ? m.id : m.path).catch(() => {});
+              }
+              await cdp.send('Input.insertText', { text: String(m.text || '') });
+            } catch (err) { sendJson({ type: 'error', msg: 'composition commit failed: ' + err.message }); }
+            break;
+          }
+          case 'upload-begin': {
+            // 镜像文件上传（v0.13）：客户端 File → WS 分块 → 会话临时目录 →
+            // puppeteer uploadFile（DOM.setFileInputFiles）→ 远端 change
+            const tid = String(m.tid || '');
+            const name = path.basename(String(m.name || ''));
+            const size = parseInt(m.size, 10);
+            const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1] || '';
+            if (!tid || !name || !ext || !UPLOAD_EXTS.has(ext.toLowerCase())) {
+              sendJson({ type: 'upload-accept', tid, ok: false, error: 'extension not allowed' });
+              break;
+            }
+            if (!Number.isFinite(size) || size < 0 || size > UPLOAD_MAX) {
+              sendJson({ type: 'upload-accept', tid, ok: false, error: 'size limit ' + UPLOAD_MAX });
+              break;
+            }
+            sessionUploads.set(tid, { name, size, got: 0, chunks: [], fid: m.fid });
+            sendJson({ type: 'upload-accept', tid, ok: true, maxChunk: 48 * 1024 });
+            break;
+          }
+          case 'upload-chunk': {
+            const st = sessionUploads.get(String(m.tid || ''));
+            if (!st) break;
+            try {
+              const buf = Buffer.from(String(m.b64 || ''), 'base64');
+              st.got += buf.length;
+              if (st.got > st.size || st.got > UPLOAD_MAX) {
+                sessionUploads.delete(m.tid);
+                sendJson({ type: 'upload-end', tid: m.tid, ok: false, error: 'size mismatch' });
+                break;
+              }
+              st.chunks.push(buf);
+            } catch { sessionUploads.delete(m.tid); }
+            break;
+          }
+          case 'upload-end': {
+            const tid = String(m.tid || '');
+            const st = sessionUploads.get(tid);
+            if (!st) break;
+            sessionUploads.delete(tid);
+            noteInput();
+            try {
+              const buf = Buffer.concat(st.chunks);
+              if (buf.length !== st.size) throw new Error('size mismatch');
+              if (!sessionUploadDir) sessionUploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-upload-'));
+              // 会话私有目录 + name 已 basename 收口：直接用原文件名，远端页面
+              // 读到的 files[0].name 与访客本地选择一致（uuid 前缀会污染业务文件名）
+              const fp = path.join(sessionUploadDir, st.name);
+              fs.writeFileSync(fp, buf);
+              // 按 id 找回源站 file input，CDP 设置文件并触发 change
+              const ref = st.fid;
+              const handle = await page.evaluateHandle((r) => window.__xy.find(r), ref);
+              const el = handle.asElement ? handle.asElement() : null;
+              if (!el || !el.uploadFile) { await handle.dispose(); throw new Error('file input not found'); }
+              await el.uploadFile(fp);
+              await handle.dispose();
+              await page.evaluate((r) => {
+                const el2 = window.__xy.find(r);
+                if (el2) el2.dispatchEvent(new Event('change', { bubbles: true }));
+              }, ref).catch(() => {});
+              logger.log('[up    ] stored:', st.name, buf.length, 'bytes');
+              sendJson({ type: 'upload-end', tid, ok: true, name: st.name, size: buf.length });
+            } catch (err) {
+              sendJson({ type: 'upload-end', tid, ok: false, error: String(err && err.message || err) });
             }
             break;
           }
@@ -1404,6 +1520,59 @@ async function runSession(ws, req, lifecycle) {
       } catch (e) {}
     });
     page.on('pageerror', (e) => { try { logger.log('[pageerr]', String(e && e.message).slice(0, 140)); } catch (e2) {} });
+
+    // 下载通道（v0.13）：源站下载落地会话临时目录，完成后按 ≤48KiB 分块回传并
+    // 立即删除服务端文件。文件名 basename 收口 + resolve 目录包含校验（防逃逸）。
+    try {
+      const browserCdp = await sessionBrowser.target().createCDPSession();
+      sessionDownloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-dl-'));
+      await browserCdp.send('Browser.setDownloadBehavior', {
+        behavior: 'allow', downloadPath: sessionDownloadDir, eventsEnabled: true,
+      });
+      browserCdpDetached = () => browserCdp.detach().catch(() => {});
+    } catch (e) { logger.log('[dl    ] behavior set fail:', e.message); }
+    // CDP 事件按域分发：Page.downloadWillBegin/Progress 需要 Page.enable，
+    // puppeteer 的独立 CDP 会话默认不启用事件域
+    await cdp.send('Page.enable').catch(() => {});
+    cdp.on('Page.downloadWillBegin', (ev) => {
+      if (dead || ws.readyState !== 1) return;
+      const name = path.basename(String(ev.suggestedFilename || 'download.bin'));
+      logger.log('[dl    ] willBegin:', name);
+      sessionDownloads.set(ev.guid, { name, received: 0 });
+      sendJson({ type: 'download-begin', id: ev.guid, name });
+    });
+    cdp.on('Page.downloadProgress', (ev) => {
+      const st = sessionDownloads.get(ev.guid);
+      if (!st) return;
+      if (ev.state === 'inProgress') { st.received = ev.receivedBytes || 0; return; }
+      sessionDownloads.delete(ev.guid);
+      if (ev.state === 'canceled') {
+        sendJson({ type: 'download-end', id: ev.guid, ok: false, error: 'canceled' });
+        return;
+      }
+      if (ev.state !== 'completed' || dead || ws.readyState !== 1) return;
+      (async () => {
+        try {
+          const dir = path.resolve(sessionDownloadDir);
+          const fp = path.resolve(sessionDownloadDir, st.name);
+          if (fp !== dir && !fp.startsWith(dir + path.sep)) throw new Error('bad download path');
+          const buf = await fsp.readFile(fp);
+          await fsp.rm(fp, { force: true }).catch(() => {});
+          if (buf.length > DOWNLOAD_MAX) throw new Error('size limit ' + DOWNLOAD_MAX);
+          sendJson({ type: 'download-begin', id: ev.guid, name: st.name, size: buf.length });
+          const CHUNK = 48 * 1024;
+          for (let off = 0; off < buf.length; off += CHUNK) {
+            if (dead || ws.readyState !== 1) return;
+            sendJson({ type: 'download-chunk', id: ev.guid, b64: buf.subarray(off, off + CHUNK).toString('base64') });
+          }
+          sendJson({ type: 'download-end', id: ev.guid, ok: true, name: st.name, size: buf.length });
+          logger.log('[dl    ] delivered:', st.name, buf.length, 'bytes');
+        } catch (err) {
+          sendJson({ type: 'download-end', id: ev.guid, ok: false, error: String(err && err.message || err) });
+        }
+      })();
+    });
+
 
     cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
       try {

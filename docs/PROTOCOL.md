@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.12.0）
+# WebSocket 协议（实现版本 0.13.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
 
@@ -18,6 +18,11 @@
 | `scroll` | `x,y,inner?` | 页面及内部容器滚动；inner 为 `{id,top,left}` 对象数组（v0.12；旧元组 `[path,top,left]` 仅过渡期兼容） |
 | `scrolltop` | 无 | 服务端页面回顶部 |
 | `repaint` | `x,y,w,h` | 请求服务端页面坐标区域的像素重绘 |
+| `composition` | `id,text,s,e` | IME 组合过程镜像（compositionstart/update），服务端 CDP imeSetComposition 写入源站焦点字段 |
+| `composition-commit` | `id,text` | IME 上屏（compositionend），服务端 CDP insertText 键入最终文本 |
+| `upload-begin` | `tid,name,size,fid` | 镜像 file input 选择本地文件后发起上传；tid 为客户端生成传输号，fid 为字段节点 id |
+| `upload-chunk` | `tid,b64` | 上传分块（≤48KiB base64）；服务端校验累计大小 |
+| `upload-end` | `tid` | 分块结束；服务端落会话临时目录并 CDP setFileInputFiles 到远端字段 |
 | `ping` | `t` | RTT 探测 |
 | `release` | 无 | 立即结束当前逻辑会话并关闭浏览器；关闭 WS 则进入保留期 |
 
@@ -36,6 +41,11 @@
 | `canvas-tile` | `id,path,url` | 更新 canvas 对应镜像图片 |
 | `anim-tiles` | `tiles,holes?,sx?,sy?,scrolls?` | PNG 差分及区域重绘；坐标和尺寸见下文 |
 | `sstats` | `fps,mr,inLat,mode,els` | 帧/消息速率、输入到帧延迟及结构计数；inLat 不是 DOM 端到端更新延迟 |
+| `upload-accept` | `tid,ok,error?,maxChunk?` | 上传握手应答：扩展名白名单与大小上限校验结果 |
+| `upload-end` | `tid,ok,name?,size?,error?` | 上传完成通知（远端字段已取得文件）或失败原因 |
+| `download-begin` | `id,name,size?` | 源站下载开始（size 在文件就绪重发时给出）；id 为下载 guid |
+| `download-chunk` | `id,b64` | 下载内容分块（≤48KiB base64） |
+| `download-end` | `id,ok,name?,size?,error?` | 下载完成（客户端 Blob + a[download] 保存）或失败/取消 |
 | `pong` | `t` | 回显 ping 时间戳 |
 | `error` | `msg,code?,terminal?` | 会话建立、事件处理或通道错误 |
 
@@ -78,3 +88,9 @@ DOM 客户端在 pointerdown 之前发送 `scroll`，包括页面位置和目标
 `x-rbi-origin` 仅在 `RBI_ALLOWED_ORIGINS` 显式允许时接受；网关需剥除访客伪造头。该选项不提供完整的多源站资源路由。
 
 HTML/CSS/属性和值可能携带业务数据。frame 并非纯像素保密协议，字体混淆也非加密。完整限制见 [README](../README.md)。
+
+## 文件传输（0.13.0）
+
+- 上传：客户端本地 File 经 WS 分块（≤48KiB/条）上行，服务端按宿主配置校验扩展名白名单（`upload.extensions`，默认文本/图片/办公文档/zip）与大小上限（`upload.maxBytes`，默认 8MiB），落**会话私有临时目录**（文件名 basename 收口）后经 CDP `DOM.setFileInputFiles` 交给源站页面并派发 change；会话结束临时目录整体删除，不落盘留存。上传内容对源站表现为普通用户文件，源站自身的病毒扫描/配额策略照常生效。
+- 下载：源站下载事件（`Page.downloadWillBegin/Progress`）落地同一会话临时目录，完成后按 ≤48KiB 分块下行并**立即删除**服务端副本；大小上限 `download.maxBytes`（默认 32MiB），超限/取消以下行 error 通知。文件名 basename + 目录包含校验防路径逃逸；客户端以 Blob + `a[download]` 保存，不执行内容。
+- 病毒扫描钩子不在协议范围内：宿主可在 `close` 之外对会话临时目录策略另行约束（目录生命周期即会话生命周期）。
