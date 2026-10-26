@@ -13,7 +13,12 @@
 <body>
   <h3>富文本与键盘应用</h3>
   <div id="ce" contenteditable="true">初始内容</div>
+  <p id="para">这是一段用于选区镜像验证的文字内容</p>
   <div id="term" tabindex="0" style="margin-top:12px;border:1px dashed #99a;padding:8px;">键盘捕获器：点我后打字/方向键</div>
+  <button id="selbtn">程序化选区</button>
+  <button id="feedbtn">加一行</button>
+  <button id="txtbtn">改首行文本</button>
+  <div id="feed"></div>
   <div id="keys">KEYS:</div>
   <div id="log">LOG:</div>
   <script>
@@ -29,6 +34,30 @@
     });
     document.getElementById('ce').addEventListener('input', () => {
       log.textContent = 'LOG:ce-input:' + document.getElementById('ce').textContent.length;
+    });
+    // 程序化选区（selectionchange 捕获路径）
+    document.getElementById('selbtn').addEventListener('click', () => {
+      const p = document.getElementById('para');
+      const rng = document.createRange();
+      rng.setStart(p.firstChild, 3);
+      rng.setEnd(p.firstChild, 9);
+      const s = document.getSelection();
+      s.removeAllRanges();
+      s.addRange(rng);
+      log.textContent = 'LOG:sel-ok';
+    });
+    // 追加流（聊天/日志/表格常态）：纯末尾追加 + 首行文本原位修改（characterData）
+    let fn = 0;
+    document.getElementById('feedbtn').addEventListener('click', () => {
+      fn++;
+      const d = document.createElement('div');
+      d.className = 'row';
+      d.textContent = 'line-' + fn;
+      document.getElementById('feed').appendChild(d);
+    });
+    document.getElementById('txtbtn').addEventListener('click', () => {
+      const first = document.querySelector('#feed .row');
+      if (first && first.firstChild) first.firstChild.data = 'line-edited';
     });
   </script>
 </body>

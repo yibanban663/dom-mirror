@@ -29,9 +29,11 @@ replace('      return { tiles };', '      return { tiles, profile: __perf.traceF
 replace("tiles: out.tiles || [], holes:", "_profile: out.profile, tiles: out.tiles || [], holes:");
 replace('const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };',
   'const enqueue = (raw) => { const receivedAt = performance.now(); cmdChain = cmdChain.then(() => { __perf.queued(raw, receivedAt); return handleRaw(raw); }).catch(() => {}); };');
-for (const type of ['dom-snapshot', 'dom-patches', 'anim-tiles']) {
+for (const type of ['dom-patches', 'anim-tiles']) {
   replace("JSON.stringify({ type: '" + type + "'", "__perf.json({ type: '" + type + "'", type === 'anim-tiles' ? 2 : 1);
 }
+// v0.18 起 dom-snapshot payload 为 Object.assign 形态（cssSame 字段）
+replace("JSON.stringify(Object.assign({ type: 'dom-snapshot'", "__perf.json(Object.assign({ type: 'dom-snapshot'");
 replace('await handleCommand(m);', "await __perf.measure('command.' + m.type, () => handleCommand(m));");
 const codec = process.env.PROFILE_CODEC || 'production';
 if (!['production', 'png', 'raw'].includes(codec)) throw new Error('PROFILE_CODEC must be production, png or raw');

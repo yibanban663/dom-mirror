@@ -622,21 +622,41 @@ const PAGE_HELPERS = `(() => {
         if (!h) return Promise.resolve('');
         return fetch(h).then(r => r.ok ? r.text() : '').catch((e) => { console.warn('[snapcss] fetch fail', h, String(e).slice(0, 60)); return ''; });
       }));
+      // v0.17：同源 @import 服务端递归内联（深度 ≤3，防环）——镜像首帧样式完整，
+      // 客户端无需二次往返拉 import（跨源 @import 原样保留，第三方直连策略一致）
+      const cssInlineImports = async (text, base, depth) => {
+        if (depth > 3 || text.indexOf('@import') < 0) return text;
+        const re = /@import\\s+(?:url\\(\\s*)?['"]?([^'")\\s;]+)['"]?\\s*\\)?\\s*(?:[a-z/()*\\s,\\-]+)?;/g;
+        let m;
+        const jobs = [];
+        while ((m = re.exec(text))) {
+          let abs = null;
+          try { abs = new URL(m[1], base).href; } catch (e) {}
+          if (abs && new URL(abs).origin === location.origin) jobs.push({ whole: m[0], abs });
+        }
+        for (const j of jobs) {
+          const t = await fetch(j.abs).then(r => r.ok ? r.text() : '').catch(() => '');
+          const inlined = t ? (await cssInlineImports(t, j.abs, depth + 1)) : '';
+          text = text.replace(j.whole, inlined);
+        }
+        return text;
+      };
       const cssParts = [];
       let styleLen = 0, linkLen = 0;
-      cssNodes.forEach((n, i) => {
+      for (let i = 0; i < cssNodes.length; i++) {
+        const n = cssNodes[i];
         if (n.tagName === 'LINK') {
           const h = n.getAttribute('href') || '';
           const abs = (() => { try { return new URL(h, location.href).href; } catch (e) { return null; } })();
           const t = linkTexts[i] || '';
           linkLen += t.length;
-          if (t && abs) cssParts.push(cssUrlRewrite(t, abs));
+          if (t && abs) cssParts.push(cssUrlRewrite(await cssInlineImports(t, abs, 0), abs));
         } else {
           const t = n.textContent || '';
           styleLen += t.length;
-          if (t) cssParts.push(cssUrlRewrite(t, location.href));
+          if (t) cssParts.push(cssUrlRewrite(await cssInlineImports(t, location.href, 0), location.href));
         }
-      });
+      }
       // v0.15：构造样式表（new CSSStyleSheet + adoptedStyleSheets）——style/link
       // 观察器看不见，快照直接并入规则文本；1Hz 指纹含 adopted 规则数签名
       let adoptedCss = '';
@@ -749,6 +769,41 @@ const PAGE_HELPERS = `(() => {
         // 占位替换(text↔span)与还原(span↔原节点)两侧都可能出现 spacer，命中即跳过；
         // 业务真实变更绝不会包含 spacer 节点
         if (rel.length && rel.some(isSpacer)) return null;
+      }
+      // v0.17 带宽·文本节点级补丁：characterData 变更只发文本本身（此前 inner=
+      // 父元素全量 innerHTML——聊天/日志流场景一字节变化发整容器）
+      if (record.type === 'characterData' && record.target && record.target.nodeType === 3 && record.target.parentElement) {
+        const parent = record.target.parentElement;
+        const pid = idOf(parent);
+        if (pid !== null) {
+          let ti = -1, k = 0;
+          for (const c of parent.childNodes) { if (c === record.target) { ti = k; break; } k++; }
+          if (ti >= 0) return { id: pid, ti, text: String(record.target.nodeValue == null ? '' : record.target.nodeValue) };
+        }
+      }
+      // v0.17 带宽·追加型补丁：纯末尾追加（聊天/日志/表格流常态）只发新增节点
+      // （sanitizeClone 同 inner 路径——剥脚本/改写 URL/盖章 data-xy-id）。
+      // 判别"真追加"：同父移动到末尾（appendChild 既有节点）也是 add-only 记录
+      // （无 removal），误走捷径会在镜像里复制节点（实测 node-id 回归 move 步骤
+      // 旧位置残留）。只有"未登记过的新节点"才允许走追加——已在 ID 注册表里的
+      // 节点是移动/回收（React 列表复用），回落 inner 全量保正确性
+      if (record.type === 'childList' && record.addedNodes.length > 0 && record.removedNodes.length === 0 && target.nodeType === 1) {
+        const hasKnown = [...record.addedNodes].some((n) => n.nodeType === 1 && XY_NODE2ID.has(n));
+        const ch = [...target.childNodes];
+        const tail = ch.slice(ch.length - record.addedNodes.length);
+        const isTail = !hasKnown && tail.length === record.addedNodes.length && tail.every((n, i) => n === record.addedNodes[i]);
+        if (isTail) {
+          try {
+            let html = '';
+            for (const n of record.addedNodes) {
+              if (n.nodeType === 3) html += String(n.nodeValue == null ? '' : n.nodeValue).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+              else if (n.nodeType === 8) continue;
+              else html += sanitizeClone(n).outerHTML;
+            }
+            const aid = idOf(target);
+            if (html && aid !== null) return { id: aid, append: html };
+          } catch (e) {}
+        }
       }
       const path = pathOf(target);
       if (path === null) return { full: true, why: record.type + ':noPath:' + target.nodeName + (target.isConnected ? '' : ':DETACHED') };
@@ -994,7 +1049,9 @@ function handleRequest(req, res) {
   }
   return staticHandler(path.join(__dirname, 'client'))(req, res);
 }
-const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+// permessage-deflate：JSON 快照/补丁文本高度重复，deflate 通常 5-10× 缩减
+// （阈值 512B，小帧不压省 CPU）；浏览器 WS 客户端普遍支持，握手透明协商
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: { threshold: 512 } });
 const identities = new WeakMap();
 function handleUpgrade(req, socket, head) {
   if (closed) { socket.destroy(); return; }
@@ -1090,6 +1147,7 @@ async function runSession(ws, req, lifecycle) {
   let dead = false;
   let helloIv = null;
   let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
+  let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
   let cleanupPromise;
   let cancelHello = () => {};
   const cleanup = () => {
@@ -1146,7 +1204,9 @@ async function runSession(ws, req, lifecycle) {
     switch (m.type) {
           case 'ping': sendJson({ type: 'pong', t: m.t }); break;
           case 'hello': {
-            // 会话中 DPR/视口变化（缩放、跨屏、拉窗口）：重新模拟并全量重发瓦片
+            // 会话中 DPR/视口变化（缩放、跨屏、拉窗口）：重新模拟并全量重发瓦片；
+            // hello 同时是断线恢复握手——客户端 css 缓存已丢，置空必发全量
+            lastCssSent = null;
             const nd = Math.max(1, Math.min(3, parseFloat(m.dpr) || DPR));
             const nw = Math.max(320, Math.min(2560, parseInt(m.w, 10) || viewW));
             const nh = Math.max(240, Math.min(1600, parseInt(m.h, 10) || viewH));
@@ -1541,7 +1601,17 @@ async function runSession(ws, req, lifecycle) {
           if (propPatches.length && domActive && ws.readyState === 1) {
             sendJson({ type: 'dom-props', props: propPatches.map(p => p.__xyProp) });
           }
-          rest = rest.filter(p => !p.__xyProp);
+          rest = rest.filter(p => p.__xyProp === undefined && p.__xySel === undefined && p.text === undefined && p.append === undefined);
+          // v0.17：选区补丁单独下发
+          const selPatch = patches.find(p => p && p.__xySel);
+          if (selPatch && domActive && ws.readyState === 1) sendJson({ type: 'dom-sel', ...selPatch.__xySel });
+          // v0.17 带宽：文本节点级/追加型补丁直发（O(增量) 而非 O(容器)）；
+          // 追加先行——同批中文本补丁可能指向刚追加内容的子节点，顺序保证注册先于定位
+          const appendPatches = patches.filter(p => p && p.append !== undefined);
+          const textPatches = patches.filter(p => p && p.text !== undefined);
+          if ((appendPatches.length || textPatches.length) && domActive && ws.readyState === 1) {
+            sendJson({ type: 'dom-patches', patches: appendPatches.concat(textPatches) });
+          }
           if (!rest.length) return;
             if (rest.some(p => p && p.full)) {
               logger.log('[dbg] full patch why:', patches.filter(p => p && p.full).map(p => p.why || '?').slice(0, 3).join(' | ').slice(0, 200));
@@ -1620,6 +1690,58 @@ async function runSession(ws, req, lifecycle) {
         window.__xyPropQ.clear();
         window.__xyPatch(out.map((p) => ({ __xyProp: p })));
       }, 60);
+      // v0.17：媒体元素状态（播放/暂停/seek/音量/进度）并入同一通道；
+      // timeupdate 1s 节流（暂停/seek/音量事件即时）
+      if (!window.__xyMediaHooked) {
+        window.__xyMediaHooked = true;
+        let lastT = 0;
+        const mediaPing = (el) => {
+          try {
+            if (!el || !el.tagName || !/^(VIDEO|AUDIO)$/.test(el.tagName)) return;
+            if (!window.__xy || !window.__xyPropQ) return;
+            const id = window.__xy.idOf(el);
+            if (id === null) return;
+            window.__xyPropQ.set(id, { id, media: { paused: el.paused, t: el.currentTime, muted: el.muted, vol: el.volume } });
+          } catch (e) {}
+        };
+        for (const ev of ['play', 'pause', 'seeked', 'volumechange']) window.addEventListener(ev, (e) => mediaPing(e.target), true);
+        window.addEventListener('timeupdate', (e) => {
+          const now = Date.now();
+          if (now - lastT < 1000) return;
+          lastT = now;
+          mediaPing(e.target);
+        }, true);
+      }
+      // v0.17：选区镜像——selectionchange 150ms 节流。镜像内容在客户端 shadow
+      // root 内，文档级 Selection API 无法跨边界设置；改为下发选区矩形
+      // （Range.getClientRects + 滚动偏移 → 页面坐标），客户端绝对定位高亮层
+      // 呈现（随镜像文档流滚动）。搜索高亮/表格选择类业务由此跟随。
+      if (!window.__xySelHooked) {
+        window.__xySelHooked = true;
+        let selT = null, lastSelKey = '';
+        document.addEventListener('selectionchange', () => {
+          if (selT) return;
+          selT = setTimeout(() => {
+            selT = null;
+            try {
+              const s = document.getSelection();
+              if (!s || s.rangeCount === 0 || s.isCollapsed) return;
+              const r = s.getRangeAt(0);
+              const rects = [];
+              for (const rc of r.getClientRects()) {
+                if (rects.length >= 200) break;
+                if (rc.width < 1 || rc.height < 1) continue;
+                rects.push([Math.round(rc.left + window.scrollX), Math.round(rc.top + window.scrollY), Math.round(rc.width), Math.round(rc.height)]);
+              }
+              if (!rects.length) return;
+              const key = JSON.stringify(rects);
+              if (key === lastSelKey) return;
+              lastSelKey = key;
+              window.__xyPatch([{ __xySel: { rects } }]);
+            } catch (e) {}
+          }, 150);
+        });
+      }
       // v0.14：现存 shadow root 全量兜底观察（attachShadow patch 覆盖此后新建的）
       if (window.__xy && window.__xy.observeShadows) window.__xy.observeShadows();
       // v0.14：现存同源 iframe 文档观察（load 钩子覆盖此后加载的）
@@ -1676,9 +1798,13 @@ async function runSession(ws, req, lifecycle) {
       } else ent.siteFonts = null;
     }
     const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
-    // css 内 url() 已在快照采集时按所属样式表基址改写为 /m(/m/o) 代理路径
+    // css 内 url() 已在快照采集时按所属样式表基址改写为 /m(/m/o) 代理路径。
+    // v0.17 带宽：css 与上次快照相同（SPA 路由切换常态）则不再重发——导航兜底
+    // 重拍的快照从 ~css+html 缩到 ~html；hello（含断线恢复）后重置必发全量
     const cssFixed = snap.css + obfCssBlock;
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [], bodyId: snap.bodyId });
+    const cssSame = (lastCssSent !== null && lastCssSent === cssFixed);
+    if (!cssSame) lastCssSent = cssFixed;
+    const payload = JSON.stringify(Object.assign({ type: 'dom-snapshot', css: cssSame ? undefined : cssFixed, cssSame: cssSame || undefined, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [], bodyId: snap.bodyId }));
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;

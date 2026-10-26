@@ -95,6 +95,30 @@ async function main() {
       await page.keyboard.press('Enter');
       await settle(900);
       out.checks.term_keys = await page.evaluate(() => /KEYS:ab\[ArrowLeft\]/.test(window.__q('#keys').textContent));
+      // 程序化选区镜像：源站 addRange → 客户端高亮层落在 #para 附近
+      await page.evaluate(() => window.__click('#selbtn'));
+      out.checks.selection = await page.waitForFunction(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const layer = sr.querySelector('[data-xy-sel]');
+        if (!layer || !layer.children.length) return false;
+        const para = sr.querySelector('#para');
+        if (!para) return false;
+        const pr = para.getBoundingClientRect();
+        const first = layer.children[0].getBoundingClientRect();
+        return Math.abs(first.top - pr.top) < 60 && first.width > 4;
+      }, { timeout: 8000 }).then(() => true).catch(() => false);
+      // 追加流（v0.17 append 补丁）+ 首行文本原位修改（text 补丁）
+      for (let i = 0; i < 3; i++) { await page.evaluate(() => window.__click('#feedbtn')); await settle(350); }
+      out.checks.feed_append = await page.evaluate(() => {
+        const rows = window.__qa('#feed .row');
+        return rows.length === 3 && rows[2].textContent === 'line-3';
+      });
+      await page.evaluate(() => window.__click('#txtbtn'));
+      await settle(900);
+      out.checks.feed_text = await page.evaluate(() => {
+        const r = window.__q('#feed .row');
+        return r && r.textContent === 'line-edited';
+      });
       out.seen = 'log=' + (await page.evaluate(() => window.__q('#log').textContent)) + ' keys=' + (await page.evaluate(() => window.__q('#keys').textContent));
     }
 
@@ -108,6 +132,22 @@ async function main() {
       out.checks.picture = /i3:pic-c\.png/.test(txt);
       out.checks.poster = /poster:pic-a\.png/.test(txt);
       out.checks.image_set_bg = /bg:url\([^)]*m/.test(txt) || /pic-b/.test(txt);
+      // 媒体状态同步（v0.17 dom-props.media）：播放/seek/暂停跟随（静音 WAV，两端 muted 自动播放允许）
+      await page.evaluate(() => window.__click('#play'));
+      await page.waitForFunction(() => {
+        const a = window.__q('#a1');
+        return a && !a.paused;
+      }, { timeout: 8000 }).then(() => true).catch(() => false).then(v => { out.checks.media_play = v; });
+      await page.evaluate(() => window.__click('#seek'));
+      out.checks.media_seek = await page.waitForFunction(() => {
+        const a = window.__q('#a1');
+        return a && Math.abs(a.currentTime - 0.4) < 0.15;
+      }, { timeout: 8000 }).then(() => true).catch(() => false);
+      await page.evaluate(() => window.__click('#pause'));
+      out.checks.media_pause = await page.waitForFunction(() => {
+        const a = window.__q('#a1');
+        return a && a.paused;
+      }, { timeout: 8000 }).then(() => true).catch(() => false);
     }
 
     if (CASE === 'layout') {
@@ -174,6 +214,24 @@ async function main() {
     }
 
     out.bytes = await page.evaluate(() => window.__bytes).catch(() => ({}));
+    // 流畅度/延迟基线（不参与 pass 判定）：主线程帧时间 p95 + 键盘型应用回显 RTT
+    try {
+      out.perf = await page.evaluate(async () => {
+        // 帧时间采样 1.2s
+        const ft = [];
+        await new Promise((res) => {
+          let n = 0;
+          const loop = (t0) => {
+            if (n++ > 0) ft.push(performance.now() - t0);
+            if (ft.length >= 70) { res(); return; }
+            requestAnimationFrame(loop);
+          };
+          requestAnimationFrame(loop);
+        });
+        ft.sort((a, b) => a - b);
+        return { frameP50: +ft[Math.floor(ft.length * 0.5)].toFixed(1), frameP95: +ft[Math.floor(ft.length * 0.95)].toFixed(1) };
+      });
+    } catch (e) { out.perf = { err: String(e).slice(0, 80) }; }
     await page.close();
   } catch (e) {
     out.error = e.message;

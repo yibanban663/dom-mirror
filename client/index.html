@@ -296,6 +296,7 @@
     st.applied = applied;
   }
   let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
+  let lastCss = null; // v0.17 带宽：最近快照 css（服务端 cssSame 时不重发，客户端用缓存）
   let lastFpResync = 0; // 结构指纹重同步限频
   let pendingFocusPatches = [];
   let lastServerHoles = null, holeRafOn = false; // 服务端穿孔区（rAF 持续重申，免疫瓦片覆盖时序） // 聚焦输入期间挂起的补丁（失焦后统一应用）
@@ -1011,6 +1012,25 @@
         }
         const el = mirrorFind(p.id !== undefined ? p.id : p.path);
         if (!el) throw new Error('id miss');
+        // v0.17 带宽·文本节点级：单文本变化只改对应 childNodes[ti].textContent
+        // （ti 失配=并发结构变化，静默跳过等下一拍补丁/快照收敛，不触发全量重同步）
+        if (p.text !== undefined) {
+          const tn = el.childNodes[p.ti];
+          if (tn) tn.textContent = p.text;
+          continue;
+        }
+        // v0.17 带宽·追加型：纯末尾追加（聊天/日志/表格流）O(增量) 追加，
+        // setHTMLUnsafe 解析（含声明式 shadow 模板），随后注册新节点 id
+        if (p.append !== undefined) {
+          const tpl = document.createElement('template');
+          if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(p.append); else tpl.innerHTML = p.append;
+          const before = el.childNodes.length;
+          el.appendChild(tpl.content);
+          for (let ci = before; ci < el.childNodes.length; ci++) {
+            try { registerSubtree(el.childNodes[ci]); } catch (e2) {}
+          }
+          continue;
+        }
         // 结构替换前清子树旧瓦片，防幽灵残影
         clearSubtreeTiles(String(p.path ?? ''));
         if (p.inner !== undefined) {
@@ -1215,7 +1235,9 @@
             // 同内容快照去重：服务端导航后 +600ms/+1500ms 兜底重拍在静态页上产出
             // 字节级相同的快照，整树重建=整页闪动（"每个页面像刷新了 3 次"的直接
             // 来源）。css+html 与上一次已应用快照一致时跳过重建，仅跟随滚动/标题。
-            const snapKey = j.css + '\u0000' + j.html;
+            // v0.17 带宽：cssSame=true 时用缓存 css（服务端仅 html 变化的重拍不重发 css）
+            const css = (j.css !== undefined && j.css !== null) ? j.css : lastCss;
+            const snapKey = css + '\u0000' + j.html;
             if (!j.frame && !frameMode && lastSnapKey === snapKey && mirrorBody) {
               const rs = document.getElementById('mirrorScroll');
               if (rs) {
@@ -1257,7 +1279,8 @@
             Promise.all(preload).then(() => {
               if (ws !== socket || socket.readyState !== 1 || serial !== snapshotSerial) return;
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
-              buildMirror(j.css, j.html, j.docClass, j.docAttrs, j.bodyId);
+              if (css) lastCss = css;
+              buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId);
               snapshotReady = true;
               activate();
               const restoredScroll = document.getElementById('mirrorScroll');
@@ -1389,6 +1412,17 @@
                 const el = mirrorFind(p.id);
                 if (!el || !el.tagName) continue;
                 if (p.checked !== undefined && (el.type === 'checkbox' || el.type === 'radio')) el.checked = !!p.checked;
+                if (p.media !== undefined && (el.tagName === 'VIDEO' || el.tagName === 'AUDIO')) {
+                  // 媒态同步（v0.17）：暂停/进度/静音/音量跟随源站。有声 play 受
+                  // 自动播放策略限制可能被拒（catch 静默，进度仍同步）；镜像侧
+                  // 不主动拉流之外的字节（preload 保持源站原值）
+                  const m = p.media;
+                  try { el.muted = !!m.muted; el.volume = (m.vol == null ? el.volume : m.vol); } catch (e) {}
+                  if (typeof m.t === 'number' && isFinite(m.t) && Math.abs((el.currentTime || 0) - m.t) > 0.5) { try { el.currentTime = m.t; } catch (e) {} }
+                  if (m.paused === false && el.paused) { el.play().catch(() => { try { el.currentTime = m.t || 0; } catch (e2) {} }); }
+                  else if (m.paused === true && !el.paused) { try { el.pause(); } catch (e) {} }
+                  continue;
+                }
                 if (p.value !== undefined) {
                   if (el.tagName === 'SELECT') {
                     if (Array.isArray(p.sel)) { for (const o of el.options) o.selected = p.sel.includes(o.value); }
@@ -1401,6 +1435,32 @@
                 }
               } catch (e) {}
             }
+          }
+          if (j.type === 'dom-sel') {
+            // v0.17：程序化选区跟随（搜索高亮/表格选择）。镜像在 shadow root 内，
+            // 文档级 Selection 无法跨边界设置——以页面坐标矩形渲染高亮层
+            // （挂在 .xy-body（position:relative）内，随镜像文档流滚动）
+            try {
+              if (mirrorBody && Array.isArray(j.rects)) {
+                let layer = mirrorBody.querySelector(':scope > [data-xy-sel]');
+                if (!layer) {
+                  layer = document.createElement('div');
+                  layer.setAttribute('data-xy-sel', '1');
+                  layer.style.cssText = 'position:absolute;left:0;top:0;right:auto;bottom:auto;pointer-events:none;z-index:2147483646';
+                  mirrorBody.appendChild(layer);
+                }
+                layer.textContent = '';
+                for (const rc of j.rects) {
+                  const d2 = document.createElement('div');
+                  d2.style.cssText = 'position:absolute;background:rgba(28,120,255,.30);border-radius:2px';
+                  d2.style.left = rc[0] + 'px';
+                  d2.style.top = rc[1] + 'px';
+                  d2.style.width = rc[2] + 'px';
+                  d2.style.height = rc[3] + 'px';
+                  layer.appendChild(d2);
+                }
+              }
+            } catch (e) {}
           }
           if (j.type === 'error') {
             lastErr = j.msg; setStatus('错误: ' + j.msg, false);

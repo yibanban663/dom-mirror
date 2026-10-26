@@ -1,3 +1,25 @@
+# v0.18.0
+
+- 同源 @import 服务端递归内联（cssInlineImports，深度≤3）：镜像首帧样式完整，
+  客户端无需二次往返拉 import（跨源 @import 原样保留）。
+- 媒体状态同步（dom-props.media）：play/pause/seek/音量经媒体事件捕获并随
+  dom-props 下发，客户端静默跟随；有声播放受自动播放策略限制为已知边界。
+  基准以静音 WAV（JS 构造）端到端断言 play/seek/pause。
+- 选区镜像（dom-sel）：镜像内容在 shadow root 内、文档级 Selection API 无法
+  跨边界设置（实测）——服务端下发 Range.getClientRects 页面坐标矩形，客户端
+  在 .xy-body 内绝对定位高亮层，随镜像文档流滚动。
+- 带宽·cssSame 快照：SPA 路由切换的导航重拍不再重发相同 css（实测生产登录流
+  仪表盘重试快照 283KB→20.8KB/份，单次导航省 ~790KB 压缩前）；hello/恢复握手
+  后必发全量。
+- 带宽·WS permessage-deflate（阈值 512B）。
+- 带宽·补丁粒度（DiffSync 思想）：文本节点级 {id,ti,text}（characterData 只发
+  文本）与追加型 {id,append}（纯末尾新节点只发增量，同 sanitize 路径）；同父
+  移动到末尾也是 add-only 记录，以"ID 注册表未登记"判别真追加，既有节点移动
+  回落 inner 保正确（node-id 回归实证）。
+- 基准新增断言：媒体 play/seek/pause、程序化选区、追加流+首行原位改文本、
+  程序化表单态；新增流畅度基线输出（帧时间 p50/p95，不计入判定）。
+  保真模型与差距分类落档 docs/FIDELITY.md（六维度+文献映射+分阶段路线）。
+
 # v0.17.0
 
 - 通用性基准 verify-generality：六类业务形态（表单全形态+程序化改态/富文本与键盘
