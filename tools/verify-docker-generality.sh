@@ -46,6 +46,7 @@ for c in forms editor media layout style canvas dnd vlist xiframe; do
   docker run -d --name "$server" --network "$run_id" --network-alias mirror \
     "${proxy_env[@]}" \
     --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=2 \
+    -e XFRAME_REFRESH_MS="${XFRAME_REFRESH_MS:-15000}" \
     -e ORIGIN_URL="http://127.0.0.1:8077/$page" \
     "$image" timeout 240 node demo/server.js >/dev/null
   for f in gen-forms.html gen-editor.html gen-media-pix.html gen-layout.html gen-style.html \
@@ -62,6 +63,11 @@ for c in forms editor media layout style canvas dnd vlist xiframe; do
       process.exit(1);
     })().catch(() => process.exit(1));
   '
+  if [ "$c" = "xiframe" ]; then
+    export XFRAME_REFRESH_MS=4000   # 动态刷新断言：4s 重抓（tick 每 5s 换版本）
+  else
+    unset XFRAME_REFRESH_MS
+  fi
   if docker run --rm --name "$client" --network "$run_id" --memory 2g \
     "${proxy_env[@]}" \
     -e CASE="$c" -e MIRROR_URL=http://mirror:8088/ -e EVIDENCE_DIR=/tmp/ev \

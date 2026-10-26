@@ -1243,6 +1243,7 @@ async function runSession(ws, req, lifecycle) {
   let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
   let driftStreak = 0, lastDriftHeal = 0; // v0.18 分歧自愈：连续漂移计数与限频
   let xframeSecret = null; // v0.25 跨源 iframe 资产代理的会话作用域密钥
+  let xframeTimer = null; // v0.26 跨源 iframe 周期刷新（变化推 outer 补丁）
   let cleanupPromise;
   let cancelHello = () => {};
   const cleanup = () => {
@@ -1254,6 +1255,7 @@ async function runSession(ws, req, lifecycle) {
       sessions--;
       if (obfSess) obfSessions.delete(obfSess.sid);
       if (xframeSecret) xframeOrigins.delete(xframeSecret);
+      if (xframeTimer) { clearInterval(xframeTimer); xframeTimer = null; }
       domActive = false;
       await Promise.allSettled([page?.close(), sessionBrowser?.close()]);
       sessionUploads.clear();
@@ -1929,91 +1931,121 @@ async function runSession(ws, req, lifecycle) {
       // v0.14：现存同源 iframe 文档观察（load 钩子覆盖此后加载的）
       if (window.__xy && window.__xy.observeIframes) window.__xy.observeIframes();
     }).catch(() => {});
-    // v0.25 跨源 iframe 同源化：服务端代理抓取（无访客凭据，6s/512KB，仅
-    // text/html）→ 页内 sanitize（剥 script/事件属性，资产 URL 改写为
-    // /m/x/<secret>/<b64(origin)>）→ 存 window.__xyXframe，sanitizeClone 的
-    // iframe 分支用它替代占位块。secret 每会话随机；origin 注册表限定"本会话
-    // 源站实际嵌入过的源"（防开放代理）。抓取失败保持占位回退
-    try {
-      const xfCand = await page.evaluate(() => {
-        try {
-          if (!window.__xyXframe) window.__xyXframe = new Map();
-          const out = [];
-          for (const f of document.body.querySelectorAll('iframe')) {
-            const s = f.src || '';
-            if (!/^https?:/i.test(s)) continue;
-            let same = false;
-            try { same = new URL(s).origin === location.origin; } catch (e) {}
-            if (same || window.__xyXframe.has(s) || window.__xyXframe.size >= 16) continue;
-            out.push(s);
-          }
-          return out;
-        } catch (e) { return []; }
-      });
-      if (xfCand.length) {
-        if (!xframeSecret) {
-          xframeSecret = crypto.randomBytes(12).toString('hex');
-          if (!xframeOrigins.has(xframeSecret)) xframeOrigins.set(xframeSecret, new Set());
-        }
-        const origins = xframeOrigins.get(xframeSecret);
-        const htmls = [];
-        for (const raw of xfCand) {
+  // v0.26：force=true 重抓既有条目（周期刷新通道）；返回内容发生变化的 url 列表
+  async function prepareXframes(force) {
+      // v0.26 prepareXframes(force)：跨源 iframe 同源化——服务端代理抓取（无访客凭据，6s/512KB，仅
+      // text/html）→ 页内 sanitize（剥 script/事件属性，资产 URL 改写为
+      // /m/x/<secret>/<b64(origin)>）→ 存 window.__xyXframe，sanitizeClone 的
+      // iframe 分支用它替代占位块。secret 每会话随机；origin 注册表限定"本会话
+      // 源站实际嵌入过的源"（防开放代理）。抓取失败保持占位回退
+      let xframeChanged = [];
+      try {
+        const xfCand = await page.evaluate((force) => {
           try {
-            const abs = new URL(raw, sessionOrigin).href;
-            const mod = abs.startsWith('https:') ? httpBoth.https : httpBoth.http;
-            const html = await new Promise((resolve) => {
-              const req = trackRequest(mod.get(abs, { timeout: 6000, headers: { 'user-agent': 'rbi-mirror-xframe', accept: 'text/html' } }, (r) => {
-                const ct = (r.headers['content-type'] || '').toLowerCase();
-                if ((r.statusCode || 502) < 200 || (r.statusCode || 502) >= 300 || !/text\/html/.test(ct)) { r.resume(); resolve(null); return; }
-                let len = 0;
-                const chunks = [];
-                r.on('data', (c) => { len += c.length; if (len > 512 * 1024) { r.destroy(); resolve(null); } else chunks.push(c); });
-                r.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-                r.on('error', () => resolve(null));
-              }));
-              req.on('error', () => resolve(null));
-              req.on('timeout', () => { req.destroy(); resolve(null); });
-            });
-            if (html) { origins.add(new URL(abs).origin); htmls.push({ url: abs, html }); }
-          } catch (e) {}
-        }
-        if (htmls.length) {
-          await page.evaluate((list, secret) => {
-            const XP = '/m/x/' + secret + '/';
-            const b64 = (s2) => btoa(s2).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-            for (const item of list) {
-              try {
-                const doc = new DOMParser().parseFromString(item.html, 'text/html');
-                doc.querySelectorAll('script, link[rel="preload"], link[rel="prefetch"]').forEach((n2) => n2.remove());
-                const ifrOrigin = new URL(item.url).origin;
-                const toProxy = (v) => {
-                  if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v) || /^\/\//.test('' + v)) return v;
-                  try {
-                    const abs = new URL(v, item.url);
-                    if (abs.origin === ifrOrigin) return XP + b64(ifrOrigin) + abs.pathname + abs.search;
-                    return v;
-                  } catch (e) { return v; }
-                };
-                for (const el of doc.querySelectorAll('*')) {
-                  for (const a of [...el.attributes]) {
-                    if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction' || a.name === 'integrity') { el.removeAttribute(a.name); continue; }
-                    if (a.name === 'src' || a.name === 'href' || a.name === 'poster') {
-                      try { el.setAttribute(a.name, toProxy(a.value)); } catch (e) {}
-                    } else if (a.name === 'srcset') {
-                      try { el.setAttribute('srcset', a.value.split(',').map((p2) => { const t2 = p2.trim(); const sp = t2.search(/\s/); const u2 = sp < 0 ? t2 : t2.slice(0, sp); return toProxy(u2) + (sp < 0 ? '' : t2.slice(sp)); }).join(', ')); } catch (e) {}
-                    } else if (a.name === 'style') {
-                      try { el.setAttribute('style', a.value.replace(/url\((['"]?)([^'")]+)\1\)/g, (w2, q2, u3) => { const p3 = toProxy(u3); return p3 === u3 ? w2 : 'url(' + q2 + p3 + q2 + ')'; })); } catch (e) {}
+            if (!window.__xyXframe) window.__xyXframe = new Map();
+            const out = [];
+            for (const f of document.body.querySelectorAll('iframe')) {
+              const s = f.src || '';
+              if (!/^https?:/i.test(s)) continue;
+              let same = false;
+              try { same = new URL(s).origin === location.origin; } catch (e) {}
+              if (same || (!force && window.__xyXframe.has(s)) || window.__xyXframe.size >= 16) continue;
+              out.push(s);
+            }
+            return out;
+          } catch (e) { return []; }
+        }, !!force);
+        if (xfCand.length) {
+          if (!xframeSecret) {
+            xframeSecret = crypto.randomBytes(12).toString('hex');
+            if (!xframeOrigins.has(xframeSecret)) xframeOrigins.set(xframeSecret, new Set());
+          }
+          const origins = xframeOrigins.get(xframeSecret);
+          const htmls = [];
+          for (const raw of xfCand) {
+            try {
+              const abs = new URL(raw, sessionOrigin).href;
+              const mod = abs.startsWith('https:') ? httpBoth.https : httpBoth.http;
+              const html = await new Promise((resolve) => {
+                const req = trackRequest(mod.get(abs, { timeout: 6000, headers: { 'user-agent': 'rbi-mirror-xframe', accept: 'text/html' } }, (r) => {
+                  const ct = (r.headers['content-type'] || '').toLowerCase();
+                  if ((r.statusCode || 502) < 200 || (r.statusCode || 502) >= 300 || !/text\/html/.test(ct)) { r.resume(); resolve(null); return; }
+                  let len = 0;
+                  const chunks = [];
+                  r.on('data', (c) => { len += c.length; if (len > 512 * 1024) { r.destroy(); resolve(null); } else chunks.push(c); });
+                  r.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+                  r.on('error', () => resolve(null));
+                }));
+                req.on('error', () => resolve(null));
+                req.on('timeout', () => { req.destroy(); resolve(null); });
+              });
+              if (html) { origins.add(new URL(abs).origin); htmls.push({ url: abs, html }); }
+            } catch (e) {}
+          }
+          if (htmls.length) {
+            await page.evaluate((list, secret) => {
+              const changed = [];
+              const XP = '/m/x/' + secret + '/';
+              const b64 = (s2) => btoa(s2).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+              for (const item of list) {
+                try {
+                  const doc = new DOMParser().parseFromString(item.html, 'text/html');
+                  doc.querySelectorAll('script, link[rel="preload"], link[rel="prefetch"]').forEach((n2) => n2.remove());
+                  const ifrOrigin = new URL(item.url).origin;
+                  const toProxy = (v) => {
+                    if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v) || /^\/\//.test('' + v)) return v;
+                    try {
+                      const abs = new URL(v, item.url);
+                      if (abs.origin === ifrOrigin) return XP + b64(ifrOrigin) + abs.pathname + abs.search;
+                      return v;
+                    } catch (e) { return v; }
+                  };
+                  for (const el of doc.querySelectorAll('*')) {
+                    for (const a of [...el.attributes]) {
+                      if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction' || a.name === 'integrity') { el.removeAttribute(a.name); continue; }
+                      if (a.name === 'src' || a.name === 'href' || a.name === 'poster') {
+                        try { el.setAttribute(a.name, toProxy(a.value)); } catch (e) {}
+                      } else if (a.name === 'srcset') {
+                        try { el.setAttribute('srcset', a.value.split(',').map((p2) => { const t2 = p2.trim(); const sp = t2.search(/\s/); const u2 = sp < 0 ? t2 : t2.slice(0, sp); return toProxy(u2) + (sp < 0 ? '' : t2.slice(sp)); }).join(', ')); } catch (e) {}
+                      } else if (a.name === 'style') {
+                        try { el.setAttribute('style', a.value.replace(/url\((['"]?)([^'")]+)\1\)/g, (w2, q2, u3) => { const p3 = toProxy(u3); return p3 === u3 ? w2 : 'url(' + q2 + p3 + q2 + ')'; })); } catch (e) {}
+                      }
                     }
                   }
-                }
-                const styles = [...doc.querySelectorAll('style')].map((s3) => s3.textContent).join('\\n');
-                window.__xyXframe.set(item.url, '<!doctype html><html><head><style>' + styles + '</style></head>' + doc.body.innerHTML + '</html>');
-              } catch (e) {}
-            }
-          }, htmls, xframeSecret).catch(() => {});
+                  const styles = [...doc.querySelectorAll('style')].map((s3) => s3.textContent).join('\\n');
+                  const sd = '<!doctype html><html><head><style>' + styles + '</style></head>' + doc.body.innerHTML + '</html>';
+                  const prevSd = window.__xyXframe.get(item.url);
+                  window.__xyXframe.set(item.url, sd);
+                  if (prevSd !== undefined && prevSd !== sd) changed.push(item.url);
+                } catch (e) {}
+              }
+              return changed;
+            }, htmls, xframeSecret).then((ch) => { xframeChanged = ch || []; }).catch(() => {});
+          }
         }
-      }
-    } catch (e) {}
+      } catch (e) {}
+      return xframeChanged;
+  }
+    // v0.25/0.26：跨源 iframe 同源化内容预取（首拍全量），周期刷新定时器对
+    // 变化条目推宿主 outer 补丁（客户端整替 iframe，srcdoc 随新内容到达）
+    try { await prepareXframes(false); } catch (e) {}
+    if (!xframeTimer) {
+      xframeTimer = setInterval(async () => {
+        if (mode !== 'dom' || !domActive || dead || !page || ws.readyState !== 1) return;
+        try {
+          const changed = await prepareXframes(true);
+          if (!changed || !changed.length) return;
+          const patches = await withTimeout(page.evaluate((urls) => {
+            const out = [];
+            for (const f of document.body.querySelectorAll('iframe')) {
+              if (urls.includes(f.src)) out.push({ id: window.__xy.idOf(f), outer: window.__xy.sanitizeClone(f).outerHTML });
+            }
+            return out;
+          }, changed), 5000, 'xframePush').catch(() => null);
+          if (patches && patches.length && ws.readyState === 1) sendJson({ type: 'dom-patches', patches });
+        } catch (e) {}
+      }, Number(process.env.XFRAME_REFRESH_MS || 15000));
+    }
     // v4：dom 快照零截图（文本/输入框外观由客户端原生渲染，字体由源站 CSS 自带）。
     // frame 模式仍需整页截图作条带底板。
     await page.evaluate((d) => { window.__xyDpr = d; }, DPR);

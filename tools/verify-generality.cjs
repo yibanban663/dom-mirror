@@ -386,6 +386,19 @@ async function main() {
         const fr = [...sr.querySelectorAll('iframe')].map(f => f.contentDocument).find(d => d && d.querySelector && d.querySelector('#xstat'));
         return fr ? fr.querySelector('#xstat').textContent === 'STAT:loading' : false;
       });
+      // 断言 4（v0.26 动态刷新通道）：服务端周期重抓 tick.html（每 5s 换版本），
+      // 变化时推宿主 outer 补丁 → 镜像 srcdoc 内 TICK 版本号变化
+      const tick1 = await page.evaluate(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const fr = [...sr.querySelectorAll('iframe')].map(f => f.contentDocument).find(d => d && d.querySelector && d.querySelector('#tick'));
+        return fr ? fr.querySelector('#tick').textContent : null;
+      });
+      out.xframe_tick1 = tick1;
+      out.checks.xframe_dynamic = await page.waitForFunction((t0) => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const fr = [...sr.querySelectorAll('iframe')].map(f => f.contentDocument).find(d => d && d.querySelector && d.querySelector('#tick'));
+        return fr && fr.querySelector('#tick').textContent !== t0;
+      }, { timeout: 30000, polling: 500 }, tick1).then(() => true).catch(() => false);
       out.xframe_debug = await page.evaluate(() => {
         const sr = document.querySelector('#mirrorHost').shadowRoot;
         const f = sr.querySelector('iframe[srcdoc]');

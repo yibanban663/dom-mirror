@@ -1,3 +1,12 @@
+# v0.26.0
+
+- 跨源 iframe 动态刷新通道：prepareXframes(force) 周期重抓（XFRAME_REFRESH_MS
+  默认 15s），内容变化才推宿主 outer 补丁（客户端整替 iframe，srcdoc 随新内容
+  到达）。基准 tick 路由（每 5s 换版本号）断言镜像内版本跟随变化。静态快照
+  语义升级为周期跟随；postMessage 双向驱动仍为快照（记录）。
+- RUM 生产基线扩样：18 会话/41 报告/7 视口——交互到视觉延迟 p50 16.6ms /
+  p95 17.6ms（约一帧），帧时间 16.7/16.7ms 全会话 60fps 锁帧。
+
 # v0.25.0
 
 - 跨源 iframe 同源化（此前占位块）：服务端代理抓取（6s/512KB/text/html，

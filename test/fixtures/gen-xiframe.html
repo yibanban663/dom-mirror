@@ -7,8 +7,8 @@
 </head>
 <body>
   <h3>跨源 iframe 同源化</h3>
-  <!-- docker 网络内第二源站 origin-b:8000（与 gen-assets 的多源拓扑一致） -->
-  <iframe id="xf" src="http://origin-b:8000/gen-xiframe-embed.html" width="320" height="90" style="border:1px solid #99a"></iframe>
+  <!-- docker 网络内第二源站 origin-b:8000 的动态路由 /tick.html（每 5s 换版本） -->
+  <iframe id="xf" src="http://origin-b:8000/tick.html" width="320" height="110" style="border:1px solid #99a"></iframe>
   <div id="report">REPORT:init</div>
 </body>
 </html>

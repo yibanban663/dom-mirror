@@ -18,6 +18,13 @@ const TYPES = {
 http.createServer((req, res) => {
   let pathname;
   try { pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { res.writeHead(400); res.end(); return; }
+  // v0.26 动态内容路由：每 5s 一个版本号（跨源 iframe 周期刷新通道的基准用）
+  if (pathname === '/tick.html') {
+    const ver = Math.floor(Date.now() / 5000);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end('<!doctype html><html><head><meta charset="utf-8"><style>body{font:13px system-ui,sans-serif;margin:8px;background:#eef7ee}.badge{display:inline-block;padding:3px 8px;background:#2c7;color:#fff;border-radius:4px}</style></head><body><span class="badge">EMBED-OK</span><img src="pic-b.png" width="24" alt=""><div id="tick">TICK:' + ver + '</div><div id="xstat">STAT:loading</div><script>document.getElementById("xstat").textContent="STAT:ran-script";</scr' + 'ipt></body></html>');
+    return;
+  }
   if (pathname === '/') pathname = '/index.html';
   const file = path.join(root, pathname.replace(/^\/+/, ''));
   if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
