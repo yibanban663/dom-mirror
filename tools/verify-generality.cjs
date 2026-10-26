@@ -355,6 +355,44 @@ async function main() {
       out.checks.vlist_shiftdiff = shifts >= 1;
     }
 
+    if (CASE === 'xiframe') {
+      await page.waitForFunction(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        return sr && (sr.querySelector('iframe[srcdoc]') || sr.querySelector('[data-xy-iframe-blocked]'));
+      }, { timeout: 25000 });
+      await settle(2500);
+      // 断言 1：不是占位块，而是同源化 srcdoc
+      out.checks.xframe_srcdoc = await page.evaluate(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const f = sr.querySelector('iframe[srcdoc]');
+        return !!(f && f.getAttribute('srcdoc').includes('/m/x/') && !sr.querySelector('[data-xy-iframe-blocked]'));
+      });
+      // 断言 2：嵌入内容渲染（徽标文本 + 经 /m/x 的图片真实加载）——
+      // 镜像 iframe 在 shadow root 内，从影子树取（document 查询不穿影子边界）
+      out.checks.xframe_content = await page.evaluate(async () => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const frames = [...sr.querySelectorAll('iframe')];
+        const fr = frames.map(f => f.contentDocument).find(d => d && d.querySelector && d.querySelector('.badge'));
+        if (!fr) return false;
+        const badge = fr.querySelector('.badge').textContent;
+        const img = fr.querySelector('img');
+        let imgOk = false;
+        for (let i = 0; i < 30 && !imgOk; i++) { imgOk = !!(img && img.complete && img.naturalWidth > 0); if (!imgOk) await new Promise(r => setTimeout(r, 200)); }
+        return badge === 'EMBED-OK' && imgOk && (img.currentSrc || img.src).includes('/m/x/');
+      });
+      // 断言 3：脚本被剥离（STAT 不得是 ran-script）
+      out.checks.xframe_noscript = await page.evaluate(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const fr = [...sr.querySelectorAll('iframe')].map(f => f.contentDocument).find(d => d && d.querySelector && d.querySelector('#xstat'));
+        return fr ? fr.querySelector('#xstat').textContent === 'STAT:loading' : false;
+      });
+      out.xframe_debug = await page.evaluate(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        const f = sr.querySelector('iframe[srcdoc]');
+        return { srcdocHead: f ? f.getAttribute('srcdoc').slice(0, 120) : null };
+      });
+    }
+
     out.bytes = await page.evaluate(() => window.__bytes).catch(() => ({}));
     // 流畅度/延迟基线（不参与 pass 判定）：主线程帧时间 p95 + 键盘型应用回显 RTT
     try {

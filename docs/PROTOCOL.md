@@ -89,6 +89,8 @@ DOM 客户端在 pointerdown 之前发送 `scroll`，包括页面位置和目标
 
 `POST /rum`（v0.21）：RUM 尾包通道——客户端 pagehide 时 sendBeacon 上报同 ping.rum 结构的会话数据（≤8KB 收口，落 [rum-beacon] 日志，204 应答；同源免预检）。
 
+`/m/x/<secret>/<base64url(origin)>/path`（v0.25）：跨源 iframe 同源化的会话作用域资产代理——secret 每会话随机，origin 注册表只收本会话源站实际嵌入过的源（防开放代理）；扩展名/响应类型限制与 /m 一致。
+
 ## 资源和边界
 
 `/m/*` 只代理固定 `ORIGIN_URL` 同源、扩展名在白名单内的表现层资源，拒绝重定向和 HTML/JSON/JS/XML 响应。`/m/obf/<sid>/*` 为混淆字体路径。CSS `url()`（含相对样式表地址的相对 url）与元素资源 URL 在快照采集时统一改写为上述代理路径，webfont/背景图在客户端不再因相对地址 404 回退系统字体。

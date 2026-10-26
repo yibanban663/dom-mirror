@@ -74,6 +74,42 @@ docker exec "$server" node -e '
     process.exit(1);
   })().catch(() => process.exit(1));
 '
+# 冷启动加固：DB 写路径预热（首个 /register 触发 sqlite 迁移/建表，冷盘上可能
+# 秒级——正式用例的注册不该撞上它）+ 镜像首个 WS 会话预启动（每会话独立
+# Chromium 冷启是另一次竞态源）。任一预热失败不阻断（客户端另有模式级重试）
+docker exec "$server" node -e '
+  (async () => {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const r = await fetch("http://business:3456/api/v1/register", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: "warm" + Math.random().toString(36).slice(2, 12), password: "Warm-" + Math.random().toString(36).slice(2, 10) + "-Aa9!", email: "warm" + Math.random().toString(36).slice(2, 12) + "@example.invalid" }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (r.ok || r.status === 400 || r.status === 412) { console.log("warm-db ok"); return; }
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    console.log("warm-db skipped");
+  })().catch(() => {});
+'
+docker exec "$server" node -e '
+  const WebSocket = require("ws");
+  (async () => {
+    for (let i = 0; i < 2; i++) {
+      const ok = await new Promise((resolve) => {
+        const ws = new WebSocket("ws://127.0.0.1:8088/ws");
+        const t = setTimeout(() => { try { ws.close(); } catch {} resolve(false); }, 25000);
+        ws.on("open", () => ws.send(JSON.stringify({ type: "hello", dpr: 1, w: 1280, h: 900 })));
+        ws.on("message", (raw) => { try { if (JSON.parse(raw.toString()).type === "session") { clearTimeout(t); try { ws.send(JSON.stringify({ type: "release" })); } catch {} setTimeout(() => resolve(true), 300); } } catch {} });
+        ws.on("error", () => { clearTimeout(t); resolve(false); });
+      });
+      if (ok) { console.log("warm-session ok"); return; }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    console.log("warm-session skipped");
+  })().catch(() => {});
+'
 docker run --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" -e BUSINESS_URL=http://business:3456 -e MIRROR_URL=http://mirror:8088/ \
   -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e EVIDENCE_DIR=/tmp/business-evidence -e "CASES=${CASES:-direct,dom,frame}" \

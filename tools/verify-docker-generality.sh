@@ -15,7 +15,7 @@ cleanup() {
   status=$?
   trap - EXIT
   docker logs "$server" > "$evidence/server-last.log" 2>&1 || true
-  docker rm -f "$client" "$server" >/dev/null 2>&1 || true
+  docker rm -f "$client" "$server" "$xframe_container" >/dev/null 2>&1 || true
   docker network rm "$run_id" >/dev/null 2>&1 || true
   exit "$status"
 }
@@ -26,20 +26,30 @@ trap 'exit 143' TERM
 docker network create --internal "$run_id" >/dev/null
 
 overall=0
-for c in forms editor media layout style canvas dnd vlist; do
+xframe_container=""
+for c in forms editor media layout style canvas dnd vlist xiframe; do
   docker rm -f "$server" >/dev/null 2>&1 || true
   case "$c" in
     forms) page=gen-forms.html ;; editor) page=gen-editor.html ;; media) page=gen-media-pix.html ;;
     layout) page=gen-layout.html ;; style) page=gen-style.html ;; canvas) page=gen-canvas-key.html ;;
-    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;;
+    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; xiframe) page=gen-xiframe.html ;;
   esac
+  # xiframe 需要第二源站（跨源嵌入目标）：origin-b 静态容器
+  if [ "$c" = "xiframe" ]; then
+    docker rm -f "$run_id-originb" >/dev/null 2>&1 || true
+    docker run -d --name "$run_id-originb" --network "$run_id" --network-alias origin-b \
+      "${proxy_env[@]}" \
+      -v "$repo/test/fixtures/origin-b:/origin-b:ro" \
+      --entrypoint timeout "$image" 240 node tools/origin-static.cjs /origin-b 8000 >/dev/null
+    xframe_container="$run_id-originb"
+  fi
   docker run -d --name "$server" --network "$run_id" --network-alias mirror \
     "${proxy_env[@]}" \
     --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=2 \
     -e ORIGIN_URL="http://127.0.0.1:8077/$page" \
     "$image" timeout 240 node demo/server.js >/dev/null
   for f in gen-forms.html gen-editor.html gen-media-pix.html gen-layout.html gen-style.html \
-           gen-style-base.css gen-style-imp.css gen-style-late.css gen-canvas-key.html gen-dnd.html gen-vlist.html \
+           gen-style-base.css gen-style-imp.css gen-style-late.css gen-canvas-key.html gen-dnd.html gen-vlist.html gen-xiframe.html \
            pic-a.png pic-b.png pic-c.png; do
     docker cp "$repo/test/fixtures/$f" "$server:/app/protected/$f"
   done

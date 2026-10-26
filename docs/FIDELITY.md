@@ -97,9 +97,24 @@
   14.8KB 共 5.7×）**，窗口字节余量（vwin 通道）从 ~63KB/20 步 降至 ~32KB。
   任何校验失败按 patch-miss 走重同步（宁重不错）。
 
+### v0.25 —— 跨源 iframe 同源化 + Vikunja CI 加固
+- **跨源 iframe 同源化**（此前"已知边界：占位块"→ 已解决，带静态快照语义）：
+  服务端代理抓取（无访客凭据；6s/512KB/仅 text/html；失败回退占位块）→ 页内
+  sanitize（剥 script/事件属性；资产 URL 改写为 `/m/x/<secret>/<b64(origin)>/path`）
+  → 以 srcdoc 内联，与同源 iframe 同一渲染路径。**会话作用域资产代理 /m/x**：
+  secret 每会话随机（同 obf 字体路由安全模型），origin 注册表只收"本会话源站
+  实际嵌入过的源"——防开放代理/SSRF；扩展名与响应类型限制与 /m 一致。
+  基准 gen-xiframe 三断言：srcdoc 含 /m/x 非占位、嵌入内容真实渲染（徽标 +
+  图片经代理加载 naturalWidth>0）、script 被剥离。限制（记录）：静态快照语义
+  （postMessage 驱动的动态嵌入不更新）；需访客浏览器会话 Cookie 的跨源嵌入
+  不适用（RBI 无访客 Cookie）。
+- **Vikunja CI 冷启动加固**（本会话三次偶发红的根治）：app DB 写路径预热
+  （首 /register 触发 sqlite 迁移）+ 镜像首 WS 会话预启动探测 + 客户端失败
+  模式自动重试一次（冷 runner 首会话竞态实测 attempt-2 必过）。
+
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
-- 跨源 iframe 内容（安全设计：占位符）。
+- 跨源 iframe 动态嵌入（postMessage 驱动）：同源化为静态快照语义，静态/首屏嵌入已解决（v0.25）。
 - closed shadow root（不可观测，规范如此）。
 
 ## 四、验证纪律（对齐用户要求）

@@ -1,3 +1,14 @@
+# v0.25.0
+
+- 跨源 iframe 同源化（此前占位块）：服务端代理抓取（6s/512KB/text/html，
+  失败回退占位）→ 页内 sanitize（剥 script/事件属性，资产改写为
+  /m/x/<secret>/<b64(origin)>/path）→ srcdoc 内联。会话作用域资产代理 /m/x：
+  secret 每会话随机、origin 注册表只收本会话实际嵌入过的源（防开放代理/
+  SSRF），扩展名/响应类型限制与 /m 一致。基准 gen-xiframe 三断言（srcdoc
+  非占位 / 内容真实渲染含图片经代理加载 / script 剥离）。
+- Vikunja CI 冷启动加固：app DB 写路径预热 + 镜像首 WS 会话预启动 + 客户端
+  失败模式重试一次（冷 runner 偶发红的根治）。
+
 # v0.24.0
 
 - 虚拟列表平移 diff 泛化（LCS 编辑脚本）：纯平移检测之外增补 kidKeep/kidIns

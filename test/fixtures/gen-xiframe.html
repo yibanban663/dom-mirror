@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-xiframe</title>
+  <style>body { font: 14px system-ui, sans-serif; margin: 20px; }</style>
+</head>
+<body>
+  <h3>跨源 iframe 同源化</h3>
+  <!-- docker 网络内第二源站 origin-b:8000（与 gen-assets 的多源拓扑一致） -->
+  <iframe id="xf" src="http://origin-b:8000/gen-xiframe-embed.html" width="320" height="90" style="border:1px solid #99a"></iframe>
+  <div id="report">REPORT:init</div>
+</body>
+</html>
