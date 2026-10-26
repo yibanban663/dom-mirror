@@ -172,6 +172,8 @@ The frame codec reuses decoded pixels for ordinary RGB/RGBA PNG crops and falls 
 
 A [30-cycle native-memory follow-up](docs/performance/2026-10-26-frame-memory-long.md) passed 900 operations but failed the normal cleanup-memory budget in all 30 cycles. A terminal GC/trim diagnostic confirmed about 41MiB of reclaimable residency; it is not enabled by the library. A [matched host-profile comparison](docs/performance/2026-10-26-allocator-mappings.md) passed the cleanup-memory budget in 1/10 glibc cycles and 10/10 jemalloc-with-decay cycles; a [30-cycle follow-up](docs/performance/2026-10-26-jemalloc-candidate.md) passed 900 operations but only 17/30 normal cleanup-memory budgets. Vikunja core flows and DOM/frame recovery passed with that host profile; the candidate is not qualified for production.
 
+A [V8 host-profile follow-up](docs/performance/2026-10-26-v8-memory.md) found that moving diagnostic history to disk did not fix the budget misses. An explicit host semi-space limit of 4MiB passed all 30 cleanup-memory budgets (maximum growth 26.8MiB), with Vikunja core/recovery flows passing too. This is a tested host option for the recorded three-session workload; library defaults and production-qualification limits are unchanged.
+
 Further reading: [roadmap](docs/ROADMAP.md) · [Vikunja acceptance](docs/acceptance/vikunja-2026-10-26.md) · [recovery acceptance](docs/acceptance/recovery-2026-10-26.md) · [codec acceptance](docs/acceptance/frame-codec-0.10.1.md) · [performance investigation](docs/performance/2026-10-26.md) · [font setup](docs/FONTS.md) · [changelog](CHANGELOG.md). These historical reports identify the versions they tested.
 
 ## License

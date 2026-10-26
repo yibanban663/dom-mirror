@@ -1,0 +1,3598 @@
+{
+  "complete": true,
+  "scope": "Verbose GC/pool diagnostic; not capacity qualification",
+  "report": {
+    "plan": {
+      "groups": [
+        "default"
+      ],
+      "cycles": 10,
+      "sessions": 3,
+      "operationsPerSessionPerCycle": 10,
+      "periodMs": 1000,
+      "sessionGraceMs": 3000,
+      "postReclaimIdleMs": 3000,
+      "limits": {
+        "mirrorCpus": 2,
+        "mirrorMemoryMiB": 2048,
+        "loadCpus": 4,
+        "loadMemoryMiB": 4096
+      },
+      "fixture": "tools/fixtures/capacity.html",
+      "nodeExposeGcInAllGroups": true,
+      "gc": "Only gc/gc-cache-off: two full diagnostic calls after postIdle checkpoint, each followed by setImmediate",
+      "cache": "Only cache-off/gc-cache-off: sharp.cache(false) before createMirror; process-local",
+      "gates": [
+        "Every source session receives exactly indices 0..9 and renders all markers",
+        "All tracked Chromium main processes disappear before next cycle",
+        "OOM kill delta zero",
+        "Stop a group on functional failure or OOM"
+      ],
+      "interpretation": [
+        "Original 64MiB / 3-second capacity criterion stays unchanged; diagnostics cannot count as a production pass",
+        "10 cycles establish bounded observations only, not a proof of no long-term leak",
+        "No test code may retain Browser/Page/ChildProcess objects in the mirror process"
+      ],
+      "nativeProbe": true,
+      "glibc": "2.36",
+      "hostEnvironment": {
+        "MALLOC_ARENA_MAX": "2",
+        "VIPS_CONCURRENCY": "1",
+        "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+        "MALLOC_CONF": "narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000"
+      },
+      "sharpConcurrency": 1,
+      "finalDiagnostics": [
+        "15 seconds idle",
+        "two full GC calls",
+        "3 seconds idle"
+      ],
+      "budget": {
+        "postCleanupAnonGrowthMiB": 64
+      },
+      "scope": "Explicit V8 host profile; trace-enabled runs are diagnostic, not production capacity qualification",
+      "nativeStatsLimit": "Allocator/V8/pooled counters are not disjoint resident ownership",
+      "traceStorage": "disk",
+      "mappingCycles": [],
+      "allocator": "jemalloc",
+      "finalTrim": false,
+      "image": "sha256:54551ecb06e8901a39d9a1a461f78c3d8fad76f7b1e3304e350efda36cc238ea",
+      "v8Profile": {
+        "trace": "1",
+        "maxSemiSpaceMiB": null
+      },
+      "bootstrapHashes": {
+        "tools/memory-v8-entry.sh": "591b0c204f32d0f48b7ccceb99384829f47c8cadb8d769ffa991cea62dffc3ba",
+        "tools/memory-v8-preload.cjs": "0a997de7ce9a3b0a0511195589b64c336c6ccf70f5001990612b254b98578cc7"
+      },
+      "sourceHashes": {
+        "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/memory-host.cjs": "53cf59ea3105732f547a68df18104b603c42aa2541be928ce5cbd803cbb64dda",
+        "tools/memory-client.cjs": "94466370f5c29ce25edcba3ab0fdbba41bafbb3554d08d70cefe8c9044febd3a",
+        "tools/verify-docker-memory.sh": "382a5d7e1cb67a987035027e78ac6b5489e4bae0ad408148b59efb96e6a25da5",
+        "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed",
+        "tools/memory-trace.cjs": "70cd953269f3b6338515b51f643cbc77ce52d71925cc3b7b1258a76b518c71eb"
+      }
+    },
+    "groups": [
+      {
+        "group": "default",
+        "complete": true,
+        "baseline": {
+          "anonMiB": 37.6171875,
+          "rssMiB": 93,
+          "heapMiB": 13.990455627441406,
+          "heapTotalMiB": 31.4296875,
+          "externalMiB": 4.140305519104004,
+          "arrayBuffersMiB": 0.2024374008178711,
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 8.593757629394531,
+            "activeMiB": 9.8671875,
+            "residentMiB": 15.42578125,
+            "mappedMiB": 27.3125,
+            "retainedMiB": 6.1875
+          }
+        },
+        "cycles": [
+          {
+            "cycle": 1,
+            "anonMiB": 66.19140625,
+            "anonGrowthMiB": 28.57421875,
+            "rssMiB": 121.19140625,
+            "rssAnonMiB": 65.80078125,
+            "heapMiB": 21.281455993652344,
+            "heapTotalMiB": 52.22265625,
+            "externalMiB": 19.29394817352295,
+            "arrayBuffersMiB": 2.2964229583740234,
+            "interventionReleased": {
+              "heapMiB": -0.11910247802734375,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": -0.12109375
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 29.413795471191406,
+              "activeMiB": 31.54296875,
+              "residentMiB": 36.140625,
+              "mappedMiB": 45.54296875,
+              "retainedMiB": 87.95703125
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 2,
+            "anonMiB": 83.2890625,
+            "anonGrowthMiB": 45.671875,
+            "rssMiB": 138.72265625,
+            "rssAnonMiB": 82.90234375,
+            "heapMiB": 26.351272583007812,
+            "heapTotalMiB": 56.1640625,
+            "externalMiB": 22.991692543029785,
+            "arrayBuffersMiB": 5.994167327880859,
+            "interventionReleased": {
+              "heapMiB": -0.1204986572265625,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": -0.1796875
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 32.803688049316406,
+              "activeMiB": 34.71484375,
+              "residentMiB": 39.32421875,
+              "mappedMiB": 48.71875,
+              "retainedMiB": 84.78125
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 3,
+            "anonMiB": 91.765625,
+            "anonGrowthMiB": 54.1484375,
+            "rssMiB": 147.7265625,
+            "rssAnonMiB": 91.33984375,
+            "heapMiB": 26.61383819580078,
+            "heapTotalMiB": 88.4140625,
+            "externalMiB": 23.009801864624023,
+            "arrayBuffersMiB": 6.012276649475098,
+            "interventionReleased": {
+              "heapMiB": -0.11896514892578125,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": -0.01171875
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 33.558258056640625,
+              "activeMiB": 35.8125,
+              "residentMiB": 40.43359375,
+              "mappedMiB": 49.8125,
+              "retainedMiB": 97.6875
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 4,
+            "anonMiB": 94.09375,
+            "anonGrowthMiB": 56.4765625,
+            "rssMiB": 149.40625,
+            "rssAnonMiB": 93.66796875,
+            "heapMiB": 26.712730407714844,
+            "heapTotalMiB": 88.1640625,
+            "externalMiB": 22.98013973236084,
+            "arrayBuffersMiB": 5.982614517211914,
+            "interventionReleased": {
+              "heapMiB": -0.1156005859375,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": 0
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 33.39855194091797,
+              "activeMiB": 35.63671875,
+              "residentMiB": 40.2578125,
+              "mappedMiB": 49.63671875,
+              "retainedMiB": 97.86328125
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 5,
+            "anonMiB": 94.03515625,
+            "anonGrowthMiB": 56.41796875,
+            "rssMiB": 149.4765625,
+            "rssAnonMiB": 93.609375,
+            "heapMiB": 26.92455291748047,
+            "heapTotalMiB": 88.4140625,
+            "externalMiB": 22.981847763061523,
+            "arrayBuffersMiB": 5.984322547912598,
+            "interventionReleased": {
+              "heapMiB": -0.11569976806640625,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": -0.01171875
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 32.860023498535156,
+              "activeMiB": 35.0703125,
+              "residentMiB": 39.69140625,
+              "mappedMiB": 49.0703125,
+              "retainedMiB": 98.4296875
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 6,
+            "anonMiB": 98.5625,
+            "anonGrowthMiB": 60.9453125,
+            "rssMiB": 153.6015625,
+            "rssAnonMiB": 98.13671875,
+            "heapMiB": 27.062637329101562,
+            "heapTotalMiB": 88.4140625,
+            "externalMiB": 22.995338439941406,
+            "arrayBuffersMiB": 5.9978132247924805,
+            "interventionReleased": {
+              "heapMiB": -0.115386962890625,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": -0.015625
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 33.37939453125,
+              "activeMiB": 35.71484375,
+              "residentMiB": 40.33984375,
+              "mappedMiB": 49.71484375,
+              "retainedMiB": 97.78515625
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 7,
+            "anonMiB": 91.05859375,
+            "anonGrowthMiB": 53.44140625,
+            "rssMiB": 146.09765625,
+            "rssAnonMiB": 90.6328125,
+            "heapMiB": 18.616683959960938,
+            "heapTotalMiB": 24.66015625,
+            "externalMiB": 17.982316970825195,
+            "arrayBuffersMiB": 0.9779825210571289,
+            "interventionReleased": {
+              "heapMiB": -0.11537933349609375,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": 0
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 28.576026916503906,
+              "activeMiB": 30.8125,
+              "residentMiB": 35.44140625,
+              "mappedMiB": 44.8125,
+              "retainedMiB": 102.6875
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 8,
+            "anonMiB": 97.54296875,
+            "anonGrowthMiB": 59.92578125,
+            "rssMiB": 152.71875,
+            "rssAnonMiB": 97.1171875,
+            "heapMiB": 26.230361938476562,
+            "heapTotalMiB": 39.609375,
+            "externalMiB": 22.402840614318848,
+            "arrayBuffersMiB": 5.405315399169922,
+            "interventionReleased": {
+              "heapMiB": -0.11534881591796875,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": -0.01171875
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 32.6297607421875,
+              "activeMiB": 34.85546875,
+              "residentMiB": 39.484375,
+              "mappedMiB": 48.85546875,
+              "retainedMiB": 114.64453125
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 9,
+            "anonMiB": 98.8203125,
+            "anonGrowthMiB": 61.203125,
+            "rssMiB": 153.890625,
+            "rssAnonMiB": 98.39453125,
+            "heapMiB": 27.55889892578125,
+            "heapTotalMiB": 41.21875,
+            "externalMiB": 23.29412269592285,
+            "arrayBuffersMiB": 6.296597480773926,
+            "interventionReleased": {
+              "heapMiB": -0.1153717041015625,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": 0
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 32.591705322265625,
+              "activeMiB": 34.80078125,
+              "residentMiB": 39.47265625,
+              "mappedMiB": 48.9765625,
+              "retainedMiB": 114.5234375
+            },
+            "browsersGone": true
+          },
+          {
+            "cycle": 10,
+            "anonMiB": 99.19921875,
+            "anonGrowthMiB": 61.58203125,
+            "rssMiB": 154.125,
+            "rssAnonMiB": 98.7734375,
+            "heapMiB": 26.949722290039062,
+            "heapTotalMiB": 55.9140625,
+            "externalMiB": 22.974489212036133,
+            "arrayBuffersMiB": 5.976963996887207,
+            "interventionReleased": {
+              "heapMiB": -0.115386962890625,
+              "externalMiB": 0,
+              "arrayBuffersMiB": 0,
+              "anonMiB": -0.015625
+            },
+            "sharpCache": {
+              "memory": {
+                "current": 0,
+                "high": 6,
+                "max": 50
+              },
+              "files": {
+                "current": 0,
+                "max": 20
+              },
+              "items": {
+                "current": 100,
+                "max": 100
+              }
+            },
+            "sharpCounters": {
+              "queue": 0,
+              "process": 0
+            },
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 33.278839111328125,
+              "activeMiB": 35.515625,
+              "residentMiB": 40.14453125,
+              "mappedMiB": 49.515625,
+              "retainedMiB": 113.984375
+            },
+            "browsersGone": true
+          }
+        ],
+        "lastFiveAnonSlopeMiBPerCycle": 0.903515625,
+        "lastFiveAnonSpanMiB": 8.140625,
+        "lastTenAnonSlopeMiBPerCycle": 2.606652462121212,
+        "lastTenAnonSpanMiB": 33.0078125,
+        "normalCleanupBudget": {
+          "limitMiB": 64,
+          "passingCycles": 10,
+          "allWithinBudget": true
+        },
+        "forcedGcCalls": 0,
+        "gcEvents": 653,
+        "maxGcPauseMs": 70.83818599581718,
+        "peakCgroupMiB": 814.6484375,
+        "oomKillDelta": 0,
+        "operations": 300,
+        "sourceReceipts": 300,
+        "hashes": {
+          "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+          "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+          "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+          "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+          "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+          "tools/memory-host.cjs": "53cf59ea3105732f547a68df18104b603c42aa2541be928ce5cbd803cbb64dda",
+          "tools/memory-client.cjs": "94466370f5c29ce25edcba3ab0fdbba41bafbb3554d08d70cefe8c9044febd3a",
+          "tools/verify-docker-memory.sh": "382a5d7e1cb67a987035027e78ac6b5489e4bae0ad408148b59efb96e6a25da5",
+          "tools/memory-trace.cjs": "70cd953269f3b6338515b51f643cbc77ce52d71925cc3b7b1258a76b518c71eb",
+          "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed"
+        },
+        "traceStorage": "disk",
+        "traceTreatmentValid": true,
+        "image": "sha256:54551ecb06e8901a39d9a1a461f78c3d8fad76f7b1e3304e350efda36cc238ea",
+        "sharpConcurrency": 1,
+        "sharpVersions": {
+          "aom": "3.15.1",
+          "archive": "3.8.9",
+          "cairo": "1.18.6",
+          "cgif": "0.5.4",
+          "exif": "0.6.26",
+          "expat": "2.8.5",
+          "ffi": "3.8.0",
+          "fontconfig": "2.18.3",
+          "freetype": "2.14.3",
+          "fribidi": "1.0.17",
+          "glib": "2.90.0",
+          "harfbuzz": "14.5.0",
+          "heif": "1.23.5",
+          "highway": "1.4.0",
+          "imagequant": "2.4.1",
+          "lcms": "2.19.1",
+          "mozjpeg": "0826579",
+          "pango": "1.58.2",
+          "pixman": "0.46.4",
+          "png": "1.6.58",
+          "proxy-libintl": "0.5",
+          "rsvg": "2.63.2",
+          "tiff": "4.7.2",
+          "uhdr": "2.0.2",
+          "vips": "8.18.7",
+          "webp": "1.6.0",
+          "xml2": "2.15.4",
+          "zlib-ng": "2.3.3",
+          "sharp": "0.35.5"
+        },
+        "nativeProbe": {
+          "glibc": "2.36",
+          "env": {
+            "MALLOC_ARENA_MAX": "2",
+            "VIPS_CONCURRENCY": "1",
+            "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+            "MALLOC_CONF": "narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000"
+          },
+          "allocator": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocated": 13033144,
+            "active": 15577088,
+            "resident": 20692992,
+            "mapped": 30519296,
+            "retained": 140922880
+          },
+          "binarySha256": "8f31068400d433a1c0131bebe14ade03118cadb251cedb1bc3f519dc5b364845"
+        },
+        "finalGcCalls": 2,
+        "trimCalls": 0,
+        "durationMs": 203528.11581400002,
+        "finalDiagnostics": [
+          {
+            "phase": "finalIdle",
+            "cycle": 10,
+            "trimReleased": null,
+            "gcEventsDuringCheckpoint": 0,
+            "before": {
+              "anonMiB": 103.2109375,
+              "externalMiB": 24.13960361480713,
+              "heapMiB": 32.38520050048828,
+              "heapTotalMiB": 55.9140625,
+              "arrayBuffersMiB": 7.142078399658203,
+              "native": {
+                "mallocSymbolImage": "node",
+                "implementation": "jemalloc",
+                "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+                "allocatedMiB": 33.95013427734375,
+                "activeMiB": 36.5,
+                "residentMiB": 41.12890625,
+                "mappedMiB": 50.5,
+                "retainedMiB": 113
+              }
+            },
+            "after": {
+              "anonMiB": 103.30078125,
+              "externalMiB": 24.13960361480713,
+              "heapMiB": 32.473838806152344,
+              "heapTotalMiB": 55.9140625,
+              "arrayBuffersMiB": 7.142078399658203,
+              "native": {
+                "mallocSymbolImage": "node",
+                "implementation": "jemalloc",
+                "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+                "allocatedMiB": 33.95013427734375,
+                "activeMiB": 36.5,
+                "residentMiB": 41.12890625,
+                "mappedMiB": 50.5,
+                "retainedMiB": 113
+              }
+            }
+          },
+          {
+            "phase": "finalGc",
+            "cycle": 10,
+            "trimReleased": null,
+            "gcEventsDuringCheckpoint": 2,
+            "before": {
+              "anonMiB": 103.43359375,
+              "externalMiB": 24.13960361480713,
+              "heapMiB": 32.61163330078125,
+              "heapTotalMiB": 55.9140625,
+              "arrayBuffersMiB": 7.142078399658203,
+              "native": {
+                "mallocSymbolImage": "node",
+                "implementation": "jemalloc",
+                "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+                "allocatedMiB": 33.95013427734375,
+                "activeMiB": 36.5,
+                "residentMiB": 41.12890625,
+                "mappedMiB": 50.5,
+                "retainedMiB": 113
+              }
+            },
+            "after": {
+              "anonMiB": 98.125,
+              "externalMiB": 4.274181365966797,
+              "heapMiB": 14.243896484375,
+              "heapTotalMiB": 19.9296875,
+              "arrayBuffersMiB": 0.4602499008178711,
+              "native": {
+                "mallocSymbolImage": "node",
+                "implementation": "jemalloc",
+                "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+                "allocatedMiB": 11.654037475585938,
+                "activeMiB": 14.06640625,
+                "residentMiB": 41.24609375,
+                "mappedMiB": 50.6171875,
+                "retainedMiB": 112.8828125
+              }
+            }
+          },
+          {
+            "phase": "finalSettled",
+            "cycle": 10,
+            "trimReleased": null,
+            "gcEventsDuringCheckpoint": 0,
+            "before": {
+              "anonMiB": 77.73046875,
+              "externalMiB": 4.274181365966797,
+              "heapMiB": 14.530418395996094,
+              "heapTotalMiB": 18.9296875,
+              "arrayBuffersMiB": 0.4602499008178711,
+              "native": {
+                "mallocSymbolImage": "node",
+                "implementation": "jemalloc",
+                "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+                "allocatedMiB": 11.632377624511719,
+                "activeMiB": 14.03125,
+                "residentMiB": 18.66015625,
+                "mappedMiB": 28.16796875,
+                "retainedMiB": 135.33203125
+              }
+            },
+            "after": {
+              "anonMiB": 77.73046875,
+              "externalMiB": 4.274181365966797,
+              "heapMiB": 14.619026184082031,
+              "heapTotalMiB": 18.9296875,
+              "arrayBuffersMiB": 0.4602499008178711,
+              "native": {
+                "mallocSymbolImage": "node",
+                "implementation": "jemalloc",
+                "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+                "allocatedMiB": 11.632377624511719,
+                "activeMiB": 14.03125,
+                "residentMiB": 18.66015625,
+                "mappedMiB": 28.16796875,
+                "retainedMiB": 135.33203125
+              }
+            }
+          }
+        ],
+        "treatmentValid": true,
+        "sourceMatchesPlan": true,
+        "nativeTreatmentValid": true,
+        "receiptsValid": true
+      }
+    ],
+    "consistentSources": true,
+    "consistentImages": true,
+    "complete": true
+  },
+  "startup": {
+    "node": "v24.21.0",
+    "v8": "13.6.233.17-node.53",
+    "execArgv": [
+      "--expose-gc",
+      "--require",
+      "/app/tools/memory-v8-preload.cjs",
+      "--trace-gc",
+      "--trace-gc-verbose"
+    ],
+    "argv": [
+      "/usr/local/bin/node",
+      "/app/tools/memory-host.cjs"
+    ],
+    "bootstrapSha256": "0a997de7ce9a3b0a0511195589b64c336c6ccf70f5001990612b254b98578cc7",
+    "entrySha256": "591b0c204f32d0f48b7ccceb99384829f47c8cadb8d769ffa991cea62dffc3ba",
+    "profile": {
+      "trace": "1",
+      "maxSemiSpaceMiB": null
+    },
+    "heap": {
+      "total_heap_size": 6332416,
+      "total_heap_size_executable": 262144,
+      "total_physical_size": 6299648,
+      "total_available_size": 1170317776,
+      "used_heap_size": 5129024,
+      "heap_size_limit": 1174405120,
+      "malloced_memory": 426080,
+      "peak_malloced_memory": 266240,
+      "does_zap_garbage": 0,
+      "number_of_native_contexts": 1,
+      "number_of_detached_contexts": 0,
+      "total_global_handles_size": 8192,
+      "used_global_handles_size": 2560,
+      "external_memory": 2009133
+    }
+  },
+  "preflight": {
+    "allocator": "jemalloc",
+    "passed": true,
+    "mapped": true,
+    "liveBufferBytes": 67108864,
+    "allocatedDelta": 67312192,
+    "before": {
+      "mallocSymbolImage": "node",
+      "implementation": "jemalloc",
+      "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+      "allocated": 3350952,
+      "active": 3760128,
+      "resident": 8773632,
+      "mapped": 18796544,
+      "retained": 2699264
+    },
+    "after": {
+      "mallocSymbolImage": "node",
+      "implementation": "jemalloc",
+      "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+      "allocated": 70663144,
+      "active": 71098368,
+      "resident": 76042240,
+      "mapped": 88068096,
+      "retained": 19410944
+    }
+  },
+  "pools": [
+    {
+      "gcMs": 32,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 41,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 58,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 68,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 77,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 119,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 137,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 173,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 3095,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 4285,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 4315,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 4484,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 4600,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 4997,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 5345,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 5601,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 5996,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 6467,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 6591,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 6998,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 7413,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 7569,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 7825,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 8137,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 8539,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 8572,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 8994,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 9435,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 9574,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 9582,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 9995,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 10540,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 10574,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 10995,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 11539,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 11577,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 12002,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 12438,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 12579,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 12996,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 13541,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 13582,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 13995,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 14442,
+      "chunks": 5,
+      "committedMiB": 1.25
+    },
+    {
+      "gcMs": 16557,
+      "chunks": 6,
+      "committedMiB": 1.5
+    },
+    {
+      "gcMs": 22804,
+      "chunks": 6,
+      "committedMiB": 1.5
+    },
+    {
+      "gcMs": 23087,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 23190,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 23212,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 23706,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 24103,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 24150,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 24706,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 25101,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 25345,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 25596,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 26099,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 26346,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 26597,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 27021,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 27139,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 27702,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 28101,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 28348,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 28598,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 29024,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 29400,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 29528,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 30026,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 30152,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 30702,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 31101,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 31160,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 31701,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 32100,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 32400,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 32604,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 33096,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 41135,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 41318,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 41420,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 41784,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 41992,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 42354,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 42609,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 43067,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 43351,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 43598,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 44069,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 44545,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 44750,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 44862,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 45402,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 45782,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 46001,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 46547,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 46583,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 47068,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 47551,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 47612,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 48067,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 48291,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 48588,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 49066,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 49357,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 49783,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 50002,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 50553,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 50753,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 51004,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 51551,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 59804,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 60084,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 60765,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 61053,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 61765,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 61994,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 62024,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 62526,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 62853,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 63057,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 63528,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 63831,
+      "chunks": 2,
+      "committedMiB": 0.5
+    },
+    {
+      "gcMs": 64029,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 64529,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 64853,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 65059,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 65766,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 65994,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 66058,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 66767,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 66994,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 67060,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 67768,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 67997,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 68063,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 68765,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 68997,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 69057,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 69765,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 69995,
+      "chunks": 6,
+      "committedMiB": 1.5
+    },
+    {
+      "gcMs": 78256,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 78403,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 78425,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 78510,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 79002,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 79422,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 79491,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 80002,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 80449,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 80493,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 81003,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 81447,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 81494,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 81866,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 81994,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 82401,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 82497,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 83004,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 83449,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 83497,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 84003,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 84450,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 84498,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 85004,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 85449,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 85500,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 85966,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 86329,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 86501,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 86964,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 87503,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 88003,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 88450,
+      "chunks": 4,
+      "committedMiB": 1
+    },
+    {
+      "gcMs": 96890,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 96984,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 97103,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 97605,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 98322,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 98353,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 98856,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 98968,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 99430,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 99858,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 100106,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 100607,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 100917,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 101108,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 101609,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 101859,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 101954,
+      "chunks": 1,
+      "committedMiB": 0.25
+    },
+    {
+      "gcMs": 102361,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 102860,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 102970,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 103431,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 103861,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 104109,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 104359,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 104857,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 105331,
+      "chunks": 5,
+      "committedMiB": 1.25
+    },
+    {
+      "gcMs": 105609,
+      "chunks": 5,
+      "committedMiB": 1.25
+    },
+    {
+      "gcMs": 105860,
+      "chunks": 5,
+      "committedMiB": 1.25
+    },
+    {
+      "gcMs": 106011,
+      "chunks": 5,
+      "committedMiB": 1.25
+    },
+    {
+      "gcMs": 106364,
+      "chunks": 5,
+      "committedMiB": 1.25
+    },
+    {
+      "gcMs": 106917,
+      "chunks": 5,
+      "committedMiB": 1.25
+    },
+    {
+      "gcMs": 115129,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 115333,
+      "chunks": 0,
+      "committedMiB": 0
+    },
+    {
+      "gcMs": 115443,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 116309,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 116358,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 116442,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 117308,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 117446,
+      "chunks": 3,
+      "committedMiB": 0.75
+    },
+    {
+      "gcMs": 118309,
+      "chunks": 255,
+      "committedMiB": 63.75
+    },
+    {
+      "gcMs": 118345,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 118383,
+      "chunks": 241,
+      "committedMiB": 60.25
+    },
+    {
+      "gcMs": 118903,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 119325,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 119399,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 119819,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 119950,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 120349,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 120399,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 121309,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 121347,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 121399,
+      "chunks": 243,
+      "committedMiB": 60.75
+    },
+    {
+      "gcMs": 122308,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 122345,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 122452,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 122898,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 123347,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 123453,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 124308,
+      "chunks": 257,
+      "committedMiB": 64.25
+    },
+    {
+      "gcMs": 124347,
+      "chunks": 245,
+      "committedMiB": 61.25
+    },
+    {
+      "gcMs": 124453,
+      "chunks": 245,
+      "committedMiB": 61.25
+    },
+    {
+      "gcMs": 125309,
+      "chunks": 257,
+      "committedMiB": 64.25
+    },
+    {
+      "gcMs": 125343,
+      "chunks": 255,
+      "committedMiB": 63.75
+    },
+    {
+      "gcMs": 125898,
+      "chunks": 255,
+      "committedMiB": 63.75
+    },
+    {
+      "gcMs": 126401,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 127397,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 128527,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 128590,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 131653,
+      "chunks": 259,
+      "committedMiB": 64.75
+    },
+    {
+      "gcMs": 131718,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 131734,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 132285,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 132695,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 133523,
+      "chunks": 247,
+      "committedMiB": 61.75
+    },
+    {
+      "gcMs": 133613,
+      "chunks": 246,
+      "committedMiB": 61.5
+    },
+    {
+      "gcMs": 133641,
+      "chunks": 229,
+      "committedMiB": 57.25
+    },
+    {
+      "gcMs": 133784,
+      "chunks": 226,
+      "committedMiB": 56.5
+    },
+    {
+      "gcMs": 133887,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 134296,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 134533,
+      "chunks": 228,
+      "committedMiB": 57
+    },
+    {
+      "gcMs": 135145,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 135644,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 136147,
+      "chunks": 228,
+      "committedMiB": 57
+    },
+    {
+      "gcMs": 136649,
+      "chunks": 228,
+      "committedMiB": 57
+    },
+    {
+      "gcMs": 137144,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 137639,
+      "chunks": 228,
+      "committedMiB": 57
+    },
+    {
+      "gcMs": 138146,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 138645,
+      "chunks": 228,
+      "committedMiB": 57
+    },
+    {
+      "gcMs": 139146,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 139646,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 140146,
+      "chunks": 228,
+      "committedMiB": 57
+    },
+    {
+      "gcMs": 140645,
+      "chunks": 228,
+      "committedMiB": 57
+    },
+    {
+      "gcMs": 141146,
+      "chunks": 227,
+      "committedMiB": 56.75
+    },
+    {
+      "gcMs": 141645,
+      "chunks": 229,
+      "committedMiB": 57.25
+    },
+    {
+      "gcMs": 142145,
+      "chunks": 229,
+      "committedMiB": 57.25
+    },
+    {
+      "gcMs": 142644,
+      "chunks": 197,
+      "committedMiB": 49.25
+    },
+    {
+      "gcMs": 143144,
+      "chunks": 197,
+      "committedMiB": 49.25
+    },
+    {
+      "gcMs": 143647,
+      "chunks": 197,
+      "committedMiB": 49.25
+    },
+    {
+      "gcMs": 144146,
+      "chunks": 200,
+      "committedMiB": 50
+    },
+    {
+      "gcMs": 150126,
+      "chunks": 200,
+      "committedMiB": 50
+    },
+    {
+      "gcMs": 151889,
+      "chunks": 200,
+      "committedMiB": 50
+    },
+    {
+      "gcMs": 152149,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 152513,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 152612,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 153124,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 153364,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 153613,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 154125,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 154363,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 154793,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 155124,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 155310,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 155794,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 156101,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 156511,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 156614,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 157124,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 157344,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 157796,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 158124,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 158346,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 158796,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 159125,
+      "chunks": 194,
+      "committedMiB": 48.5
+    },
+    {
+      "gcMs": 159315,
+      "chunks": 193,
+      "committedMiB": 48.25
+    },
+    {
+      "gcMs": 159582,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 160011,
+      "chunks": 195,
+      "committedMiB": 48.75
+    },
+    {
+      "gcMs": 160120,
+      "chunks": 197,
+      "committedMiB": 49.25
+    },
+    {
+      "gcMs": 160370,
+      "chunks": 196,
+      "committedMiB": 49
+    },
+    {
+      "gcMs": 160795,
+      "chunks": 196,
+      "committedMiB": 49
+    },
+    {
+      "gcMs": 161124,
+      "chunks": 197,
+      "committedMiB": 49.25
+    },
+    {
+      "gcMs": 161373,
+      "chunks": 196,
+      "committedMiB": 49
+    },
+    {
+      "gcMs": 161795,
+      "chunks": 196,
+      "committedMiB": 49
+    },
+    {
+      "gcMs": 162287,
+      "chunks": 196,
+      "committedMiB": 49
+    },
+    {
+      "gcMs": 168602,
+      "chunks": 196,
+      "committedMiB": 49
+    },
+    {
+      "gcMs": 170432,
+      "chunks": 196,
+      "committedMiB": 49
+    },
+    {
+      "gcMs": 170702,
+      "chunks": 128,
+      "committedMiB": 32
+    },
+    {
+      "gcMs": 170727,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 170942,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 171262,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 171711,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 171762,
+      "chunks": 130,
+      "committedMiB": 32.5
+    },
+    {
+      "gcMs": 172203,
+      "chunks": 130,
+      "committedMiB": 32.5
+    },
+    {
+      "gcMs": 172443,
+      "chunks": 130,
+      "committedMiB": 32.5
+    },
+    {
+      "gcMs": 173104,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 173604,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 173728,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 173796,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 174603,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 174728,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 174946,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 175254,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 175712,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 175757,
+      "chunks": 130,
+      "committedMiB": 32.5
+    },
+    {
+      "gcMs": 176117,
+      "chunks": 130,
+      "committedMiB": 32.5
+    },
+    {
+      "gcMs": 176603,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 176726,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 176949,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 177294,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 177729,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 177776,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 178299,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 178726,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 178951,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 179260,
+      "chunks": 131,
+      "committedMiB": 32.75
+    },
+    {
+      "gcMs": 179712,
+      "chunks": 133,
+      "committedMiB": 33.25
+    },
+    {
+      "gcMs": 179952,
+      "chunks": 133,
+      "committedMiB": 33.25
+    },
+    {
+      "gcMs": 180604,
+      "chunks": 133,
+      "committedMiB": 33.25
+    },
+    {
+      "gcMs": 180732,
+      "chunks": 136,
+      "committedMiB": 34
+    },
+    {
+      "gcMs": 202023,
+      "chunks": 260,
+      "committedMiB": 65
+    },
+    {
+      "gcMs": 202026,
+      "chunks": 258,
+      "committedMiB": 64.5
+    },
+    {
+      "gcMs": 203983,
+      "chunks": 262,
+      "committedMiB": 65.5
+    },
+    {
+      "gcMs": 205550,
+      "chunks": 262,
+      "committedMiB": 65.5
+    }
+  ],
+  "maxPoolCommittedMiB": 65.5,
+  "frameSizes": {
+    "count": 1118,
+    "maxBase64Chars": 160172,
+    "meanBase64Chars": 158506.66547406084
+  },
+  "analysis": {
+    "scope": "Offline checkpoint correlation, not allocation ownership or a new workload measurement",
+    "inputHashes": {
+      "server.json": "fef8fc2793300c7e52959b6f60f6922cfe2d12544fa0c4df7881dc81bbe23415",
+      "samples.jsonl": "8aa0d23f4bc79e0a50cd9b065edba955ec83fe393c95dacedf72986b747e3d9c",
+      "checkpoints.jsonl": "e914ba88c6b7cd0151ccdbb4b9b49fd7a239143995ab219bf48d2e10bd759e5c",
+      "collections.jsonl": "12ceee8c68ea8338880aea220de49c62ede2059b1212c48b21169ba60d5b4c21"
+    },
+    "sourceHashes": {
+      "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+      "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+      "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+      "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+      "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+      "tools/memory-host.cjs": "53cf59ea3105732f547a68df18104b603c42aa2541be928ce5cbd803cbb64dda",
+      "tools/memory-client.cjs": "94466370f5c29ce25edcba3ab0fdbba41bafbb3554d08d70cefe8c9044febd3a",
+      "tools/verify-docker-memory.sh": "382a5d7e1cb67a987035027e78ac6b5489e4bae0ad408148b59efb96e6a25da5",
+      "tools/memory-trace.cjs": "70cd953269f3b6338515b51f643cbc77ce52d71925cc3b7b1258a76b518c71eb",
+      "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed"
+    },
+    "traceStorage": "disk",
+    "traceRecords": {
+      "samples": 946,
+      "checkpoints": 64,
+      "collections": 653,
+      "browsers": 30
+    },
+    "series": [
+      {
+        "cycle": 1,
+        "anonGrowthMiB": 28.57421875,
+        "anonMiB": 66.19140625,
+        "nodeAnonMiB": 65.80078125,
+        "heapUsedMiB": 21.281455993652344,
+        "heapCapacityMiB": 52.22265625,
+        "v8PhysicalMiB": 32.01171875,
+        "externalMiB": 19.29394817352295,
+        "arrayBuffersMiB": 2.2964229583740234,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 4.824531555175781,
+            "capacityMiB": 32,
+            "physicalMiB": 11.57421875
+          },
+          "old_space": {
+            "usedMiB": 10.595100402832031,
+            "capacityMiB": 12.6640625,
+            "physicalMiB": 12.75
+          },
+          "code_space": {
+            "usedMiB": 1.581298828125,
+            "capacityMiB": 2,
+            "physicalMiB": 2
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.64154052734375,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 1.8184661865234375,
+            "capacityMiB": 1.8359375,
+            "physicalMiB": 1.8359375
+          },
+          "large_object_space": {
+            "usedMiB": 0.8447799682617188,
+            "capacityMiB": 0.8515625,
+            "physicalMiB": 0.8515625
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 29.413795471191406,
+        "jemallocResidentMiB": 36.140625,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 28.57421875,
+          "v8PhysicalMiB": 9.47265625,
+          "jemallocResidentMiB": 20.71484375
+        },
+        "gcEventsSincePrevious": 73,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 96,
+          "checkpoints": 7,
+          "gcEvents": 75,
+          "browsers": 3
+        }
+      },
+      {
+        "cycle": 2,
+        "anonGrowthMiB": 45.671875,
+        "anonMiB": 83.2890625,
+        "nodeAnonMiB": 82.90234375,
+        "heapUsedMiB": 26.351272583007812,
+        "heapCapacityMiB": 56.1640625,
+        "v8PhysicalMiB": 44.56640625,
+        "externalMiB": 22.991692543029785,
+        "arrayBuffersMiB": 5.994167327880859,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 6.394584655761719,
+            "capacityMiB": 32,
+            "physicalMiB": 20.1875
+          },
+          "old_space": {
+            "usedMiB": 10.739601135253906,
+            "capacityMiB": 13.6640625,
+            "physicalMiB": 13.75
+          },
+          "code_space": {
+            "usedMiB": 1.681640625,
+            "capacityMiB": 2,
+            "physicalMiB": 2
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.7195587158203125,
+            "capacityMiB": 2.62109375,
+            "physicalMiB": 2.75
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 5.4495391845703125,
+            "capacityMiB": 5.484375,
+            "physicalMiB": 5.484375
+          },
+          "large_object_space": {
+            "usedMiB": 0.390594482421875,
+            "capacityMiB": 0.39453125,
+            "physicalMiB": 0.39453125
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 32.803688049316406,
+        "jemallocResidentMiB": 39.32421875,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 17.09765625,
+          "v8PhysicalMiB": 12.5546875,
+          "jemallocResidentMiB": 3.18359375
+        },
+        "gcEventsSincePrevious": 65,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 182,
+          "checkpoints": 13,
+          "gcEvents": 140,
+          "browsers": 6
+        }
+      },
+      {
+        "cycle": 3,
+        "anonGrowthMiB": 54.1484375,
+        "anonMiB": 91.765625,
+        "nodeAnonMiB": 91.33984375,
+        "heapUsedMiB": 26.61383819580078,
+        "heapCapacityMiB": 88.4140625,
+        "v8PhysicalMiB": 50.9765625,
+        "externalMiB": 23.009801864624023,
+        "arrayBuffersMiB": 6.012276649475098,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 6.2735595703125,
+            "capacityMiB": 64,
+            "physicalMiB": 26.34765625
+          },
+          "old_space": {
+            "usedMiB": 10.772972106933594,
+            "capacityMiB": 13.4140625,
+            "physicalMiB": 13.5
+          },
+          "code_space": {
+            "usedMiB": 1.919677734375,
+            "capacityMiB": 2.25,
+            "physicalMiB": 2.25
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.8195266723632812,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 5.4676361083984375,
+            "capacityMiB": 5.484375,
+            "physicalMiB": 5.484375
+          },
+          "large_object_space": {
+            "usedMiB": 0.390594482421875,
+            "capacityMiB": 0.39453125,
+            "physicalMiB": 0.39453125
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 33.558258056640625,
+        "jemallocResidentMiB": 40.43359375,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 8.4765625,
+          "v8PhysicalMiB": 6.41015625,
+          "jemallocResidentMiB": 1.109375
+        },
+        "gcEventsSincePrevious": 65,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 267,
+          "checkpoints": 19,
+          "gcEvents": 205,
+          "browsers": 9
+        }
+      },
+      {
+        "cycle": 4,
+        "anonGrowthMiB": 56.4765625,
+        "anonMiB": 94.09375,
+        "nodeAnonMiB": 93.66796875,
+        "heapUsedMiB": 26.712730407714844,
+        "heapCapacityMiB": 88.1640625,
+        "v8PhysicalMiB": 51.95703125,
+        "externalMiB": 22.98013973236084,
+        "arrayBuffersMiB": 5.982614517211914,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 6.351753234863281,
+            "capacityMiB": 64,
+            "physicalMiB": 27.578125
+          },
+          "old_space": {
+            "usedMiB": 10.725502014160156,
+            "capacityMiB": 12.9140625,
+            "physicalMiB": 13
+          },
+          "code_space": {
+            "usedMiB": 1.9674072265625,
+            "capacityMiB": 2.5,
+            "physicalMiB": 2.5
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.8625946044921875,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 5.4380035400390625,
+            "capacityMiB": 5.484375,
+            "physicalMiB": 5.484375
+          },
+          "large_object_space": {
+            "usedMiB": 0.390594482421875,
+            "capacityMiB": 0.39453125,
+            "physicalMiB": 0.39453125
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 33.39855194091797,
+        "jemallocResidentMiB": 40.2578125,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 2.328125,
+          "v8PhysicalMiB": 0.98046875,
+          "jemallocResidentMiB": -0.17578125
+        },
+        "gcEventsSincePrevious": 60,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 353,
+          "checkpoints": 25,
+          "gcEvents": 265,
+          "browsers": 12
+        }
+      },
+      {
+        "cycle": 5,
+        "anonGrowthMiB": 56.41796875,
+        "anonMiB": 94.03515625,
+        "nodeAnonMiB": 93.609375,
+        "heapUsedMiB": 26.92455291748047,
+        "heapCapacityMiB": 88.4140625,
+        "v8PhysicalMiB": 52.20703125,
+        "externalMiB": 22.981847763061523,
+        "arrayBuffersMiB": 5.984322547912598,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 6.364265441894531,
+            "capacityMiB": 64,
+            "physicalMiB": 27.578125
+          },
+          "old_space": {
+            "usedMiB": 10.82135009765625,
+            "capacityMiB": 13.4140625,
+            "physicalMiB": 13.5
+          },
+          "code_space": {
+            "usedMiB": 2.016357421875,
+            "capacityMiB": 2.25,
+            "physicalMiB": 2.25
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.91546630859375,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 5.4397430419921875,
+            "capacityMiB": 5.484375,
+            "physicalMiB": 5.484375
+          },
+          "large_object_space": {
+            "usedMiB": 0.390594482421875,
+            "capacityMiB": 0.39453125,
+            "physicalMiB": 0.39453125
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 32.860023498535156,
+        "jemallocResidentMiB": 39.69140625,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": -0.05859375,
+          "v8PhysicalMiB": 0.25,
+          "jemallocResidentMiB": -0.56640625
+        },
+        "gcEventsSincePrevious": 66,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 438,
+          "checkpoints": 31,
+          "gcEvents": 331,
+          "browsers": 15
+        }
+      },
+      {
+        "cycle": 6,
+        "anonGrowthMiB": 60.9453125,
+        "anonMiB": 98.5625,
+        "nodeAnonMiB": 98.13671875,
+        "heapUsedMiB": 27.062637329101562,
+        "heapCapacityMiB": 88.4140625,
+        "v8PhysicalMiB": 57.375,
+        "externalMiB": 22.995338439941406,
+        "arrayBuffersMiB": 5.9978132247924805,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 6.4242401123046875,
+            "capacityMiB": 64,
+            "physicalMiB": 32.74609375
+          },
+          "old_space": {
+            "usedMiB": 10.829719543457031,
+            "capacityMiB": 13.4140625,
+            "physicalMiB": 13.5
+          },
+          "code_space": {
+            "usedMiB": 2.04638671875,
+            "capacityMiB": 2.25,
+            "physicalMiB": 2.25
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.94158935546875,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 5.4532470703125,
+            "capacityMiB": 5.484375,
+            "physicalMiB": 5.484375
+          },
+          "large_object_space": {
+            "usedMiB": 0.390594482421875,
+            "capacityMiB": 0.39453125,
+            "physicalMiB": 0.39453125
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 33.37939453125,
+        "jemallocResidentMiB": 40.33984375,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 4.52734375,
+          "v8PhysicalMiB": 5.16796875,
+          "jemallocResidentMiB": 0.6484375
+        },
+        "gcEventsSincePrevious": 62,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 524,
+          "checkpoints": 37,
+          "gcEvents": 393,
+          "browsers": 18
+        }
+      },
+      {
+        "cycle": 7,
+        "anonGrowthMiB": 53.44140625,
+        "anonMiB": 91.05859375,
+        "nodeAnonMiB": 90.6328125,
+        "heapUsedMiB": 18.616683959960938,
+        "heapCapacityMiB": 24.66015625,
+        "v8PhysicalMiB": 24.62890625,
+        "externalMiB": 17.982316970825195,
+        "arrayBuffersMiB": 0.9779825210571289,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 1.3435287475585938,
+            "capacityMiB": 4,
+            "physicalMiB": 3.75390625
+          },
+          "old_space": {
+            "usedMiB": 10.918693542480469,
+            "capacityMiB": 12.9140625,
+            "physicalMiB": 13
+          },
+          "code_space": {
+            "usedMiB": 2.05792236328125,
+            "capacityMiB": 2.5,
+            "physicalMiB": 2.5
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.9603042602539062,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "large_object_space": {
+            "usedMiB": 2.3593673706054688,
+            "capacityMiB": 2.375,
+            "physicalMiB": 2.375
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 28.576026916503906,
+        "jemallocResidentMiB": 35.44140625,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": -7.50390625,
+          "v8PhysicalMiB": -32.74609375,
+          "jemallocResidentMiB": -4.8984375
+        },
+        "gcEventsSincePrevious": 69,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 609,
+          "checkpoints": 43,
+          "gcEvents": 462,
+          "browsers": 21
+        }
+      },
+      {
+        "cycle": 8,
+        "anonGrowthMiB": 59.92578125,
+        "anonMiB": 97.54296875,
+        "nodeAnonMiB": 97.1171875,
+        "heapUsedMiB": 26.230361938476562,
+        "heapCapacityMiB": 39.609375,
+        "v8PhysicalMiB": 31.53515625,
+        "externalMiB": 22.402840614318848,
+        "arrayBuffersMiB": 5.405315399169922,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 5.8937835693359375,
+            "capacityMiB": 16,
+            "physicalMiB": 7.7109375
+          },
+          "old_space": {
+            "usedMiB": 10.756889343261719,
+            "capacityMiB": 12.6640625,
+            "physicalMiB": 12.75
+          },
+          "code_space": {
+            "usedMiB": 2.07183837890625,
+            "capacityMiB": 2.5,
+            "physicalMiB": 2.5
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.9755477905273438,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 4.8615570068359375,
+            "capacityMiB": 4.875,
+            "physicalMiB": 4.875
+          },
+          "large_object_space": {
+            "usedMiB": 0.6938552856445312,
+            "capacityMiB": 0.69921875,
+            "physicalMiB": 0.69921875
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 32.6297607421875,
+        "jemallocResidentMiB": 39.484375,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 6.484375,
+          "v8PhysicalMiB": 6.90625,
+          "jemallocResidentMiB": 4.04296875
+        },
+        "gcEventsSincePrevious": 54,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 694,
+          "checkpoints": 49,
+          "gcEvents": 516,
+          "browsers": 24
+        }
+      },
+      {
+        "cycle": 9,
+        "anonGrowthMiB": 61.203125,
+        "anonMiB": 98.8203125,
+        "nodeAnonMiB": 98.39453125,
+        "heapUsedMiB": 27.55889892578125,
+        "heapCapacityMiB": 41.21875,
+        "v8PhysicalMiB": 38.48046875,
+        "externalMiB": 23.29412269592285,
+        "arrayBuffersMiB": 6.296597480773926,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 6.5030670166015625,
+            "capacityMiB": 16,
+            "physicalMiB": 13.046875
+          },
+          "old_space": {
+            "usedMiB": 10.853759765625,
+            "capacityMiB": 13.6640625,
+            "physicalMiB": 13.75
+          },
+          "code_space": {
+            "usedMiB": 2.0894775390625,
+            "capacityMiB": 2.5,
+            "physicalMiB": 2.5
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 1.9933929443359375,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 5.7517547607421875,
+            "capacityMiB": 5.7890625,
+            "physicalMiB": 5.7890625
+          },
+          "large_object_space": {
+            "usedMiB": 0.390594482421875,
+            "capacityMiB": 0.39453125,
+            "physicalMiB": 0.39453125
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 32.591705322265625,
+        "jemallocResidentMiB": 39.47265625,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 1.27734375,
+          "v8PhysicalMiB": 6.9453125,
+          "jemallocResidentMiB": -0.01171875
+        },
+        "gcEventsSincePrevious": 66,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 780,
+          "checkpoints": 55,
+          "gcEvents": 582,
+          "browsers": 27
+        }
+      },
+      {
+        "cycle": 10,
+        "anonGrowthMiB": 61.58203125,
+        "anonMiB": 99.19921875,
+        "nodeAnonMiB": 98.7734375,
+        "heapUsedMiB": 26.949722290039062,
+        "heapCapacityMiB": 55.9140625,
+        "v8PhysicalMiB": 36.93359375,
+        "externalMiB": 22.974489212036133,
+        "arrayBuffersMiB": 5.976963996887207,
+        "v8Spaces": {
+          "read_only_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_space": {
+            "usedMiB": 6.2501373291015625,
+            "capacityMiB": 32,
+            "physicalMiB": 12.8046875
+          },
+          "old_space": {
+            "usedMiB": 10.78472900390625,
+            "capacityMiB": 12.6640625,
+            "physicalMiB": 12.75
+          },
+          "code_space": {
+            "usedMiB": 2.1031494140625,
+            "capacityMiB": 2.5,
+            "physicalMiB": 2.5
+          },
+          "shared_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_space": {
+            "usedMiB": 2.0118560791015625,
+            "capacityMiB": 2.87109375,
+            "physicalMiB": 3
+          },
+          "shared_trusted_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "new_large_object_space": {
+            "usedMiB": 5.4325408935546875,
+            "capacityMiB": 5.484375,
+            "physicalMiB": 5.484375
+          },
+          "large_object_space": {
+            "usedMiB": 0.390594482421875,
+            "capacityMiB": 0.39453125,
+            "physicalMiB": 0.39453125
+          },
+          "code_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "shared_trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          },
+          "trusted_large_object_space": {
+            "usedMiB": 0,
+            "capacityMiB": 0,
+            "physicalMiB": 0
+          }
+        },
+        "jemallocAllocatedMiB": 33.278839111328125,
+        "jemallocResidentMiB": 40.14453125,
+        "nativeContexts": 1,
+        "changeSincePrevious": {
+          "anonMiB": 0.37890625,
+          "v8PhysicalMiB": -1.546875,
+          "jemallocResidentMiB": 0.671875
+        },
+        "gcEventsSincePrevious": 68,
+        "traceRecordsThroughCheckpoint": {
+          "samples": 865,
+          "checkpoints": 61,
+          "gcEvents": 650,
+          "browsers": 30
+        }
+      }
+    ],
+    "finalDiagnostics": [
+      {
+        "phase": "finalIdle",
+        "anonMiB": 103.30078125,
+        "heapUsedMiB": 32.473838806152344,
+        "heapCapacityMiB": 55.9140625,
+        "v8PhysicalMiB": 42.1015625,
+        "jemallocResidentMiB": 41.12890625
+      },
+      {
+        "phase": "finalGc",
+        "anonMiB": 98.125,
+        "heapUsedMiB": 14.243896484375,
+        "heapCapacityMiB": 19.9296875,
+        "v8PhysicalMiB": 19.40625,
+        "jemallocResidentMiB": 41.24609375
+      },
+      {
+        "phase": "finalSettled",
+        "anonMiB": 77.73046875,
+        "heapUsedMiB": 14.619026184082031,
+        "heapCapacityMiB": 18.9296875,
+        "v8PhysicalMiB": 19.14453125,
+        "jemallocResidentMiB": 18.66015625
+      }
+    ],
+    "limitations": [
+      "Allocator and V8 statistics may overlap; do not add or subtract them to assign mapping ownership",
+      "Trace record counts do not measure their resident size; original evidence has no cycle-18 full smaps or allocation stacks",
+      "Disk mode still allocates temporary serialization buffers, holds browser scalar records and checkpoint request state, and adds synchronous I/O"
+    ]
+  },
+  "interpretation": "Pool committed counters are not resident bytes or disjoint from V8/RSS. Frame lengths identify payload size, not retained references.",
+  "provenance": {
+    "evidenceRoot": "/home/Kei/dom-mirror-validation/20261026/v8-pool-diagnostic",
+    "engineSourceCommit": "32918e856957f231b002c610ada35c0b836f9f39",
+    "scope": "Extra GC/bootstrap/frame-size instrumentation; no causal numeric comparison against untraced runs",
+    "analysisHashes": {
+      "tools/summarize-v8-memory.cjs": "7f8ef94a76e7249b81df9111fbe15b1ca418db7a8a71736c10a4a2644d73401e",
+      "tools/run-v8-memory.sh": "cf74f77ccd74a8006564c092dffa05bb7bba32bd92af6c9f30853cbcc7366a01",
+      "tools/memory-v8-preload.cjs": "0a997de7ce9a3b0a0511195589b64c336c6ccf70f5001990612b254b98578cc7",
+      "tools/memory-v8-entry.sh": "591b0c204f32d0f48b7ccceb99384829f47c8cadb8d769ffa991cea62dffc3ba"
+    }
+  }
+}

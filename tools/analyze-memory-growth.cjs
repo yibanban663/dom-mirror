@@ -27,6 +27,8 @@ function analyze(directory) {
       anonMiB: mib(row.cgroup.anon), nodeAnonMiB: row.process.rssAnonKiB / 1024,
       heapUsedMiB: mib(row.node.heapUsed), heapCapacityMiB: mib(row.node.heapTotal),
       v8PhysicalMiB: physical(row), externalMiB: mib(row.node.external), arrayBuffersMiB: mib(row.node.arrayBuffers),
+      v8Spaces: Object.fromEntries(row.native.heapSpaces.map(space => [space.space_name, {
+        usedMiB: mib(space.space_used_size), capacityMiB: mib(space.space_size), physicalMiB: mib(space.physical_space_size) }])),
       jemallocAllocatedMiB: mib(row.native.allocator.allocated), jemallocResidentMiB: mib(row.native.allocator.resident),
       nativeContexts: row.heap.nativeContexts,
       changeSincePrevious: { anonMiB: mib(row.cgroup.anon - previous.cgroup.anon),

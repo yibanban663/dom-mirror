@@ -26,7 +26,7 @@ const mirror = createMirror({ originUrl: process.env.ORIGIN_URL, defaultMode: 'd
 function status() {
   const files = ['server.js', 'client/index.html', 'lib/sessions.js', 'tools/allocator-business-host.cjs',
     'tools/verify-vikunja.cjs', 'tools/verify-recovery.cjs', 'tools/native-memory.c'];
-  return { node: process.version, allocator: native.allocatorStats(), sharpConcurrency: sharp.concurrency(),
+  return { node: process.version, execArgv: process.execArgv, allocator: native.allocatorStats(), sharpConcurrency: sharp.concurrency(),
     env: { LD_PRELOAD: process.env.LD_PRELOAD, MALLOC_CONF: process.env.MALLOC_CONF,
       MALLOC_ARENA_MAX: process.env.MALLOC_ARENA_MAX, VIPS_CONCURRENCY: process.env.VIPS_CONCURRENCY },
     browsers: browsers.map(record => ({ ...record, processGone: !fs.existsSync('/proc/' + record.pid) })),

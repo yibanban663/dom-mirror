@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=dom-mirror:allocator
+FROM ${BASE_IMAGE}
+COPY tools/memory-v8-entry.sh tools/memory-v8-preload.cjs tools/allocator-business-host.cjs /app/tools/
+ARG V8_TRACE=1
+ARG MAX_SEMI_SPACE=
+ENV MEMORY_V8_TRACE=${V8_TRACE} MEMORY_MAX_SEMI_SPACE=${MAX_SEMI_SPACE}
+ENTRYPOINT ["bash", "/app/tools/memory-v8-entry.sh"]
