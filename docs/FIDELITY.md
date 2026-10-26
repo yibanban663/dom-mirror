@@ -116,6 +116,40 @@
 - **RUM 生产基线扩样**（18 会话/41 份报告，:81 登录流+仪表盘滚动+键盘悬停 / :82，7 种视口 1280×800~1920×1080 含 DPR2）：交互到视觉延迟 **p50 16.6ms / p95 17.6ms**（min 13.1，约一帧跨视口稳定）；帧时间 p50/p95 = **16.7/16.7ms**（全会话 60fps 锁帧）；字节构成快照 12.19MB/77 份 + 补丁 518KB/345 条（压缩前）。
 - **跨源 iframe 动态刷新通道**（静态快照语义 → 周期跟随）：`prepareXframes(force)` 提取为独立函数，会话级定时器（XFRAME_REFRESH_MS，默认 15s，基准 4s）周期重抓同源化条目；内容变化才动——推送宿主 iframe 的 outer 补丁（客户端整替，srcdoc 随新内容到达）。基准 tick 路由（origin-static /tick.html 每 5s 换版本号）：断言镜像内 TICK 版本随刷新变化（30s 窗口）。会话关闭清理定时器与 origin 注册表。
 
+### v0.27 —— 两项边界定案（closed shadow root / 有声媒体）+ RUM 周度复评
+**closed shadow root（定案：可观测范围已扩到规范极限）**
+- 技术评估：`attachShadow({mode:'closed'})` 的引用只在创建时可截获——v0.27 以
+  `evaluateOnNewDocument` 在**页面任何脚本之前**安装补丁（此前 helpers 在
+  networkidle0 后注入，parse 期创建的 closed root 永远拿不到引用），注册表
+  WeakMap(host→root)。两种时序（parse 期/注入后）均覆盖：序列化以声明式
+  `<template shadowrootmode="closed">` 内联，客户端 `parseHtml`（div+setHTMLUnsafe，
+  统一替换 template 惰性片段——声明式 shadow 在 template.content 插入时不被处理）
+  解析期挂根。**规范上不可观测的残余**：声明式 `<template shadowrootmode=closed>`
+  由 HTML 解析器直接挂载、不调 attachShadow、无任何回调——此类根走不了引用截获，
+  唯一出路是位图兜底（像素捕获通道已有），按需再启用。
+- 实证（gen-cshadow 四断言全绿）：parse 期 closed 内容渲染（绿色像素 5818）；
+  注入后创建 closed 内容渲染（蓝色像素）；点击 closed 组件 → 服务端闭包翻转 →
+  宿主 outer 补丁回传（report 更新 + 像素由绿变红 5808）。
+- 顺带修复的历史缺陷：`window.__xyObserveShadow` 在 attachShadow 包装器中被调用
+  但**从未被赋值**（空引用）——注入后创建的影子根（含 closed）一直没挂 observer。
+
+**有声媒体（定案：用户激活语义下可完整跟随）**
+- 技术评估：浏览器自动播放策略限制的是**无声激活页面**调 `play()` 有声媒体；
+  访客在镜像内的真实交互（点击）为客户端页面授予用户激活——此后
+  dom-props.media 的 `play()`（不静音）被策略放行。
+- 实证（gen-media-audio 四断言全绿）：镜像内点击播放按钮（trusted 事件）→
+  镜像音频**不静音播放、进度推进、暂停跟随**。残留：会话建立后访客从未交互
+  即自动播放的有声媒体（策略硬限制，无解——静音跟随仍可用，与源站静音自动
+  播放场景等效）。
+
+**RUM 自然访客周度复评点**
+- 工具：`tools/aggregate-rum.cjs`（读网关 `[rum]`/`[rum-beacon]` 日志行，聚合
+  帧时间/交互到视觉延迟 p50/p95、字节构成、视口分布）。
+- 流程：每周 `docker logs rbi-gateway 2>&1 | grep '\[rum' | node
+  tools/aggregate-rum.cjs`，与 v0.26 基线（18 会话/41 报告）比对；样本
+  ≥100 会话或分布显著漂移（p95 帧时间 >25ms / 交互延迟 p95 >30ms）时更新
+  基线并排查回归。
+
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
 - 跨源 iframe 动态嵌入：周期重抓刷新已解决（v0.26，变化才推）；postMessage 双向驱动的嵌入仍为快照语义。

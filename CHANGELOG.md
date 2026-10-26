@@ -1,3 +1,20 @@
+# v0.27.0
+
+- closed shadow root 定案（可观测范围扩到规范极限）：attachShadow 补丁经
+  evaluateOnNewDocument 在页面脚本前安装（parse 期创建的 closed root 也进
+  注册表）；序列化以声明式 shadowrootmode=closed 内联；客户端统一
+  parseHtml（div+setHTMLUnsafe——template 惰性片段中的声明式 shadow 在插入
+  时不被处理，补丁路径闭盒丢失的根因）。残余不可观测：声明式 closed 模板
+  （HTML 解析器直接挂载无回调），按需走位图兜底。
+- 修复历史空引用：window.__xyObserveShadow 在 attachShadow 包装器中被调用
+  但从未赋值——注入后创建的影子根（含 closed）一直没挂 observer。
+- 有声媒体定案（用户激活语义下完整跟随）：访客在镜像内真实点击后
+  dom-props.media 的不静音 play() 被自动播放策略放行；会话内零交互即自动
+  播放的有声媒体为策略硬限制（静音跟随仍可用）。
+- 基准扩到 11 case：+gen-cshadow（parse 期/注入后/交互视觉回路四断言）
+  +gen-media-audio（不静音播放/进度/暂停四断言）。
+- tools/aggregate-rum.cjs：自然访客 RUM 周度复评工具（网关日志聚合）。
+
 # v0.26.0
 
 - 跨源 iframe 动态刷新通道：prepareXframes(force) 周期重抓（XFRAME_REFRESH_MS

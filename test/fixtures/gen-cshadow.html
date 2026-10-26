@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-cshadow</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 20px; }
+    #host-pre, #host-post { width: 200px; min-height: 40px; border: 1px solid #99a; margin: 8px 0; display: block; cursor: pointer; }
+    #report { margin-top: 10px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h3>closed shadow root（注入前 parse 期 / 注入后点击创建）</h3>
+  <div id="host-pre" title="pre"></div>
+  <div id="host-post"></div>
+  <button id="mk">注入后建 closed shadow</button>
+  <button id="probe">查注册表</button>
+  <div id="report">REPORT:init</div>
+  <script>
+    const report = (t) => { document.getElementById('report').textContent = 'REPORT:' + t; };
+    document.getElementById('probe').addEventListener('click', () => {
+      const wm = window.__xyClosedRoots;
+      const pre = document.getElementById('host-pre');
+      const post = document.getElementById('host-post');
+      report('reg:' + (wm ? ('pre=' + wm.has(pre) + ',post=' + wm.has(post) + ',list=' + (window.__xyClosedList || []).length) : 'undefined') + ',early=' + !!window.__xyEarlyShadow);
+    });
+    // parse 期（helpers 注入前）创建的 closed shadow：外部永不可达，闭包持有引用
+    (function () {
+      const host = document.getElementById('host-pre');
+      const sr = host.attachShadow({ mode: 'closed' });
+      sr.innerHTML = '<style>.box{padding:8px;background:#2c7;color:#fff;font-weight:700}</style><div class="box">PRE-CLOSED</div>';
+      let toggled = false;
+      host.addEventListener('click', () => {
+        toggled = !toggled;
+        sr.querySelector('.box').style.background = toggled ? '#c52' : '#2c7';
+        report('pre-click:' + (toggled ? 'on' : 'off'));
+      });
+    })();
+    // 注入后（点击按钮）创建的 closed shadow
+    document.getElementById('mk').addEventListener('click', () => {
+      const host = document.getElementById('host-post');
+      const sr = host.attachShadow({ mode: 'closed' });
+      sr.innerHTML = '<style>.box{padding:8px;background:#369;color:#fff;font-weight:700}</style><div class="box">POST-CLOSED</div>';
+      report('post-created');
+    });
+  </script>
+</body>
+</html>

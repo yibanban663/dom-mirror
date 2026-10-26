@@ -475,6 +475,17 @@ const PAGE_HELPERS = `(() => {
               d.appendChild(sanitizeClone(ln.shadowRoot));
               t.innerHTML = d.innerHTML;
               cn.prepend(t);
+            } else if (window.__xyClosedRoots && window.__xyClosedRoots.has(ln)) {
+              // v0.27 closed shadow：early hook（evaluateOnNewDocument）注册表里
+              // 的引用（parse 期/注入后 attachShadow({mode:'closed'}) 均覆盖）——
+              // 以声明式 shadowrootmode="closed" 内联，客户端重解析重建影子树
+              const cr = window.__xyClosedRoots.get(ln);
+              const t = document.createElement('template');
+              t.setAttribute('shadowrootmode', 'closed');
+              const d = document.createElement('div');
+              d.appendChild(sanitizeClone(cr));
+              t.innerHTML = d.innerHTML;
+              cn.prepend(t);
             }
             // 同源 iframe 内联（v0.14）：内容序列化进 srcdoc（剥 script/事件属性
             // 与主文档同一 sanitize；样式随 link/style 进 srcdoc，资源 URL 已由
@@ -589,6 +600,13 @@ const PAGE_HELPERS = `(() => {
             if (el.shadowRoot) { window.__xy.observeShadow(el.shadowRoot); stack.push(el.shadowRoot); }
           }
         }
+        // v0.27 closed root：early hook 注册表里的 parse 期条目补挂 observer
+        //（内容变更经 patchOf 上溯宿主 → 宿主 outer 重序列化（注册表取内容））
+        try {
+          for (const it of (window.__xyClosedList || [])) {
+            if (it.host && it.host.isConnected && it.root) window.__xy.observeShadow(it.root);
+          }
+        } catch (e) {}
       } catch (e) {}
     },
     // 同源 iframe 文档观察（v0.14）：load 事件（window capture 钩子）后挂 observer；
@@ -1841,6 +1859,11 @@ async function runSession(ws, req, lifecycle) {
       logger.log('[dom   ] helpers inject fail:', e && e.message);
     });
     await page.evaluate(() => {
+      // v0.27 修复：attachShadow 包装器引用的 window.__xyObserveShadow 此前
+      // 从未被赋值（历史空引用）——注入后创建的影子根（含 closed）一直没挂
+      // observer，closed 组件的动态变化对镜像不可见
+      if (window.__xy && window.__xy.observeShadow) window.__xyObserveShadow = window.__xy.observeShadow;
+      if (window.__xy && window.__xy.observeIframe) window.__xyObserveIframe = window.__xy.observeIframe;
       if (window.__xyObs) window.__xyObs.disconnect();
       window.__xyObs = new MutationObserver((recs) => {
         const out = [];
@@ -2533,6 +2556,32 @@ async function runSession(ws, req, lifecycle) {
     });
     page = await b.newPage();
     if (dead) { await page.close(); return; }
+    // v0.27 closed shadow 捕获：attachShadow 补丁在页面任何脚本之前安装
+    //（evaluateOnNewDocument），parse 期创建的 closed root 也进注册表——此前
+    // helpers 在 networkidle0 后注入，注入前创建的 closed root 永远拿不到引用。
+    // 注册表：WeakMap(host→root) + 有界数组（全量注入后补挂 observer 用）。
+    // 声明式 <template shadowrootmode="closed">（HTML 解析器直接挂载，不调
+    // attachShadow）规范上无回调，仍不可观测——见 FIDELITY.md 边界定案。
+    // （宿主单测以仅含 createCDPSession/close 的 mock page 驱动——能力守卫）
+    if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(() => {
+      if (window.__xyEarlyShadow) return;
+      window.__xyEarlyShadow = true;
+      try {
+        window.__xyClosedRoots = new WeakMap();
+        window.__xyClosedList = [];
+        const orig = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function (init) {
+          const sr = orig.call(this, init);
+          try {
+            if (sr && init && init.mode === 'closed') {
+              window.__xyClosedRoots.set(this, sr);
+              if (window.__xyClosedList.length < 64) window.__xyClosedList.push({ host: this, root: sr });
+            }
+          } catch (e) {}
+          return sr;
+        };
+      } catch (e) {}
+    });
     cdp = await page.createCDPSession();
     if (dead) return;
     // 临时诊断：会话页面的 API 请求状态（定位登录后数据不加载问题）

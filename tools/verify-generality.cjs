@@ -406,6 +406,83 @@ async function main() {
       });
     }
 
+    if (CASE === 'cshadow') {
+      await page.waitForFunction(() => !!window.__q('#host-pre'), { timeout: 20000 });
+      await settle(2500);
+      // 视觉证据：截取镜像盒子区域，按目标色统计像素（closed 内容的背景色）。
+      // closed root 在客户端同样不可遍历（template 解析后即被消费），DOM 断言
+      // 不可行——像素是唯一诚实的观测面
+      const sharpMod = (() => { try { return require('sharp'); } catch (e) { return null; } })();
+      const colorPixels = async (sel, rgb) => {
+        if (!sharpMod) return -1;
+        const rect = await page.evaluate((s) => {
+          const el = window.__q(s);
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y, w: r.width, h: r.height };
+        }, sel);
+        if (!rect || rect.w < 4 || rect.h < 4) return -1;
+        const shot = await page.screenshot({ clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h } });
+        const { data } = await sharpMod(Buffer.from(shot)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        let n = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (Math.abs(data[i] - rgb[0]) < 26 && Math.abs(data[i + 1] - rgb[1]) < 26 && Math.abs(data[i + 2] - rgb[2]) < 26) n++;
+        }
+        return n;
+      };
+      const GREEN = [44, 199, 119], RED = [204, 85, 34], BLUE = [51, 102, 153];
+      const preGreen = await colorPixels('#host-pre', GREEN);
+      out.cshadow_preGreen = preGreen;
+      // 断言 1：parse 期创建的 closed root 内容渲染（绿色像素 > 50）
+      out.checks.cshadow_pre_visible = preGreen > 50;
+      // 断言 2：注入后创建的 closed root（点击 mk）→ 蓝色像素出现
+      await page.evaluate(() => window.__click('#mk'));
+      const postBlue = await page.waitForFunction(async () => true, { timeout: 2500 }).then(() => 0).catch(() => 0);
+      await settle(2500);
+      const blue = await colorPixels('#host-post', BLUE);
+      out.cshadow_postBlue = blue;
+      out.checks.cshadow_post = blue > 50;
+      // 断言 3：closed 组件交互回路——点击镜像盒子 → 服务端闭包翻转 → 宿主 outer
+      // 补丁回传（report 更新 + 颜色由绿变红）
+      await page.evaluate(() => window.__click('#host-pre'));
+      out.checks.cshadow_interact = await page.waitForFunction(() => /pre-click:on/.test(window.__rep()), { timeout: 10000 }).then(() => true).catch(() => false);
+      let redAfter = -1;
+      for (let i = 0; i < 10; i++) {
+        redAfter = await colorPixels('#host-pre', RED);
+        if (redAfter > 50) break;
+        await settle(800);
+      }
+      out.cshadow_redAfter = redAfter;
+      out.checks.cshadow_interact_visual = redAfter > 50;
+      out.cshadow_final = (await rep()).slice(0, 80);
+    }
+
+    if (CASE === 'audio') {
+      await page.waitForFunction(() => !!window.__q('#play'), { timeout: 20000 });
+      await settle(2000);
+      // 用户激活语义：真实（trusted）点击镜像的播放按钮 → 客户端页面获得用户
+      // 激活 → 随后 dom-props.media 的 play()（不静音）被自动播放策略放行
+      await page.click('#mirrorHost >>> #play').catch(async () => { await page.evaluate(() => window.__click('#play')); });
+      out.checks.audio_playing = await page.waitForFunction(() => {
+        const a = window.__q('#a1');
+        return a && !a.paused;
+      }, { timeout: 10000 }).then(() => true).catch(() => false);
+      out.checks.audio_unmuted = await page.evaluate(() => {
+        const a = window.__q('#a1');
+        return !!(a && !a.muted);
+      });
+      out.checks.audio_progress = await page.waitForFunction(() => {
+        const a = window.__q('#a1');
+        return a && a.currentTime > 0.2;
+      }, { timeout: 10000 }).then(() => true).catch(() => false);
+      await page.evaluate(() => window.__click('#pause'));
+      out.checks.audio_pause = await page.waitForFunction(() => {
+        const a = window.__q('#a1');
+        return a && a.paused;
+      }, { timeout: 8000 }).then(() => true).catch(() => false);
+      out.audio_final = (await rep()).slice(0, 100);
+    }
+
     out.bytes = await page.evaluate(() => window.__bytes).catch(() => ({}));
     // 流畅度/延迟基线（不参与 pass 判定）：主线程帧时间 p95 + 键盘型应用回显 RTT
     try {
