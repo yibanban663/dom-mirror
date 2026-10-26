@@ -2012,55 +2012,73 @@ async function runSession(ws, req, lifecycle) {
 
   // v3 dom 模式：canvas 元素按需捕获。仅当页面存在视口内 canvas 时才截图，
   // 且逐元素比对像素（sharp raw 或字节级），无变化零下发——静止 canvas（软件
-  // GL 下的 WebGL）零流量，动画 canvas 以 ~2fps 元素级小图跟随。绝不整页推流。
+  // GL 下的 WebGL）零流量。v0.22 自适应节奏：可见动画画布升到 ~8fps 快档
+  // （120ms tick），静止画布指数退避不变；rAF 门改相邻 tick 差分（无 260ms
+  // 阻塞），捕获列表 600ms 缓存，每秒捕获总数预算 12 封顶 CPU
   function startCanvasWatch() {
     if (canvasTimer) return;
     const lastSigs = new Map();
-    canvasSigsReset = () => lastSigs.clear();
+    canvasSigsReset = () => { lastSigs.clear(); };
+    let canvasBusy = false;
+    let rafLast = { n: -1, at: 0 };
+    let listCache = { at: 0, list: null };
+    const captureTimes = [];
     canvasTimer = setInterval(async () => {
+      if (canvasBusy) return;
       if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
+      canvasBusy = true;
       try {
-        const list = await withTimeout(page.evaluate(() => {
-          const out = [];
-          try {
-            // v0.14：穿透 open shadow root 收集画布（影子内组件图表同捕获）
-            const canvases = (window.__xy && window.__xy.allDeep) ? window.__xy.allDeep(document.body, 'canvas') : [...document.body.querySelectorAll('canvas')];
-            for (const c of canvases) {
-              // v0.14：指令流画布（注入后 2d 上下文且可序列化）走 canvas-ops 重放，
-              // 不进位图捕获通道
-              if (c.__xyStream2d && !c.__xyOpaque2d) continue;
-              const r = c.getBoundingClientRect();
-              if (r.width < 8 || r.height < 8) continue;
-              if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
-              const path = window.__xy.pathOf(c);
-              out.push({ id: window.__xy.idOf(c), path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
-              if (out.length >= 3) break;
-            }
-          } catch (e) {}
-          return out;
-        }), 1500, 'canvasList').catch(() => null);
-        if (!list) return;
+        const now = Date.now();
+        // 捕获列表 600ms 缓存（坐标为页面绝对值，滚动安全；可见性过滤随之）
+        if (!listCache.list || now - listCache.at > 600) {
+          const fresh = await withTimeout(page.evaluate(() => {
+            const out = [];
+            try {
+              // v0.14：穿透 open shadow root 收集画布（影子内组件图表同捕获）
+              const canvases = (window.__xy && window.__xy.allDeep) ? window.__xy.allDeep(document.body, 'canvas') : [...document.body.querySelectorAll('canvas')];
+              for (const c of canvases) {
+                // v0.14：指令流画布（注入后 2d 上下文且可序列化）走 canvas-ops 重放，
+                // 不进位图捕获通道
+                if (c.__xyStream2d && !c.__xyOpaque2d) continue;
+                const r = c.getBoundingClientRect();
+                if (r.width < 8 || r.height < 8) continue;
+                if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
+                const path = window.__xy.pathOf(c);
+                out.push({ id: window.__xy.idOf(c), path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
+                if (out.length >= 3) break;
+              }
+            } catch (e) {}
+            return out;
+          }), 1500, 'canvasList').catch(() => null);
+          if (fresh === null) return;
+          listCache = { at: now, list: fresh };
+        }
+        const list = listCache.list;
         if (!list.length) { if (lastSigs.size) lastSigs.clear(); return; }
-        // rAF 活动门：260ms 窗口零回调 = 动画循环完全停转，canvas 必然静止，
-        // 零捕获（静止 canvas 的持续捕获曾是 CPU 大头：实测 34-47%）
-        const rafDelta = await withTimeout(page.evaluate(() => new Promise((res2) => {
-          const before = window.__xyRafCount || 0;
-          setTimeout(() => res2((window.__xyRafCount || 0) - before), 260);
-        })), 1500, 'rafGate').catch(() => 1);
-        if (rafDelta === 0) return;
+        // rAF 活动门（轻量差分版）：相邻 tick 采样 __xyRafCount，300ms 无增量
+        // = 动画循环停转 → canvas 必然静止零捕获（静止 canvas 的持续捕获曾是
+        // CPU 大头：实测 34-47%）
+        const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
+        if (rafN === null) return;
+        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300) return; }
+        else rafLast = { n: rafN, at: Date.now() };
         const nowMs = Date.now();
+        while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
         for (const it of list) {
           // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
           // （v0.14：键改为节点 id——影子内画布 path 可为 null）
           const sigKey = it.id !== undefined ? it.id : it.path;
           const st0 = lastSigs.get(sigKey);
           if (st0 && st0.nextAt && nowMs < st0.nextAt) continue;
+          // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
+          if (captureTimes.length >= 12) break;
           const shot = await withTimeout(cdp.send('Page.captureScreenshot', {
             format: 'png',
             clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: DPR },
             captureBeyondViewport: true,
           }), 3000, 'canvasShot').catch(() => null);
           if (!shot) continue;
+          captureTimes.push(Date.now());
           let changed = true;
           try {
             if (sharp) {
@@ -2090,8 +2108,8 @@ async function runSession(ws, req, lifecycle) {
             ws._chunks = (ws._chunks || 0) + 1;
           }
         }
-      } catch (e) {}
-    }, 450);
+      } catch (e) {} finally { canvasBusy = false; }
+    }, 120);
   }
 
   async function stopDomMirror() {

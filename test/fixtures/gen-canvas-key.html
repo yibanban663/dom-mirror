@@ -15,6 +15,7 @@
   <h3>画布/大表/键盘</h3>
   <canvas id="c2d" width="120" height="60"></canvas>
   <canvas id="cgl" width="120" height="60"></canvas>
+  <canvas id="cgl-anim" width="120" height="60"></canvas>
   <canvas id="cgl-off" width="120" height="60" style="position:absolute;top:-9999px;left:0"></canvas>
   <div id="keys" tabindex="0" style="border:1px dashed #99a;padding:6px;margin-top:8px">键盘捕获器：点我后打字</div>
   <table id="bigtable"></table>
@@ -42,6 +43,13 @@
     let ph = 0;
     if (glo) {
       (function animOff() { ph += 0.01; glo.clearColor(0.5 + 0.5 * Math.sin(ph), 0.3, 0.7, 1); glo.clear(glo.COLOR_BUFFER_BIT); requestAnimationFrame(animOff); })();
+    }
+    // 可见动画 WebGL（快档通道）：每帧变色——基准按镜像 img 的 src 变化率
+    // 断言捕获帧率（v0.22 目标 ≥4 次/秒，快档 ~8）
+    const gla = document.getElementById('cgl-anim').getContext('webgl');
+    let ph2 = 0;
+    if (gla) {
+      (function animVis() { ph2 += 0.02; gla.clearColor(0.9, 0.4 + 0.4 * Math.sin(ph2), 0.2, 1); gla.clear(gla.COLOR_BUFFER_BIT); requestAnimationFrame(animVis); })();
     }
     // 键盘捕获
     const seq = [];

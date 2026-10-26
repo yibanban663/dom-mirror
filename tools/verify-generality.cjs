@@ -230,9 +230,31 @@ async function main() {
         await new Promise(r => setTimeout(r, 3000));
         const after = window.__qa('img[data-xy-canvas]').map(im => im.src);
         if (after.length !== srcs.length) return false;
-        // 文档顺序：c2d(可能指令流canvas) cgl cgl-off —— 最后一个是 off 屏
+        // 文档顺序：c2d(指令流canvas) cgl(静态) cgl-anim(动画) cgl-off(离屏)——最后一个是离屏
         return after[after.length - 1] === srcs[srcs.length - 1];
       });
+      // v0.22：可见动画 WebGL 快档帧率——4s 窗口计镜像 img src 变化次数。
+      // imgs 顺序 = [c2d(注入前位图), cgl(静态), cgl-anim(动画), cgl-off(离屏)]：
+      // 动画位 ≥4 次/秒；两个静态位合计 ≤2（各自首次同步）；离屏位恒 0
+      out.checks.webgl_anim_fps = await page.evaluate(async () => {
+        const imgs = window.__qa('img[data-xy-canvas]');
+        if (imgs.length < 4) return false;
+        let anim = 0, stat = 0, off = 0;
+        const mo = new MutationObserver((recs) => {
+          for (const r of recs) {
+            if (r.target === imgs[2]) anim++;
+            else if (r.target === imgs[3]) off++;
+            else stat++;
+          }
+        });
+        for (const im of imgs) mo.observe(im, { attributes: true, attributeFilter: ['src'] });
+        await new Promise(r => setTimeout(r, 4000));
+        mo.disconnect();
+        window.__xyWebglFps = { animUpdates: anim, staticUpdates: stat, offUpdates: off, perSec: +(anim / 4).toFixed(1) };
+        return anim / 4 >= 4 && stat <= 2 && off === 0;
+      });
+      const fpsInfo = await page.evaluate(() => window.__xyWebglFps || null);
+      if (fpsInfo) out.perf = Object.assign(out.perf || {}, { webglFps: fpsInfo });
       out.checks.table_rows = await page.evaluate(() => window.__qa('#bigtable tr').length >= 2000);
       await page.evaluate(() => window.__click('#bigtable td.hit'));
       out.checks.table_click = await waitRep('row:\\d+', 8000);
