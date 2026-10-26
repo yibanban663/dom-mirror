@@ -25,6 +25,15 @@ if [[ "${PROFILE:-0}" == 1 ]]; then
   server_entry=tools/profile-server.cjs
   server_mount=(-v "$repo/tools:/app/tools:ro" -v "$repo/server.js:/app/server.js:ro")
 fi
+package_host=${BUSINESS_PACKAGE_HOST:-0}
+client_root=/app
+[[ "$package_host" == 0 || "$package_host" == 1 ]] || exit 2
+if [[ "$package_host" == 1 ]]; then
+  [[ -z "$allocator_profile" && "${PROFILE:-0}" != 1 && "$test_script" != profile-business.cjs ]] || exit 2
+  server_entry=/consumer/host.cjs
+  client_root=/consumer
+  [[ "$test_script" != verify-vikunja.cjs || "${CASES:-direct,dom,frame}" == direct,dom,frame ]] || exit 2
+fi
 proxy_env=(-e HTTP_PROXY= -e HTTPS_PROXY= -e http_proxy= -e https_proxy= -e ALL_PROXY= -e all_proxy=)
 mkdir -p "$evidence"
 printf 'cpus=%s\nmemoryMiB=2048\n' "${MIRROR_CPUS:-2}" > "$evidence/mirror-limits.txt"
@@ -74,12 +83,20 @@ docker exec "$server" node -e '
     process.exit(1);
   })().catch(() => process.exit(1));
 '
-docker run --name "$client" --network "$run_id" --memory 2g \
+docker run --name "$client" --network "$run_id" --memory 2g -w "$client_root" \
   "${proxy_env[@]}" -e BUSINESS_URL=http://business:3456 -e MIRROR_URL=http://mirror:8088/ \
   -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e EVIDENCE_DIR=/tmp/business-evidence -e "CASES=${CASES:-direct,dom,frame}" \
   -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "DIAGNOSTIC_HOLD_MS=${DIAGNOSTIC_HOLD_MS:-0}" \
-  -v "$repo/tools:/app/tools:ro" --entrypoint timeout \
+  -v "$repo/tools:$client_root/tools:ro" --entrypoint timeout \
   "$image" 270 node "tools/$test_script"
+if [[ "$package_host" == 1 ]]; then
+  expected_browsers=2
+  [[ "$test_script" != verify-recovery.cjs ]] || expected_browsers=6
+  docker exec -i -w /consumer -e "PACKAGE_EXPECTED_BROWSERS=$expected_browsers" "$server" \
+    timeout 60 node < "$repo/tools/verify-package-lifecycle.cjs" > "$evidence/package-lifecycle.json"
+  docker cp "$server:/consumer/package-lock.json" "$evidence/consumer-lock.json" >/dev/null
+  docker cp "$server:/consumer/installed-tree.json" "$evidence/installed-tree.json" >/dev/null
+fi
 if [[ "$allocator_profile" == jemalloc ]]; then
   docker exec "$server" node -e '
     (async () => {

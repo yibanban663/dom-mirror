@@ -81,6 +81,8 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh
       - name: Vikunja 短时断线恢复回归
         run: IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh
+      - name: tarball 独立宿主真实业务、恢复与关闭回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-package-business.sh
       - name: 数据下发边界回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-data-boundary.sh
       - name: 宿主身份与会话恢复边界回归
@@ -137,6 +139,13 @@ jobs:
         with:
           name: recovery-regression
           path: artifacts/recovery/
+          if-no-files-found: warn
+      - name: 保存 tarball 独立宿主证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-business-regression
+          path: artifacts/package-business/
           if-no-files-found: warn
       - name: 清理冒烟容器
         if: always()

@@ -156,6 +156,7 @@ npm test
 node tools/verify-package.cjs
 
 # After building the current Docker image:
+IMAGE=dom-mirror:local bash tools/verify-docker-package-business.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-data-boundary.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-session-identity.sh
@@ -166,7 +167,7 @@ IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
   bash tools/verify-docker-vikunja.sh
 ```
 
-The tarball check installs the actual package in a separate temporary host; it does not launch Chromium. Browser regressions use isolated Docker environments. Vikunja tests cover login, task creation, priority changes and completion, with separate persistence assertions. CI is configured to run these checks and retain browser evidence; use the result for the relevant commit.
+The fast tarball check installs the package without launching Chromium. `verify-docker-package-business.sh` additionally installs a fresh tarball in an independent consumer, removes the source runtime, disables `NODE_PATH` fallback and verifies installed file hashes. It runs real Vikunja login, task creation, priority changes and completion with independent persistence assertions, then tests recovery, expiry and browser cleanup. Closing the mirror must preserve the host HTTP service. Browser tests use isolated Docker networks; CI retains the archive identity, consumer dependency lock, results and screenshots. See the [packaged business acceptance record](docs/acceptance/package-business-2026-10-26.md); use the CI result for the relevant commit.
 
 The frame codec reuses decoded pixels for ordinary RGB/RGBA PNG crops and falls back for other encodings. Measurements show a **local encoding benefit**, not a demonstrated stable end-to-end speedup. [Synthetic concurrency tests](docs/performance/2026-10-26-capacity.md) cover 1/3/6 sessions in DOM and frame: DOM meets this experiment's budgets; frame does not consistently meet the post-cleanup anonymous-memory budget (one single-session run and both 3/6-session runs exceed it). A [ten-cycle memory investigation](docs/performance/2026-10-26-frame-memory.md) finds that forced GC and disabling sharp cache do not resolve the retained anonymous memory; allocator controls are a host-level diagnostic, not a package default. Real-application capacity and sustained operation remain to be validated.
 
