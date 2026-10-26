@@ -44,7 +44,7 @@ if (patchDelay !== 60) replace('            }, 60);', '            }, ' + patchD
 new vm.Script(source, { filename });
 if (process.argv.includes('--check')) {
   const start = source.indexOf('const PAGE_HELPERS = '), end = source.indexOf('\n// ---------- 静态文件', start);
-  const helpers = vm.runInNewContext(source.slice(start, end) + '\nPAGE_HELPERS;', { ORIGIN_BASE: new URL('http://127.0.0.1:8077/'), config: { redactAttributes: [] } });
+  const helpers = vm.runInNewContext(source.slice(start, end) + '\nPAGE_HELPERS;', { ORIGIN_BASE: new URL('http://127.0.0.1:8077/'), config: { redactAttributes: [], maskInputTypes: [], canvasStream: true } });
   new vm.Script(helpers);
   console.log('Profile instrumentation anchors and injected script compile');
 } else {
