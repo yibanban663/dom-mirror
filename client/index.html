@@ -1085,6 +1085,27 @@
         }
         const el = mirrorFind(p.id !== undefined ? p.id : p.path);
         if (!el) throw new Error('id miss');
+        // v0.23 窗口平移补丁（虚拟滚动）：delHead+append（下移：删头 k 行+尾部
+        // 新增）/ prepend+delTail（上移）。O(增量) 替代整窗 inner 替换
+        if (p.delHead !== undefined || p.delTail !== undefined) {
+          for (let i = 0; i < (p.delHead || 0) && el.firstChild; i++) unregisterSubtree(el.firstChild), el.removeChild(el.firstChild);
+          for (let i = 0; i < (p.delTail || 0) && el.lastChild; i++) unregisterSubtree(el.lastChild), el.removeChild(el.lastChild);
+          if (p.append !== undefined) {
+            const tpl = document.createElement('template');
+            if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(p.append); else tpl.innerHTML = p.append;
+            const before = el.childNodes.length;
+            el.appendChild(tpl.content);
+            for (let ci = before; ci < el.childNodes.length; ci++) { try { registerSubtree(el.childNodes[ci]); } catch (e2) {} }
+          }
+          if (p.prepend !== undefined) {
+            const tpl = document.createElement('template');
+            if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(p.prepend); else tpl.innerHTML = p.prepend;
+            const anchor = el.firstChild;
+            const news = [...tpl.content.childNodes];
+            for (const n2 of news) { el.insertBefore(n2, anchor); try { registerSubtree(n2); } catch (e2) {} }
+          }
+          continue;
+        }
         // v0.17 带宽·文本节点级：单文本变化只改对应 childNodes[ti].textContent
         // （ti 失配=并发结构变化，静默跳过等下一拍补丁/快照收敛，不触发全量重同步）
         if (p.text !== undefined) {

@@ -26,11 +26,18 @@ async function main() {
     await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
     await page.evaluateOnNewDocument(() => {
       window.__bytes = {};
+      window.__shiftPatches = 0; // v0.23 平移补丁计数（delHead/prepend 形态）
       const O = window.WebSocket;
       window.WebSocket = function (url, p) {
         const ws = p === undefined ? new O(url) : new O(url, p);
         ws.addEventListener('message', (ev) => {
-          try { const j = JSON.parse(ev.data); window.__bytes[j.type] = (window.__bytes[j.type] || 0) + (ev.data.length || 0); } catch {}
+          try {
+            const j = JSON.parse(ev.data);
+            window.__bytes[j.type] = (window.__bytes[j.type] || 0) + (ev.data.length || 0);
+            if (j.type === 'dom-patches' && Array.isArray(j.patches)) {
+              for (const x of j.patches) if (x.delHead !== undefined || x.prepend !== undefined) window.__shiftPatches++;
+            }
+          } catch {}
         });
         return ws;
       };
@@ -333,6 +340,19 @@ async function main() {
       // 功能断言：服务端真实换窗（updates ≥10 且 first 前移两位数）且窗口行数恒定
       out.checks.vlist_updates = await page.evaluate(() => /^REPORT:first=\d{2,};updates=\d{2,}/.test(window.__rep()));
       out.checks.vlist_rows = await page.evaluate(() => window.__qa('#vwin .vrow').length === 20);
+      // v0.23 平移 diff：机制断言（负载无关）——慢滚期间必须收到 ≥1 条
+      // delHead/prepend 平移补丁；字节数记录不断言（慢 runner 量级漂移大）
+      const before2 = await page.evaluate(() => (window.__bytes['dom-patches'] || 0));
+      const shifts0 = await page.evaluate(() => window.__shiftPatches);
+      for (let i = 0; i < 10; i++) {
+        await page.evaluate(() => { const el = window.__q('#vwrap'); el.scrollTop += 29; });
+        await settle(500);
+      }
+      await settle(1200);
+      const perStep = ((await page.evaluate(() => (window.__bytes['dom-patches'] || 0))) - before2) / 10;
+      const shifts = (await page.evaluate(() => window.__shiftPatches)) - shifts0;
+      out.perf = Object.assign(out.perf || {}, { vlistSlowPerStepBytes: +perStep.toFixed(0), vlistShiftPatches: shifts });
+      out.checks.vlist_shiftdiff = shifts >= 1;
     }
 
     out.bytes = await page.evaluate(() => window.__bytes).catch(() => ({}));

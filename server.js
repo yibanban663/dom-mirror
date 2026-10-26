@@ -1977,6 +1977,11 @@ async function runSession(ws, req, lifecycle) {
     if (!items.length) return;
     const out = await withTimeout(page.evaluate((list) => {
       const out2 = [];
+      // v0.23 窗口平移检测：inner 补丁先与上次下发的子元素序列比对——虚拟滚动
+      // 整窗重建的形态是 old.slice(k) ≡ new 前段（下移，删头+尾部新增）或反向
+      // （上移）。命中则发 O(增量) 的 delHead+append / prepend+delTail，不命中
+      // 回退整段 inner。prev 序列按容器 id 记忆（≤32 容器防内存）
+      if (!window.__xyKids) window.__xyKids = new Map();
       for (const it of list) {
         try {
           const ref = (it.key !== undefined && String(it.key)[0] === '#') ? Number(String(it.key).slice(1)) : it.path;
@@ -1985,8 +1990,47 @@ async function runSession(ws, req, lifecycle) {
           if (live.nodeType === 3) live = live.parentElement;
           if (!live || live.nodeType !== 1) continue;
           const cl = window.__xy.sanitizeClone(live);
-          const html = (it.outer !== undefined) ? cl.outerHTML : cl.innerHTML;
-          if (html) out2.push((it.outer !== undefined) ? { id: ref, path: it.path, outer: html } : { id: typeof ref === 'number' ? ref : undefined, path: it.path, inner: html });
+          if (it.outer !== undefined) {
+            const html = cl.outerHTML;
+            if (html) out2.push({ id: ref, path: it.path, outer: html });
+            continue;
+          }
+          const kids = [...cl.children].map(c2 => c2.outerHTML);
+          // 比对用规范化串：虚拟滚动每轮整窗重建，data-xy-id 随元素新建而变化，
+          // 内容本体相同——剥离 id 属性后比对（发送内容保留原串，新行携带新 id）
+          const norm = (h2) => h2.replace(/ data-xy-id="\d+"/g, '');
+          const kidsN = kids.map(norm);
+          const kidsKey = (typeof ref === 'number' ? '#' + ref : 'p' + it.path) + ':kids';
+          const prev = window.__xyKids.get(kidsKey);
+          if (prev && prev.length >= 4 && kidsN.length >= 4 && window.__xyKids.size <= 32) {
+            // 下移检测：old.slice(k) ≡ new[0..len-k)
+            let shift = 0;
+            for (let k = 1; k <= prev.length - 4; k++) {
+              if (prev.slice(k).every((h3, i) => h3 === kidsN[i]) && prev.length - k <= kidsN.length) { shift = k; break; }
+            }
+            if (shift > 0) {
+              const tail = kids.slice(prev.length - shift).join('');
+              window.__xyKids.set(kidsKey, kidsN);
+              if (tail) out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, delHead: shift, append: tail });
+              else out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, delHead: shift });
+              continue;
+            }
+            // 上移检测：new 尾段 ≡ old[0..len-k)
+            let shift2 = 0;
+            for (let k = 1; k <= prev.length - 4; k++) {
+              if (prev.slice(0, prev.length - k).every((h3, i) => h3 === kidsN[i + k]) && prev.length - k <= kidsN.length) { shift2 = k; break; }
+            }
+            if (shift2 > 0) {
+              const head = kids.slice(0, shift2).join('');
+              window.__xyKids.set(kidsKey, kidsN);
+              if (head) out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, prepend: head, delTail: shift2 });
+              else out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, delTail: shift2 });
+              continue;
+            }
+          }
+          window.__xyKids.set(kidsKey, kidsN);
+          const html = cl.innerHTML;
+          if (html) out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, inner: html });
         } catch (e) {}
       }
       return out2;
@@ -1998,7 +2042,9 @@ async function runSession(ws, req, lifecycle) {
     if (lastPatchSent.size > 500) lastPatchSent.clear();
     const out2 = out.filter(p => {
       const key = (p.id !== undefined ? 'o#' + p.id : 'p:' + (p.path ?? '')) + (p.outer !== undefined ? ':o' : ':i');
-      const html = p.outer !== undefined ? p.outer : p.inner;
+      // v0.23：inner 去重用规范化串（剥离 data-xy-id）——虚拟滚动整窗重建时
+      // 内容相同但元素新建导致 id 全变，原文比对必然 miss 而重复整窗下发
+      const html = p.outer !== undefined ? p.outer : (p.inner !== undefined ? p.inner.replace(/ data-xy-id="\d+"/g, '') : JSON.stringify(p));
       if (lastPatchSent.get(key) === html) return false;
       lastPatchSent.set(key, html);
       return true;
