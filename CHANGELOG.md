@@ -1,3 +1,21 @@
+# v0.14.0
+
+- Shadow DOM：open 影子根以声明式 <template shadowrootmode> 内联（客户端 setHTMLUnsafe
+  解析重建，innerHTML 已不解析声明式影子 DOM）；attachShadow 补丁覆盖注入后新建组件，
+  现存影子根每快照兜底观察；影子内变化上溯最外层宿主重发 outer。修复产品级 shadow
+  retargeting 缺陷：事件穿出影子边界时 e.target 被重定向为宿主，影子内输入此前永远
+  不同步——所有输入类监听改以 composedPath()[0] 取真实目标。
+- 同源 iframe：内容序列化进 srcdoc（同一 sanitize 与 /m 资源改写），客户端在 iframe
+  文档挂同一套转发监听，元素 id 与主文档同一空间；iframe 内指针坐标按 frameElement
+  链换算主视口。跨域 iframe 显示等尺寸占位块（不转发，文档声明）。
+- canvas 2D 指令流：注入后创建的 2D 上下文记录绘制指令（方法/样式/渐变定义+色标/
+  图像/ImageData 序列化），60ms 合并以 canvas-ops 下发，客户端同序重放（图像加载完成
+  整环重放）。不可序列化画布、注入前上下文与 WebGL 回退位图捕获；canvasStream:false
+  可整体关闭。渐变经 create*+addColorStop 指令与 @g 索引引用重建。
+- 新增回归：shadow（声明式影子/影子内点击输入/延迟挂载/影子 canvas 捕获 5 步）、
+  iframe（srcdoc 内联/iframe 内点击输入/跨域占位 4 步）、canvas2d（双模式像素/动画/
+  带宽对比）。既有 node-id/P0/scroll/select/data-boundary/Vikunja 回归保持绿。
+
 # v0.13.0
 
 - IME 中文输入：客户端 compositionstart/update/end 镜像到源站——组合期 CDP

@@ -21,6 +21,8 @@ export interface MirrorOptions {
   /** Defaults to embedded; demo keeps the mode controls and statistics. */
   presentation?: 'embedded' | 'demo';
   obfuscate?: boolean;
+  /** Mirror canvases with 2D contexts created after injection as draw-command streams (default true); others fall back to bitmap capture. */
+  canvasStream?: boolean;
   /** Remove these named attributes from mirrored elements, including html/body metadata. */
   redactAttributes?: string[];
   /** Synchronous, trusted host identity. Empty/null/undefined or errors reject the WS upgrade. */

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>canvas 2d stream</title>
+<style>
+  body { font: 14px Arial, sans-serif; padding: 24px; color: #16263a; }
+  canvas { border: 1px solid #ccd; margin: 6px 0; }
+  button { padding: 6px 14px; }
+  #state { color: #0a5; }
+</style>
+</head>
+<body>
+<h3>canvas 2d</h3>
+<!-- 先于镜像注入创建：位图兜底通道 -->
+<canvas id="legacy" width="220" height="40"></canvas>
+<button id="mk">create live canvas</button>
+<div id="state">ready</div>
+<script>
+  // legacy canvas（页面加载即绘制）
+  {
+    const c = document.getElementById('legacy').getContext('2d');
+    c.fillStyle = '#e76f51';
+    c.fillRect(6, 6, 200, 28);
+    c.fillStyle = '#fff';
+    c.font = 'bold 13px Arial';
+    c.fillText('legacy-bitmap', 52, 25);
+  }
+  // 流 canvas：用户点击创建（此刻镜像注入已完成，getContext 走指令流 patch），
+  // 动画柱状 + 渐变 + 文本
+  document.getElementById('mk').addEventListener('click', () => {
+    if (document.getElementById('live')) return;
+    const el = document.createElement('canvas');
+    el.id = 'live';
+    el.width = 320;
+    el.height = 120;
+    document.body.insertBefore(el, document.getElementById('state'));
+    const c = el.getContext('2d');
+    document.getElementById('state').textContent = 'live-mounted';
+    let t = 0;
+    const grad = () => {
+      const g = c.createLinearGradient(0, 0, 320, 0);
+      g.addColorStop(0, '#2a9d8f');
+      g.addColorStop(1, '#264653');
+      return g;
+    };
+    const draw = () => {
+      c.clearRect(0, 0, 320, 120);
+      for (let i = 0; i < 12; i++) {
+        const h2 = 20 + ((i * 37 + t * 11) % 80);
+        c.fillStyle = (i % 3 === 0) ? grad() : '#e9c46a';
+        c.fillRect(8 + i * 26, 110 - h2, 18, h2);
+      }
+      c.fillStyle = '#264653';
+      c.font = 'bold 12px Arial';
+      c.fillText('tick ' + t, 10, 14);
+      t++;
+    };
+    draw();
+    setInterval(draw, 120);
+    document.getElementById('state').textContent = 'live-mounted';
+  });
+</script>
+</body>
+</html>

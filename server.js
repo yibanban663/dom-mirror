@@ -88,6 +88,145 @@ const PAGE_HELPERS = `(() => {
     const origRaf = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = (cb) => origRaf((t) => { window.__xyRafCount++; try { cb(t); } catch (e) {} });
   }
+  // Shadow DOM（v0.14）：patch attachShadow——注入之后新创建的组件影子根也能被
+  // 观察与序列化（变化并入现有补丁通道）。必须放在 __xy 守卫之前（重注入时守卫
+  // 会提前 return，patch 只需装一次）。closed 影子根只观察，序列化仅覆盖 open。
+  if (!window.__xyShadowPatched) {
+    window.__xyShadowPatched = true;
+    const origAttach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (init) {
+      const sr = origAttach.call(this, init);
+      try { if (sr && window.__xyObserveShadow) window.__xyObserveShadow(sr); } catch (e) {}
+      return sr;
+    };
+  }
+  // 同源 iframe（v0.14）：capture 捕获 iframe load（load 不冒泡但 capture 可见），
+  // 新文档就绪即挂 observer——否则注入后导航/新建的 iframe 内容变化不可见。
+  if (!window.__xyIframeHooked) {
+    window.__xyIframeHooked = true;
+    window.addEventListener('load', (e) => {
+      const t = e.target;
+      if (t && t.tagName === 'IFRAME' && window.__xyObserveIframe) {
+        try { window.__xyObserveIframe(t); } catch (err) {}
+      }
+    }, true);
+  }
+  // canvas 2D 指令流（v0.14）：patch getContext——注入之后创建的 2d 上下文走
+  // 绘制指令记录与远端重放（带宽远低于位图轮询，任意 DPR 清晰）。注入前已创建
+  // 的上下文无法拦截，连同不可序列化参数（跨域图源/Path2D/滤镜）的画布一并回退
+  // 到现有位图捕获。WebGL 始终走位图。必须在 __xy 守卫之前（patch 只装一次）。
+  if (!window.__xyCanvasPatched && ${config.canvasStream ? 'true' : 'false'}) {
+    window.__xyCanvasPatched = true;
+    const XY_DRAW_METHODS = new Set(['clearRect', 'fillRect', 'strokeRect', 'beginPath', 'closePath', 'moveTo', 'lineTo', 'arc', 'arcTo', 'rect', 'ellipse', 'quadraticCurveTo', 'bezierCurveTo', 'fill', 'stroke', 'clip', 'save', 'restore', 'translate', 'rotate', 'scale', 'setTransform', 'transform', 'drawImage', 'fillText', 'strokeText', 'setLineDash', 'roundRect', 'putImageData', 'createLinearGradient', 'createRadialGradient', 'createPattern']);
+    const XY_SET_PROPS = new Set(['fillStyle', 'strokeStyle', 'lineWidth', 'font', 'globalAlpha', 'globalCompositeOperation', 'textAlign', 'textBaseline', 'lineJoin', 'lineCap', 'miterLimit', 'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY', 'lineDashOffset', 'direction', 'imageSmoothingEnabled']);
+    const origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+      const ctx = origGetContext.call(this, type, attrs);
+      try {
+        if (type === '2d' && ctx && !ctx.__xyPatched && window.__xy) {
+          const canvas = this;
+          const gradients = [];
+          let pending = [];
+          let flushTimer = null;
+          const opaque = (why) => { try { canvas.__xyOpaque2d = true; canvas.__xyOpaqueWhy = why; } catch (e) {} };
+          const ser = (v, depth) => {
+            if (v === null || v === undefined) return v;
+            const t2 = typeof v;
+            if (t2 === 'number' || t2 === 'boolean' || t2 === 'string') return v;
+            if (Array.isArray(v)) return depth > 2 ? (opaque('array-depth'), null) : v.map(x => ser(x, depth + 1));
+            if (v instanceof CanvasGradient) {
+              const g = v.__xyG;
+              return (g === undefined) ? (opaque('grad-no-id'), null) : '@g' + g;
+            }
+            if (v instanceof HTMLImageElement || v instanceof HTMLCanvasElement) {
+              try {
+                if (v instanceof HTMLImageElement) {
+                  const src = v.currentSrc || v.src;
+                  if (!src || !/^data:|^https?:|^\\//.test(src)) { opaque('img-src'); return null; }
+                  if (/^http/.test(src) && v.crossOrigin !== 'anonymous') { opaque('img-crossorigin'); return null; }
+                  return { __img: src };
+                }
+                return { __img: v.toDataURL('image/png') };
+              } catch (e) { opaque('img-throw'); return null; }
+            }
+            if (v instanceof ImageData) {
+              try {
+                let bin = '';
+                const d8 = v.data;
+                for (let i = 0; i < d8.length; i += 0x8000) bin += String.fromCharCode.apply(null, d8.subarray(i, i + 0x8000));
+                return { __imgd: { w: v.width, h: v.height, b64: btoa(bin) } };
+              } catch (e) { opaque('imgd-throw'); return null; }
+            }
+            opaque('unknown:' + Object.prototype.toString.call(v));
+            return null;
+          };
+          const push = (op) => {
+            pending.push(op);
+            if (!flushTimer) flushTimer = setTimeout(() => {
+              flushTimer = null;
+              try {
+                if (pending.length && window.__xyCanvasOps && !canvas.__xyOpaque2d) window.__xyCanvasOps([{ id: window.__xy.idOf(canvas), reset: canvas.__xyNeedReset ? 1 : undefined, ops: pending }]);
+                canvas.__xyNeedReset = false;
+              } catch (e) {}
+              pending = [];
+            }, 60);
+          };
+          // 不用 Proxy 包装上下文（原生 brand check/内部路径会崩渲染进程）：
+          // 直接在实例上替换绘制方法（bind 原实现，this 恒为原生对象）与
+          // 拦截样式属性赋值（实例级访问器遮蔽原型访问器）。
+          for (const m of XY_DRAW_METHODS) {
+            const orig = ctx[m];
+            if (typeof orig !== 'function') continue;
+            ctx[m] = function (...args) {
+              try {
+                if (m === 'createLinearGradient' || m === 'createRadialGradient') {
+                  const result = orig.apply(ctx, args);
+                  // 渐变定义与色标都作为指令下发（客户端同序重建），返回值携带索引供样式引用
+                  const idx = gradients.push({ m, a: args.map(x => ser(x, 0)) }) - 1;
+                  push([m].concat(args.map(x => ser(x, 0))));
+                  try {
+                    result.__xyG = idx;
+                    const origACS = result.addColorStop.bind(result);
+                    result.addColorStop = function (off, col) {
+                      try { push(['__ac', idx, ser(off, 0), ser(col, 0)]); } catch (e) {}
+                      return origACS(off, col);
+                    };
+                  } catch (e) { opaque('grad-expando'); }
+                  return result;
+                }
+                if (m === 'createPattern') {
+                  opaque('pattern');
+                  return orig.apply(ctx, args);
+                }
+                push([m].concat(args.map(x => ser(x, 0))));
+              } catch (e) {}
+              return orig.apply(ctx, args);
+            };
+          }
+          for (const p2 of XY_SET_PROPS) {
+            // 样式属性是原型访问器：用原型描述符读写原生值（own defineProperty
+            // 遮蔽后不能再 ctx[p2]= 赋值——会递归触发自己的 setter）
+            const proto = Object.getPrototypeOf(ctx);
+            const d = Object.getOwnPropertyDescriptor(proto, p2) || Object.getOwnPropertyDescriptor(ctx, p2);
+            Object.defineProperty(ctx, p2, {
+              configurable: true,
+              get() { return (d && d.get) ? d.get.call(ctx) : ctx['__xyV_' + p2]; },
+              set(value) {
+                try { push(['$' + p2, ser(value, 0)]); } catch (e) {}
+                if (d && d.set) d.set.call(ctx, value);
+                else { ctx['__xyV_' + p2] = value; }
+              },
+            });
+          }
+          canvas.__xyStream2d = true;
+          canvas.__xyNeedReset = true;
+          ctx.__xyPatched = true;
+          return ctx;
+        }
+      } catch (e) {}
+      return ctx;
+    };
+  }
   if (window.__xy) return;
   const ORIGIN_PREFIX = ${JSON.stringify(ORIGIN_BASE.origin)};
   // 节点 ID 登记（v0.12）：id 与 DOM 位置解耦——元素移动/插入/删除后 id 不变，
@@ -139,7 +278,11 @@ const PAGE_HELPERS = `(() => {
     }
   }
   function sanitizeClone(root) {
-    const clone = root.cloneNode(true);
+    // ShadowRoot 不能直接 cloneNode（Chromium 抛错，且 cloneNode 不复制影子子树）：
+    // 逐子节点克隆成 fragment；live 查询（selects/controls/canvas）仍走原 root
+    const clone = (root.nodeType === 11)
+      ? (() => { const f = document.createDocumentFragment(); for (const c of root.childNodes) f.appendChild(c.cloneNode(true)); return f; })()
+      : root.cloneNode(true);
     // 注释不参与元素路径，直接删除，避免下发非展示内容。
     const walker = document.createTreeWalker(clone, NodeFilter.SHOW_COMMENT);
     const comments = [];
@@ -179,9 +322,19 @@ const PAGE_HELPERS = `(() => {
       };
       walk(clone);
     }
-    const liveCanvases = root.nodeType === 1 && root.querySelectorAll ? (root.tagName === 'CANVAS' ? [root] : [...root.querySelectorAll('canvas')]) : [];
+    const liveCanvases = root.nodeType === 1 && root.querySelectorAll ? (root.tagName === 'CANVAS' ? [root] : [...root.querySelectorAll('canvas')]) : (root.nodeType === 11 ? [...root.querySelectorAll('canvas')] : []);
     const cloneCanvases = clone.querySelectorAll ? [...clone.querySelectorAll('canvas')] : [];
     cloneCanvases.forEach((c, i) => {
+      // v0.14 指令流画布：镜像保留 <canvas>（带尺寸与标记，客户端重放绘制指令），
+      // 位图兜底只覆盖非流画布（注入前创建/不可序列化/WebGL）
+      try {
+        if (liveCanvases[i] && liveCanvases[i].__xyStream2d && !liveCanvases[i].__xyOpaque2d) {
+          c.setAttribute('data-xy-canvas-stream', '1');
+          c.setAttribute('width', String(liveCanvases[i].width || 300));
+          c.setAttribute('height', String(liveCanvases[i].height || 150));
+          return;
+        }
+      } catch (e) {}
       try {
         const img = document.createElement('img');
         img.src = liveCanvases[i].toDataURL('image/png');
@@ -196,17 +349,59 @@ const PAGE_HELPERS = `(() => {
     // v0.12：镜像元素携带 data-xy-id。克隆树与源站树按同一跳过规则（SCRIPT/
     // NOSCRIPT/TEMPLATE、已删除的注释）并行游走；canvas→img 替换后的 img 占用
     // 原画布的 id（canvas-tile 按 id 找回镜像 img）。文本节点不参与。
-    if (root.nodeType === 1) {
+    // v0.14：Shadow DOM 内联——源站元素的 open shadowRoot 以声明式
+    // <template shadowrootmode="open"> 挂进克隆（客户端重解析时浏览器自动
+    // attachShadow 重建影子树，样式/事件原生隔离）；影子子树递归走同一
+    // sanitizeClone（嵌套 shadow 由此覆盖）。shadowrootmode 模板在对齐游走中跳过。
+    if (root.nodeType === 1 || root.nodeType === 11) {
       try {
+        const isShadowTpl = (c) => c.tagName === 'TEMPLATE' && c.hasAttribute && c.hasAttribute('shadowrootmode');
         const liveKids = (p) => [...p.children].filter(c => !XY_SKIP.has(c.tagName.toUpperCase()));
+        const cloneKids = (p) => [...p.children].filter(c => !isShadowTpl(c));
         const stamp = (ln, cn) => {
           if (cn.nodeType !== 1 || ln.nodeType !== 1) return;
-          try { cn.setAttribute('data-xy-id', String(idOf(ln))); } catch (e) {}
-          const lc = liveKids(ln), cc = [...cn.children];
+          try {
+            cn.setAttribute('data-xy-id', String(idOf(ln)));
+            if (ln.shadowRoot) {
+              const t = document.createElement('template');
+              t.setAttribute('shadowrootmode', 'open');
+              // DocumentFragment 无 innerHTML 属性：过一手临时 div 取序列化
+              const d = document.createElement('div');
+              d.appendChild(sanitizeClone(ln.shadowRoot));
+              t.innerHTML = d.innerHTML;
+              cn.prepend(t);
+            }
+            // 同源 iframe 内联（v0.14）：内容序列化进 srcdoc（剥 script/事件属性
+            // 与主文档同一 sanitize；样式随 link/style 进 srcdoc，资源 URL 已由
+            // fixUrl 改写为 /m 代理）。跨域/不可访问 → 等尺寸占位块。
+            if (ln.tagName === 'IFRAME') {
+              let doc = null;
+              try { doc = ln.contentDocument; } catch (e) {}
+              if (doc && doc.body && doc.readyState !== 'loading') {
+                const styles = [...doc.querySelectorAll('style')].map(s2 => s2.textContent).join('\\n');
+                const bodyHtml = sanitizeClone(doc.body).outerHTML;
+                cn.setAttribute('srcdoc', '<!doctype html><html><head><style>' + styles + '</style></head>' + bodyHtml + '</html>');
+              } else if (!doc) {
+                // 跨域（访问抛错/返回 null）：占位块保留原盒子尺寸与节点 id
+                try {
+                  const r = ln.getBoundingClientRect();
+                  const ph = document.createElement('div');
+                  ph.setAttribute('data-xy-id', String(idOf(ln)));
+                  ph.setAttribute('data-xy-iframe-blocked', '1');
+                  ph.style.cssText = 'box-sizing:border-box;border:1px dashed #b9c3d2;background:#f3f6fa;color:#68758c;display:flex;align-items:center;justify-content:center;font:13px sans-serif;min-height:40px;width:' + Math.round(r.width) + 'px;height:' + Math.round(r.height) + 'px';
+                  ph.textContent = '跨源内容不转发（占位）';
+                  cn.replaceWith(ph);
+                } catch (e) {}
+              }
+              // 可访问但仍在 loading：本轮不内联，load 事件触发宿主 outer 补丁
+            }
+          } catch (e) {}
+          const lc = liveKids(ln), cc = cloneKids(cn);
           const n = Math.min(lc.length, cc.length);
           for (let i = 0; i < n; i++) stamp(lc[i], cc[i]);
         };
-        stamp(root, clone);
+        if (root.nodeType === 1) stamp(root, clone);
+        else for (let i = 0; i < Math.min(root.children.length, clone.children.length); i++) stamp(root.children[i], clone.children[i]);
       } catch (e) {}
     }
     return clone;
@@ -254,6 +449,68 @@ const PAGE_HELPERS = `(() => {
         if (!n) return null;
       }
       return n;
+    },
+    // Shadow DOM 观察（v0.14）：MutationObserver 的 subtree 不穿透 shadow 边界，
+    // 每个影子根挂独立 observer，变化并入同一补丁通道（patchOf 上溯宿主）。
+    // attachShadow patch（见文件头）负责注入之后新建的影子根；这里在每次
+    // 快照/导航时全量兜底收集已存在的影子根（含嵌套）。
+    observeShadow(sr) {
+      try {
+        if (!sr || sr.__xyObs) return;
+        const obs = new MutationObserver((recs) => {
+          const out = [];
+          for (const r of recs) { try { const p2 = window.__xy.patchOf(r); if (p2) out.push(p2); } catch (e) {} }
+          if (out.length) window.__xyPatch(out);
+        });
+        obs.observe(sr, { subtree: true, childList: true, attributes: true, characterData: true });
+        sr.__xyObs = obs;
+      } catch (e) {}
+    },
+    observeShadows() {
+      try {
+        const stack = [document.body];
+        while (stack.length) {
+          const n = stack.pop();
+          if (!n || !n.querySelectorAll) continue;
+          for (const el of n.querySelectorAll('*')) {
+            if (el.shadowRoot) { window.__xy.observeShadow(el.shadowRoot); stack.push(el.shadowRoot); }
+          }
+        }
+      } catch (e) {}
+    },
+    // 同源 iframe 文档观察（v0.14）：load 事件（window capture 钩子）后挂 observer；
+    // 内容变更经 patchOf 上溯到 frameElement（宿主 iframe）发 outer 补丁。
+    observeIframe(iframeEl) {
+      try {
+        const doc = iframeEl && iframeEl.contentDocument;
+        if (!doc || !doc.documentElement || doc.__xyObs) return;
+        const obs = new MutationObserver((recs) => {
+          const out = [];
+          for (const r of recs) { try { const p2 = window.__xy.patchOf(r); if (p2) out.push(p2); } catch (e) {} }
+          if (out.length) window.__xyPatch(out);
+        });
+        obs.observe(doc.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+        doc.__xyObs = obs;
+      } catch (e) {}
+    },
+    observeIframes() {
+      try {
+        for (const f of document.body.querySelectorAll('iframe')) window.__xy.observeIframe(f);
+      } catch (e) {}
+    },
+    // 递归收集（穿透 open shadow root）：canvas 捕获等按元素查询的通道
+    allDeep(root, selector) {
+      const out = [];
+      try {
+        const stack = [root];
+        while (stack.length) {
+          const n = stack.pop();
+          if (!n || !n.querySelectorAll) continue;
+          out.push(...n.querySelectorAll(selector));
+          for (const el of n.querySelectorAll('*')) if (el.shadowRoot) stack.push(el.shadowRoot);
+        }
+      } catch (e) {}
+      return out;
     },
     // v4 真文本快照：镜像 DOM 携带真实文本，客户端用源站同款 CSS/字体本地渲染
     // ——布局/动画/悬停/打字/图标全部原生，与服务端渲染零耦合（构造性一致）。
@@ -327,6 +584,33 @@ const PAGE_HELPERS = `(() => {
         }
         return { full: true, why: record.type + ':docEl:' + (record.attributeName || '') + ':' + (target && target.nodeName) };
       }
+      // Shadow 内变更（v0.14）：上溯到最外层 light-DOM 宿主，重发宿主 outer——
+      // 镜像端整体替换宿主，声明式 template 随重解析重建影子树（嵌套 shadow
+      // 由序列化递归覆盖）。innerHTML 替换不会重建已存在的 shadow root。
+      try {
+        if (typeof target.getRootNode === 'function' && target.getRootNode() !== document) {
+          let host = target;
+          while (host && typeof host.getRootNode === 'function' && host.getRootNode() !== document) {
+            host = host.getRootNode().host;
+          }
+          if (host && host !== document.body && host.isConnected) {
+            const hp = pathOf(host);
+            if (hp === null) return { full: true, why: 'shadowHost:noPath' };
+            return { path: hp, id: idOf(host), outer: 1 };
+          }
+        }
+      } catch (e) {}
+      // 同源 iframe 内变更（v0.14）：上溯 frameElement，重发 iframe outer（新 srcdoc）
+      try {
+        if (target.ownerDocument && target.ownerDocument !== document) {
+          const fe = target.ownerDocument.defaultView && target.ownerDocument.defaultView.frameElement;
+          if (fe && fe.isConnected) {
+            const fp = pathOf(fe);
+            if (fp === null) return { full: true, why: 'iframe:noPath' };
+            return { path: fp, id: idOf(fe), outer: 1 };
+          }
+        }
+      } catch (e) {}
       // 快照占位符(data-xy-space)自身的任何变更（含位置校正的 style 属性）都不是业务变更。
       // 实测：②相位给 spacer 写 style 时它还在树上，flush 时已被还原离树——
       // attributes 记录绕过了下面的 childList spacer 过滤，被当成 noPath→full→重同步→
@@ -794,7 +1078,18 @@ async function runSession(ws, req, lifecycle) {
                   if (el && el.nodeType === 3) el = el.parentElement;
                   if (!el || !el.getBoundingClientRect) return null;
                   const r = el.getBoundingClientRect();
-                  return { dx: r.left - ax, dy: r.top - ay };
+                  // v0.14：iframe 内元素的视口坐标是 iframe 坐标系，CDP 派发需要
+                  // 主视口坐标——沿 frameElement 链逐层累加 iframe 偏移（嵌套覆盖）
+                  let offX = 0, offY = 0;
+                  let node = el;
+                  while (node && node.ownerDocument && node.ownerDocument !== document) {
+                    const fe = node.ownerDocument.defaultView && node.ownerDocument.defaultView.frameElement;
+                    if (!fe) break;
+                    const fr = fe.getBoundingClientRect();
+                    offX += fr.left; offY += fr.top;
+                    node = fe;
+                  }
+                  return { dx: r.left + offX - ax, dy: r.top + offY - ay };
                 } catch (e) { return null; }
               }, m.aid !== undefined ? m.aid : m.apath, m.ax, m.ay).catch(() => null);
               if (tr) { mx += tr.dx; my += tr.dy; }
@@ -1110,6 +1405,18 @@ async function runSession(ws, req, lifecycle) {
           sendJson({ type: 'scroll-sync', sx: st.sx, sy: st.sy, scrolls: st.scrollers || [] });
         });
       } catch (e) {}
+      // v0.14：canvas 2D 指令流上行通道（60ms 合并批量下发 canvas-ops）
+      try {
+        await page.exposeFunction('__xyCanvasOps', (batches) => {
+          if (!domActive || ws.readyState !== 1 || mode !== 'dom') return;
+          if (!Array.isArray(batches)) return;
+          const payload = JSON.stringify({ type: 'canvas-ops', batches });
+          if (payload.length > 512 * 1024) return; // 防御：异常巨批丢弃（正常批 << 64KiB）
+          ws.send(payload);
+          ws._bytes = (ws._bytes || 0) + payload.length;
+          ws._chunks = (ws._chunks || 0) + 1;
+        });
+      } catch (e) {}
       domExposed = true;
     }
     domActive = true;
@@ -1128,6 +1435,10 @@ async function runSession(ws, req, lifecycle) {
         if (out.length) window.__xyPatch(out);
       });
       window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      // v0.14：现存 shadow root 全量兜底观察（attachShadow patch 覆盖此后新建的）
+      if (window.__xy && window.__xy.observeShadows) window.__xy.observeShadows();
+      // v0.14：现存同源 iframe 文档观察（load 钩子覆盖此后加载的）
+      if (window.__xy && window.__xy.observeIframes) window.__xy.observeIframes();
     }).catch(() => {});
     // v4：dom 快照零截图（文本/输入框外观由客户端原生渲染，字体由源站 CSS 自带）。
     // frame 模式仍需整页截图作条带底板。
@@ -1267,12 +1578,16 @@ async function runSession(ws, req, lifecycle) {
         const list = await withTimeout(page.evaluate(() => {
           const out = [];
           try {
-            for (const c of document.body.querySelectorAll('canvas')) {
+            // v0.14：穿透 open shadow root 收集画布（影子内组件图表同捕获）
+            const canvases = (window.__xy && window.__xy.allDeep) ? window.__xy.allDeep(document.body, 'canvas') : [...document.body.querySelectorAll('canvas')];
+            for (const c of canvases) {
+              // v0.14：指令流画布（注入后 2d 上下文且可序列化）走 canvas-ops 重放，
+              // 不进位图捕获通道
+              if (c.__xyStream2d && !c.__xyOpaque2d) continue;
               const r = c.getBoundingClientRect();
               if (r.width < 8 || r.height < 8) continue;
               if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
               const path = window.__xy.pathOf(c);
-              if (path === null) continue;
               out.push({ id: window.__xy.idOf(c), path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
               if (out.length >= 3) break;
             }
@@ -1291,7 +1606,9 @@ async function runSession(ws, req, lifecycle) {
         const nowMs = Date.now();
         for (const it of list) {
           // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
-          const st0 = lastSigs.get(it.path);
+          // （v0.14：键改为节点 id——影子内画布 path 可为 null）
+          const sigKey = it.id !== undefined ? it.id : it.path;
+          const st0 = lastSigs.get(sigKey);
           if (st0 && st0.nextAt && nowMs < st0.nextAt) continue;
           const shot = await withTimeout(cdp.send('Page.captureScreenshot', {
             format: 'png',
@@ -1303,23 +1620,23 @@ async function runSession(ws, req, lifecycle) {
           try {
             if (sharp) {
               const { info, data } = await sharp(Buffer.from(shot.data, 'base64')).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-              const prev = lastSigs.get(it.path);
+              const prev = lastSigs.get(sigKey);
               if (prev && prev.w === info.width && prev.h === info.height && prev.data && prev.data.equals(data)) changed = false;
               else if (prev) { prev.w = info.width; prev.h = info.height; prev.data = data; }
-              else lastSigs.set(it.path, { w: info.width, h: info.height, data, unchanged: 0, nextAt: 0 });
+              else lastSigs.set(sigKey, { w: info.width, h: info.height, data, unchanged: 0, nextAt: 0 });
             } else {
-              const prev = lastSigs.get(it.path);
+              const prev = lastSigs.get(sigKey);
               if (prev && prev.b64 === shot.data) changed = false;
               else if (prev) prev.b64 = shot.data;
-              else lastSigs.set(it.path, { b64: shot.data, unchanged: 0, nextAt: 0 });
+              else lastSigs.set(sigKey, { b64: shot.data, unchanged: 0, nextAt: 0 });
             }
           } catch (e) {}
           if (!changed) {
-            const st = lastSigs.get(it.path);
+            const st = lastSigs.get(sigKey);
             if (st) { st.unchanged = (st.unchanged || 0) + 1; st.nextAt = Date.now() + Math.min(3600, 450 * Math.pow(2, st.unchanged)); }
             continue;
           }
-          const st2 = lastSigs.get(it.path);
+          const st2 = lastSigs.get(sigKey);
           if (st2) { st2.unchanged = 0; st2.nextAt = 0; }
           if (ws.readyState === 1) {
             const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, url: 'data:image/png;base64,' + shot.data });

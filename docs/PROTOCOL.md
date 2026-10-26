@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.13.0）
+# WebSocket 协议（实现版本 0.14.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
 
@@ -46,6 +46,7 @@
 | `download-begin` | `id,name,size?` | 源站下载开始（size 在文件就绪重发时给出）；id 为下载 guid |
 | `download-chunk` | `id,b64` | 下载内容分块（≤48KiB base64） |
 | `download-end` | `id,ok,name?,size?,error?` | 下载完成（客户端 Blob + a[download] 保存）或失败/取消 |
+| `canvas-ops` | `batches` | 2D 指令流（0.14.0）：batches 为 `[{id,reset?,ops}]`；ops 为 `[方法,...参数]` / `['$属性',值]` / `['__ac',渐变idx,offset,color]`；渐变引用 `'@g<idx>'`，图像 `{__img:src}`，ImageData `{__imgd:{w,h,b64}}`。客户端在镜像 canvas 上同序重放 |
 | `pong` | `t` | 回显 ping 时间戳 |
 | `error` | `msg,code?,terminal?` | 会话建立、事件处理或通道错误 |
 
@@ -94,3 +95,9 @@ HTML/CSS/属性和值可能携带业务数据。frame 并非纯像素保密协�
 - 上传：客户端本地 File 经 WS 分块（≤48KiB/条）上行，服务端按宿主配置校验扩展名白名单（`upload.extensions`，默认文本/图片/办公文档/zip）与大小上限（`upload.maxBytes`，默认 8MiB），落**会话私有临时目录**（文件名 basename 收口）后经 CDP `DOM.setFileInputFiles` 交给源站页面并派发 change；会话结束临时目录整体删除，不落盘留存。上传内容对源站表现为普通用户文件，源站自身的病毒扫描/配额策略照常生效。
 - 下载：源站下载事件（`Page.downloadWillBegin/Progress`）落地同一会话临时目录，完成后按 ≤48KiB 分块下行并**立即删除**服务端副本；大小上限 `download.maxBytes`（默认 32MiB），超限/取消以下行 error 通知。文件名 basename + 目录包含校验防路径逃逸；客户端以 Blob + `a[download]` 保存，不执行内容。
 - 病毒扫描钩子不在协议范围内：宿主可在 `close` 之外对会话临时目录策略另行约束（目录生命周期即会话生命周期）。
+
+## Shadow DOM、iframe 与 canvas（0.14.0）
+
+- **Shadow DOM**：源站元素的 open shadowRoot 以声明式 `<template shadowrootmode="open">` 内联进镜像 HTML；客户端以 `setHTMLUnsafe` 解析重建影子树（`innerHTML` 不再解析声明式影子 DOM）。影子内变化上溯最外层 light 宿主重发 outer（整体替换重建影子树——影子内焦点会在重发时丢失，已知限制）。closed 影子根不序列化。影子内元素的输入/组合事件经 composedPath 取真实目标后按 id 转发；影子内 canvas 与滚动容器参与捕获与上报。attachShadow 被补丁，注入之后新建的组件影子根同样被观察。
+- **同源 iframe**：内容序列化进 `srcdoc`（与主文档同一 sanitize：剥 script/事件属性、资源 URL 改写 /m 代理）；镜像 iframe 是独立浏览上下文，客户端在其文档上挂同一套转发监听（指针/输入/组合/功能键），元素 id 与主文档同一空间；iframe 内指针坐标按 frameElement 链换算到主视口。**跨域 iframe 不转发**：显示等尺寸占位块并记日志。iframe 内部滚动的懒加载跟随为已知限制。
+- **canvas 2D 指令流**：注入之后创建的 2D 上下文记录绘制指令（方法调用与样式属性赋值，渐变定义+色标、图像源、ImageData 均序列化），60ms 合并以 `canvas-ops` 下发，客户端在镜像 canvas 同序重放（图像异步加载完成后整环重放）。不可序列化参数（跨域图源/Pattern/滤镜/未知对象）的画布、注入前已创建的上下文与 WebGL 一律回退位图捕获。指令环上限 1024 条（超限截断，clearRect 循环类图表天然幂等）。宿主可用 `canvasStream:false` 关闭整条指令流（全部走位图）。
