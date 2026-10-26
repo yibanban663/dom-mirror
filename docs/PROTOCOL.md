@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.16.0）
+# WebSocket 协议（实现版本 0.17.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
 
@@ -12,9 +12,9 @@
 |---|---|---|
 | `hello` | `dpr,w,h,resume?` | 首次上报和后续调整像素比/视口；DPR 1–3，宽 320–2560，高 240–1600 |
 | `mode` | `mode` | 切换 dom/frame；重复当前模式可请求全量重同步 |
-| `dom` | `kind,id?,path?,value?` | input/change 值同步；v0.12 起按 id 定位（path 为过渡回退，下版删除）；保留 click 处理，当前客户端指针走 mouse |
+| `dom` | `kind,id?,path?,value?,html?` | input/change 值同步；v0.12 起按 id 定位（path 为过渡回退，下版删除）；kind `ce` 为 contenteditable 内容同步（html=元素 innerHTML，服务端 setInnerHTML+派发 input）；保留 click 处理，当前客户端指针走 mouse |
 | `mouse` | `action,x,y,button?,buttons?,dx?,dy?,aid?,ax?,ay?` | move/down/up/wheel；坐标为视口 CSS 像素，aid/ax/ay 校正服务端元素锚点偏移（v0.12 起锚点按 id） |
-| `key` | `action,key?,text?` | 特殊按键或文本键入；action 为 down/up |
+| `key` | `action,key?,text?` | 特殊按键或文本键入；action 为 down/up；text 为单字符原文（键盘型应用：焦点不在输入控件时客户端转发，服务端 CDP 派发到真实焦点） |
 | `scroll` | `x,y,inner?` | 页面及内部容器滚动；inner 为 `{id,top,left}` 对象数组（v0.12；旧元组 `[path,top,left]` 仅过渡期兼容） |
 | `scrolltop` | 无 | 服务端页面回顶部 |
 | `repaint` | `x,y,w,h` | 请求服务端页面坐标区域的像素重绘 |
@@ -36,6 +36,7 @@
 | `mode` | `mode` | 通道切换确认 |
 | `dom-snapshot` | `css,html,title,w,h,tiles,frame,docClass,docAttrs,sx,sy,scrollers,bodyId` | 全量镜像；html 元素携带 `data-xy-id`，bodyId 为镜像根对应的源站 body id；frame 模式附带 PNG 条带底板。css 按文档序收集（style/link 交错保持原级联顺序，adopted 排最后），其中 url() 与元素资源 URL 一并改写为 /m 代理路径；客户端对 css+html 与上一次完全相同的快照跳过整树重建（仅跟随滚动/标题），导航兜底重拍不再整页闪动 |
 | `dom-patches` | `patches` | 子树 innerHTML/outerHTML 补丁，元素携带 id 与 path（id 为主，path 过渡回退） |
+| `dom-props` | `props` | v0.17：程序化表单态补丁 `{id,checked?,value?,sel?}`——源站 JS 直改 checked/value（MutationObserver 盲区）由原型 setter 劫持捕获，60ms 合并下发；客户端静默应用（焦点中元素的 value 除外，防打断本地编辑） |
 | `doc-class` | `cls` | 更新镜像根 class |
 | `scroll-sync` | `sx,sy,scrolls` | 服务端滚动位置；scrolls 为 `{id,top,left}` 对象数组 |
 | `canvas-tile` | `id,path,url` | 更新 canvas 对应镜像图片 |

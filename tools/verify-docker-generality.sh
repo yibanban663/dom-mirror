@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 通用性基准：六类业务形态，逐 case 独立镜像服务 + 等价断言（会话隔离，避免串扰）
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+image=${IMAGE:-dom-mirror:local}
+evidence=${EVIDENCE_DIR:-"$repo/artifacts/generality"}
+run_id="dom-mirror-gen-$(date +%s)-$$"
+server="$run_id-server"
+client="$run_id-client"
+proxy_env=(-e HTTP_PROXY= -e HTTPS_PROXY= -e http_proxy= -e https_proxy= -e ALL_PROXY= -e all_proxy=)
+mkdir -p "$evidence"
+
+cleanup() {
+  status=$?
+  trap - EXIT
+  docker logs "$server" > "$evidence/server-last.log" 2>&1 || true
+  docker rm -f "$client" "$server" >/dev/null 2>&1 || true
+  docker network rm "$run_id" >/dev/null 2>&1 || true
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+docker network create --internal "$run_id" >/dev/null
+
+overall=0
+for c in forms editor media layout style canvas; do
+  docker rm -f "$server" >/dev/null 2>&1 || true
+  case "$c" in
+    forms) page=gen-forms.html ;; editor) page=gen-editor.html ;; media) page=gen-media-pix.html ;;
+    layout) page=gen-layout.html ;; style) page=gen-style.html ;; canvas) page=gen-canvas-key.html ;;
+  esac
+  docker run -d --name "$server" --network "$run_id" --network-alias mirror \
+    "${proxy_env[@]}" \
+    --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=2 \
+    -e ORIGIN_URL="http://127.0.0.1:8077/$page" \
+    "$image" timeout 240 node demo/server.js >/dev/null
+  for f in gen-forms.html gen-editor.html gen-media-pix.html gen-layout.html gen-style.html \
+           gen-style-base.css gen-style-imp.css gen-style-late.css gen-canvas-key.html \
+           pic-a.png pic-b.png pic-c.png; do
+    docker cp "$repo/test/fixtures/$f" "$server:/app/protected/$f"
+  done
+  docker exec "$server" node -e '
+    (async () => {
+      for (let i = 0; i < 40; i++) {
+        try { if ((await fetch("http://127.0.0.1:8088/", {signal: AbortSignal.timeout(1000)})).ok) return; } catch {}
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      process.exit(1);
+    })().catch(() => process.exit(1));
+  '
+  if docker run --rm --name "$client" --network "$run_id" --memory 2g \
+    "${proxy_env[@]}" \
+    -e CASE="$c" -e MIRROR_URL=http://mirror:8088/ -e EVIDENCE_DIR=/tmp/ev \
+    --entrypoint timeout "$image" 200 node tools/verify-generality.cjs > "$evidence/$c.json" 2> "$evidence/$c.err"; then
+    echo "gen_${c}_OK"
+  else
+    echo "gen_${c}_FAIL"
+    cat "$evidence/$c.json" || true
+    head -3 "$evidence/$c.err" || true
+    docker logs "$server" > "$evidence/server-$c.log" 2>&1 || true
+    overall=1
+  fi
+done
+exit $overall

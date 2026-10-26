@@ -1,3 +1,24 @@
+# v0.17.0
+
+- 通用性基准 verify-generality：六类业务形态（表单全形态+程序化改态/富文本与键盘
+  应用/响应式图片与媒体属性/固定栏+内层滚动+弹层+原生 dialog/动态样式 @import 与
+  adopted 与后挂 link/2D 画布+WebGL+2000 行大表）以源站↔镜像等价断言回归，
+  逐 case 断言走"服务端真实状态回显"黑盒出口。
+- 相对路径资源改写：fixUrl 对无根斜杠的相对地址按文档基址解析后统一走 /m 代理
+  （此前仅根绝对/绝对源站地址——相对 src 404）；srcset/imagesrcset 多候选逐项
+  改写；CSS image-set("x.png" Nx) 引号串二次扫描覆盖。
+- contenteditable 键入同步（kind `ce`）：客户端本地原生编辑保流畅，内容 120ms
+  节流整体回传，服务端 setInnerHTML+派发 input；iframe 内同路径。
+- 键盘分派上移 document 捕获层：合成 pointer 事件不产生原生聚焦，焦点常留
+  body，keydown 不过 shadow root——键盘型应用（终端/游戏/canvas/页面级快捷键）
+  的字符与功能键此前全量丢失。焦点在输入控件/富文本时仍走本地编辑+值同步
+  （防双输入），并补发 keyup（按键状态类应用需要）。
+- 程序化表单态捕获（rrweb 同款原型 setter 劫持）：源站 JS 直改 checked/value
+  （全选/过滤器/回填）不触发 MutationObserver，此前镜像永久丢态。原型 setter
+  包装捕获，60ms 合并 last-write-wins 下发 dom-props，客户端静默应用（焦点中
+  元素的 value 跳过防打断）。
+- PROTOCOL 0.17.0：dom-props/ce/key text 文档化；check.js 收录新 fixture。
+
 # v0.16.0
 
 - 同内容快照去重：服务端导航后 +600ms/+1500ms 兜底重拍在静态页上产出字节级相同

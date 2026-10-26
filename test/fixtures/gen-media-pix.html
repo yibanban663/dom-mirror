@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-media-pix</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+    img { margin: 4px; border: 1px solid #ccd; }
+    #bgset { margin-top: 8px; width: 60px; height: 60px; border: 1px solid #99a; }
+    #report { margin-top: 12px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h3>响应式图片与媒体</h3>
+  <img id="i1" src="pic-a.png" alt="" width="40">
+  <img id="i2" srcset="pic-b.png 1x, pic-b.png 2x" alt="" width="40">
+  <picture><source srcset="pic-c.png" type="image/png"><img id="i3" alt="" width="40"></picture>
+  <div id="bgset"></div>
+  <video id="v1" poster="pic-a.png" width="80" height="45" muted></video>
+  <div id="report">REPORT:</div>
+  <script>
+    document.getElementById('bgset').style.backgroundImage = 'image-set("pic-b.png" 1x)';
+    const report = () => {
+      const ids = ['i1', 'i2', 'i3'];
+      const parts = ids.map((id) => {
+        const im = document.getElementById(id);
+        return id + ':' + (im.naturalWidth > 0 ? im.currentSrc.split('/').pop() : 'FAIL');
+      });
+      const v = document.getElementById('v1');
+      parts.push('poster:' + ((v.poster || '').split('/').pop() || 'FAIL'));
+      document.getElementById('report').textContent = 'REPORT:' + parts.join('|') + '|bg:' + getComputedStyle(document.getElementById('bgset')).backgroundImage.slice(0, 40);
+    };
+    setTimeout(report, 2500);
+    document.body.addEventListener('click', () => setTimeout(report, 300));
+  </script>
+</body>
+</html>

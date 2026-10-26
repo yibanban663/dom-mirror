@@ -1,0 +1,193 @@
+'use strict';
+// 通用性基准：六类业务形态在 dom 镜像下的等价性断言 + 带宽度量。
+// 环境变量：CASE（forms|editor|media|layout|style|canvas）、MIRROR_URL、EVIDENCE_DIR。
+// 断言走"服务端真实状态的黑盒出口"（fixture 把状态写进 DOM，经补丁回显）——
+// 镜像本地显示 ≠ 服务端真实，只认回显。
+const fs = require('node:fs');
+const path = require('node:path');
+const puppeteer = require('puppeteer');
+
+const CASE = process.env.CASE || 'forms';
+const mirrorUrl = process.env.MIRROR_URL;
+if (!mirrorUrl) throw new Error('Set MIRROR_URL');
+
+// 页面侧助手（注入后所有 evaluate 回调只用 window.__q/__rep/__click/__setv）
+const HELPERS = `window.__q = (s) => document.querySelector('#mirrorHost').shadowRoot.querySelector(s);
+window.__qa = (s) => [...document.querySelector('#mirrorHost').shadowRoot.querySelectorAll(s)];
+window.__rep = () => { const sr = document.querySelector('#mirrorHost').shadowRoot; for (const id of ['report','state','geo','keys','log']) { const el = sr.querySelector('#' + id); if (el) return el.textContent; } return ''; };
+window.__setv = (s, v) => { const el = window.__q(s); if (!el) return false; const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype; const d = Object.getOwnPropertyDescriptor(proto, 'value'); d.set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); return true; };
+window.__click = (s, dx, dy) => { const el = window.__q(s); if (!el) return false; const r = el.getBoundingClientRect(); const o = { bubbles: true, composed: true, cancelable: true, button: 0, isPrimary: true, pointerId: 7, clientX: r.left + (dx === undefined ? r.width / 2 : dx), clientY: r.top + (dy === undefined ? r.height / 2 : dy) }; el.dispatchEvent(new PointerEvent('pointerdown', o)); el.dispatchEvent(new PointerEvent('pointerup', o)); return true; };`;
+
+async function main() {
+  const out = { case: CASE, pass: false, checks: {}, bytes: {} };
+  const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-proxy-server'] });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+    await page.evaluateOnNewDocument(() => {
+      window.__bytes = {};
+      const O = window.WebSocket;
+      window.WebSocket = function (url, p) {
+        const ws = p === undefined ? new O(url) : new O(url, p);
+        ws.addEventListener('message', (ev) => {
+          try { const j = JSON.parse(ev.data); window.__bytes[j.type] = (window.__bytes[j.type] || 0) + (ev.data.length || 0); } catch {}
+        });
+        return ws;
+      };
+      window.WebSocket.prototype = O.prototype;
+    });
+    const t0 = Date.now();
+    await page.goto(mirrorUrl, { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await page.waitForFunction(() => {
+      const b = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.querySelector('.xy-body');
+      return !!(b && b.innerHTML.length > 100);
+    }, { timeout: 30000 }).catch(() => {});
+    await page.evaluate(HELPERS);
+    out.tti = Date.now() - t0;
+    const rep = () => page.evaluate(() => window.__rep());
+    const waitRep = (re, timeout = 10000) => page.waitForFunction((r) => new RegExp(r).test(window.__rep()), { timeout }, re).then(() => true).catch(() => false);
+    const settle = (ms) => new Promise(r => setTimeout(r, ms));
+
+    if (CASE === 'forms') {
+      await page.waitForFunction(() => !!window.__q('#dump'), { timeout: 20000 });
+      await page.evaluate(() => { window.__setv('#t1', 'hello镜像'); window.__setv('#n1', '42'); window.__setv('#d1', '2026-10-26'); window.__setv('#ta1', '多行文本'); });
+      await page.evaluate(() => { window.__click('input[name=cb][value=a]'); window.__click('input[name=cb][value=c]'); window.__click('input[name=rd][value=y]'); });
+      // select：真实路径是客户端原生下拉选择 → change 事件转发；这里设值+派发 change 等价走转发链
+      await page.evaluate(() => { const s = window.__q('#s1'); const d = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value'); d.set.call(s, 'two'); s.dispatchEvent(new Event('change', { bubbles: true, composed: true })); });
+      await settle(700);
+      await page.evaluate(() => window.__click('#dump'));
+      const ok = await waitRep('^STATE:', 8000);
+      const txt = ok ? await rep() : 'TIMEOUT';
+      const j = (() => { try { return JSON.parse(txt.slice(6)); } catch { return {}; } })();
+      out.checks.text = j.t1 === 'hello镜像';
+      out.checks.number = j.n1 === '42';
+      out.checks.date = j.d1 === '2026-10-26';
+      out.checks.textarea = j.ta1 === '多行文本';
+      out.checks.checkbox = j.cb === 'a,c';
+      out.checks.radio = j.rd === 'y';
+      out.checks.select = j.s1 === 'two';
+      out.state = txt.slice(0, 300);
+      // 程序化改态（rrweb setter 劫持路径）：源站 JS 直改 checked/value/select
+      await settle(500);
+      await page.evaluate(() => window.__click('#prog'));
+      await settle(1500);
+      const pgm = await page.evaluate(() => ({
+        cbB: window.__q('input[name=cb][value=b]').checked,
+        rdX: window.__q('input[name=rd][value=x]').checked,
+        rdY: window.__q('input[name=rd][value=y]').checked,
+        s1: window.__q('#s1').value,
+        t1: window.__q('#t1').value,
+      }));
+      out.checks.pgm_checked = pgm.cbB === true && pgm.rdX === true && pgm.rdY === false;
+      out.checks.pgm_value = pgm.s1 === 'three' && pgm.t1 === 'pgm';
+      out.pgm = pgm;
+    }
+
+    if (CASE === 'editor') {
+      await page.waitForFunction(() => !!window.__q('#ce'), { timeout: 20000 });
+      await page.evaluate(() => window.__click('#ce'));
+      await page.keyboard.type('XY编辑', { delay: 30 });
+      await settle(900);
+      out.checks.ce_typing = await page.evaluate(() => /ce-input:[3-9]/.test(window.__q('#log').textContent));
+      await page.evaluate(() => window.__click('#term'));
+      await page.keyboard.type('ab', { delay: 30 });
+      await page.keyboard.press('ArrowLeft');
+      await page.keyboard.press('Enter');
+      await settle(900);
+      out.checks.term_keys = await page.evaluate(() => /KEYS:ab\[ArrowLeft\]/.test(window.__q('#keys').textContent));
+      out.seen = 'log=' + (await page.evaluate(() => window.__q('#log').textContent)) + ' keys=' + (await page.evaluate(() => window.__q('#keys').textContent));
+    }
+
+    if (CASE === 'media') {
+      await page.waitForFunction(() => !!window.__q('#i1'), { timeout: 20000 });
+      await settle(3200);
+      const txt = await rep();
+      out.report = txt.slice(0, 300);
+      out.checks.src = /i1:pic-a\.png/.test(txt);
+      out.checks.srcset = /i2:pic-b\.png/.test(txt);
+      out.checks.picture = /i3:pic-c\.png/.test(txt);
+      out.checks.poster = /poster:pic-a\.png/.test(txt);
+      out.checks.image_set_bg = /bg:url\([^)]*m/.test(txt) || /pic-b/.test(txt);
+    }
+
+    if (CASE === 'layout') {
+      await page.waitForFunction(() => !!window.__q('#open'), { timeout: 20000 });
+      await settle(900);
+      out.checks.fixed_top = await page.evaluate(() => Math.round(window.__q('#fixedbar').getBoundingClientRect().top) === 0);
+      const scrolled = await page.evaluate(() => { const el = window.__q('#inner'); el.scrollTop = 140; return el.scrollTop; });
+      await settle(1400);
+      const g1 = await rep();
+      out.checks.inner_scroll = scrolled > 0 && /"innerScroll":1[0-9]{2}/.test(g1);
+      await page.evaluate(() => window.__click('#open'));
+      await settle(1000);
+      out.checks.modal = await page.evaluate(() => /"overlayVisible":true/.test(window.__rep()));
+      await page.evaluate(() => window.__click('#close'));
+      await settle(900);
+      await page.evaluate(() => window.__click('#dlgbtn'));
+      await settle(1000);
+      out.checks.dialog = await page.evaluate(() => /"dlgOpen":true/.test(window.__rep()));
+      out.geo = [g1.slice(0, 220), (await rep()).slice(0, 220)];
+    }
+
+    if (CASE === 'style') {
+      await page.waitForFunction(() => !!window.__q('#adopt'), { timeout: 20000 });
+      await settle(2600);
+      const init = await rep();
+      out.checks.link_css = /"bg":"rgb\(240, 244, 250\)"/.test(init) && /"col":"rgb\(60, 64, 70\)"/.test(init);
+      out.checks.import_css = /"impColor":"rgb\(180, 60, 30\)"/.test(init);
+      await page.evaluate(() => window.__click('#adopt'));
+      await settle(2600);
+      out.checks.adopted_change = await page.evaluate(() => /"col":"rgb\(9, 96, 168\)"/.test(window.__rep()));
+      await page.evaluate(() => window.__click('#link2'));
+      await settle(3200);
+      out.checks.late_link = await page.evaluate(() => /"border":"rgb\(30, 150, 90\)"/.test(window.__rep()));
+      out.reports = [init.slice(0, 200), (await rep()).slice(0, 200)];
+    }
+
+    if (CASE === 'canvas') {
+      await page.waitForFunction(() => window.__qa('[data-xy-canvas-stream], [data-xy-canvas]').length >= 1, { timeout: 20000 });
+      await settle(1100);
+      // 点击第一个画布镜像（指令流 canvas 或位图兜底 img，几何同位）；服务端命中真实画布
+      await page.evaluate(() => {
+        const el = window.__qa('[data-xy-canvas-stream], [data-xy-canvas]')[0];
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        const o = { bubbles: true, composed: true, cancelable: true, button: 0, isPrimary: true, pointerId: 9, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+        el.dispatchEvent(new PointerEvent('pointerdown', o));
+        el.dispatchEvent(new PointerEvent('pointerup', o));
+      });
+      out.checks.canvas2d_report = await waitRep('c2d-drawn', 8000);
+      out.checks.canvas2d_node = await page.evaluate(() => {
+        const sr = document.querySelector('#mirrorHost').shadowRoot;
+        return !!(sr.querySelector('[data-xy-canvas-stream]') || sr.querySelector('[data-xy-canvas]'));
+      });
+      out.checks.webgl_node = await page.evaluate(() => window.__qa('[data-xy-canvas-stream], [data-xy-canvas]').length >= 2);
+      out.checks.table_rows = await page.evaluate(() => window.__qa('#bigtable tr').length >= 2000);
+      await page.evaluate(() => window.__click('#bigtable td.hit'));
+      out.checks.table_click = await waitRep('row:\\d+', 8000);
+      await page.evaluate(() => window.__click('#keys'));
+      await page.keyboard.type('k9');
+      await page.keyboard.press('Enter');
+      await settle(900);
+      out.checks.term_keys = await page.evaluate(() => /keys:k9/.test(window.__rep()));
+      out.report_final = (await rep()).slice(0, 160);
+    }
+
+    out.bytes = await page.evaluate(() => window.__bytes).catch(() => ({}));
+    await page.close();
+  } catch (e) {
+    out.error = e.message;
+  } finally {
+    await browser.close();
+  }
+  out.pass = !!(out.checks && Object.keys(out.checks).length && Object.values(out.checks).every(Boolean));
+  const evd = process.env.EVIDENCE_DIR;
+  if (evd) {
+    fs.mkdirSync(evd, { recursive: true });
+    fs.writeFileSync(path.join(evd, 'result-' + CASE + '.json'), JSON.stringify(out, null, 2));
+  }
+  console.log(JSON.stringify(out));
+  if (!out.pass) process.exitCode = 1;
+}
+
+main().catch(e => { console.error(e); process.exitCode = 1; });

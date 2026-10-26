@@ -485,7 +485,7 @@
           // 客户端输入框聚焦：pointer 事件不触发原生聚焦（mousedown 被吞时），
           // 键盘输入需要客户端焦点
           const t = realTarget(e);
-          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) { try { t.focus({ preventScroll: true }); } catch (e2) {} }
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable || (t.tabIndex !== undefined && t.tabIndex >= 0 && t.tagName !== 'BODY'))) { try { t.focus({ preventScroll: true }); } catch (e2) {} }
           syncPointerScroll(t);
           window.__xyDrag = anchorOf(t);
           const a = window.__xyDrag;
@@ -527,7 +527,7 @@
           doc.addEventListener('pointerdown', (e) => {
             if (e.button !== 0 || !e.isPrimary) return;
             const t = iTarget(e);
-            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) { try { t.focus({ preventScroll: true }); } catch (e2) {} }
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable || (t.tabIndex !== undefined && t.tabIndex >= 0 && t.tagName !== 'BODY'))) { try { t.focus({ preventScroll: true }); } catch (e2) {} }
             syncPointerScroll(t);
             window.__xyDrag = anchorOf(t);
             const a = window.__xyDrag;
@@ -553,6 +553,11 @@
           doc.addEventListener('click', (e) => { const t = iTarget(e); if (t.closest && t.closest('a, form')) e.preventDefault(); });
           doc.addEventListener('input', (e) => {
             const t = iTarget(e);
+            if (t && t.isContentEditable) {
+              const cid = idOfMirror(t);
+              if (cid !== null) send({ type: 'dom', kind: 'ce', id: cid, html: t.innerHTML });
+              return;
+            }
             if (!t.matches || !t.matches('input, select, textarea')) return;
             if (t.tagName === 'INPUT' && t.type === 'file') return;
             const id = idOfMirror(t);
@@ -580,11 +585,20 @@
             if (id !== null) send({ type: 'composition-commit', id, text: e.data || '' });
           });
           doc.addEventListener('keydown', (e) => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
             if (e.isComposing || e.keyCode === 229) return;
             const k = e.key;
             if (k === 'Enter' || k === 'Escape' || k === 'Tab' || k.indexOf('Arrow') === 0 || k === 'Backspace' || k === 'Delete') {
+              e.__xyKeyFwd = true;
               send({ type: 'key', action: 'down', key: k });
               if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
+              return;
+            }
+            // 键盘型应用（iframe 内）：非输入元素焦点时字符转发（与主文档同语义）
+            if (k.length === 1) {
+              const t = iTarget(e);
+              const inField = !!(t && t.matches && (t.matches('input, textarea, select') || t.isContentEditable || (t.closest && t.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))));
+              if (!inField) { e.preventDefault(); e.__xyKeyFwd = true; send({ type: 'key', action: 'down', text: k }); }
             }
           }, true);
         };
@@ -620,8 +634,25 @@
         }, true);
       }
       mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
+      // contenteditable（富文本/笔记类）：本地原生编辑保流畅，内容整体（120ms 节流
+      // 尾随合并）同步服务端；服务端 setInnerHTML + 派发 input，应用逻辑照常响应
+      const ceTimers = new Map();
+      const ceSync = (id, el) => {
+        if (ceTimers.has(id)) return;
+        ceTimers.set(id, setTimeout(() => {
+          ceTimers.delete(id);
+          if (!el.isConnected) return;
+          send({ type: 'dom', kind: 'ce', id, html: el.innerHTML });
+        }, 120));
+      };
       mirrorRoot.addEventListener('input', (e) => {
         const t = realTarget(e);
+        if (t && t.isContentEditable) {
+          if (composing && e.isComposing !== false) return;
+          const cid = idOfMirror(t);
+          if (cid !== null) ceSync(cid, t);
+          return;
+        }
         if (!t.matches || !t.matches('input, select, textarea')) return;
         // IME 组合期间（isComposing）的 input 携带拼音串，不做值同步
         if (composing && e.isComposing !== false) return;
@@ -688,27 +719,44 @@
         pendingFocusPatches = [];
         setTimeout(() => applyPatches(q), 30);
       });
-      // 功能键转发：Enter 发送、Escape 关闭、方向键导航等快捷键由服务端页面响应。
-      // 字符输入不走这里（由 input 事件整体同步 value），否则会双输入。
-      mirrorRoot.addEventListener('keydown', (e) => {
+      // 功能键与字符键分派（v0.17 起挂在 document 捕获层）：合成 pointer 事件不产生
+      // 原生聚焦，焦点常留在 body——keydown 不会经过 shadow root，必须文档级捕获。
+      // Enter/Escape/Tab/方向/退格转发服务端（服务端页面响应）；字符输入在输入控件/
+      // 富文本上由 input 事件同步（转发会双输入），焦点在"非输入元素"（键盘型应用：
+      // 终端/游戏/canvas）时字符原文转发服务端 CDP——页面级 keydown 才是真正消费者。
+      const keyForward = (e, isDown) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
         if (e.isComposing || e.keyCode === 229) return; // 输入法组合中的 Enter 是"上屏"，不是发送
         const k = e.key;
-        if (k === 'Enter' || k === 'Escape' || k === 'Tab' || k.indexOf('Arrow') === 0 || k === 'Backspace' || k === 'Delete') {
-          if (k === 'Enter') {
-            // Enter 通常是提交/发送：服务端会清空字段。忘掉本地已键入值，
-            // 否则重同步后 focusin 会把已发送的文字塞回输入框。
-            const t = realTarget(e);
-            const inp = (t.closest && t.closest('input, textarea')) || (t.matches && t.matches('input, textarea') ? t : null);
+        const special = k === 'Enter' || k === 'Escape' || k === 'Tab' || k.indexOf('Arrow') === 0 || k === 'Backspace' || k === 'Delete';
+        const path = (typeof e.composedPath === 'function') ? e.composedPath() : null;
+        const t0 = (path && path.length) ? path[0] : e.target;
+        const inField = !!(t0 && t0.matches && (t0.matches('input, textarea, select') || t0.isContentEditable || (t0.closest && t0.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))));
+        if (special) {
+          if (isDown && k === 'Enter' && inField) {
+            // Enter 通常是提交/发送：服务端会清空字段。忘掉本地已键入值并清空本地值，
+            // 否则重同步/focusin 会把已发送的文字塞回输入框、change 回传写脏服务端。
+            const inp = (t0.closest && t0.closest('input, textarea')) || (t0.matches && t0.matches('input, textarea') ? t0 : null);
             const tid = inp ? idOfMirror(inp) : null;
             if (tid !== null) lastTyped.delete(tid);
-            // 同步清空本地值：失焦时原生 change 事件会回传当前值，
-            // 残留旧值会把服务端已清空的字段重新写脏
             if (inp) inp.value = '';
           }
-          send({ type: 'key', action: 'down', key: k });
-          if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
+          e.__xyKeyFwd = true;
+          send({ type: 'key', action: isDown ? 'down' : 'up', key: k });
+          // Enter/Esc/Tab 不落本地（语义由服务端执行）；Backspace/Delete/方向键
+          // 保持本地编辑生效（输入框本地编辑 + 值同步，服务端同样收到键事件）
+          if (isDown && k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
+          return;
         }
-      }, true);
+        if (k.length === 1) {
+          if (inField) return; // 输入控件/富文本：本地编辑 + input 事件同步
+          e.preventDefault();
+          e.__xyKeyFwd = true;
+          send({ type: 'key', action: isDown ? 'down' : 'up', text: k });
+        }
+      };
+      document.addEventListener('keydown', (e) => keyForward(e, true), true);
+      document.addEventListener('keyup', (e) => keyForward(e, false), true);
       mirrorRoot.addEventListener('mouseleave', () => { closeLocalHole(); }, true);
       // 滚轮转发（根治内层容器滚动失效）：真实应用多为 100vh 布局 + 内层
       // overflow 容器，页面级 scroll 同步永远不触发。wheel 直接送服务端
@@ -1332,6 +1380,28 @@
             // 主题/状态类切换：直改镜像根类名（轻量，不重建）
             mirrorBody.className = 'xy-body ' + (j.cls || '');
           }
+          if (j.type === 'dom-props') {
+            // v0.17：程序化表单态（源站 JS 直改 checked/value，MutationObserver 盲区，
+            // 由原型 setter 劫持捕获下发）。静默应用（不派发事件，避免回环）；
+            // 焦点中的元素跳过 value（访客正在本地编辑，防打断）
+            for (const p of (j.props || [])) {
+              try {
+                const el = mirrorFind(p.id);
+                if (!el || !el.tagName) continue;
+                if (p.checked !== undefined && (el.type === 'checkbox' || el.type === 'radio')) el.checked = !!p.checked;
+                if (p.value !== undefined) {
+                  if (el.tagName === 'SELECT') {
+                    if (Array.isArray(p.sel)) { for (const o of el.options) o.selected = p.sel.includes(o.value); }
+                    else el.value = p.value;
+                  } else if (mirrorRoot.activeElement !== el) {
+                    const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                    const d = Object.getOwnPropertyDescriptor(proto, 'value');
+                    if (d && d.set) d.set.call(el, p.value); else el.value = p.value;
+                  }
+                }
+              } catch (e) {}
+            }
+          }
           if (j.type === 'error') {
             lastErr = j.msg; setStatus('错误: ' + j.msg, false);
             if (j.terminal) {
@@ -1448,12 +1518,16 @@
   })();
 
   const SPECIAL = new Set(['Backspace', 'Enter', 'Tab', 'Escape', 'Delete', 'ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown', 'Home', 'End']);
+  // v0.17：键盘分派已上移 document 捕获层（合成事件不聚焦，keydown 不过 shadow
+  // root）；此处仅兜底未被捕获标记的事件，防止双重转发
   cv.addEventListener('keydown', (e) => {
+    if (e.__xyKeyFwd) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (SPECIAL.has(e.key)) { e.preventDefault(); send({ type: 'key', action: 'down', key: e.key }); return; }
     if (e.key.length === 1) { e.preventDefault(); send({ type: 'key', action: 'down', text: e.key }); }
   });
   cv.addEventListener('keyup', (e) => {
+    if (e.__xyKeyFwd) return;
     if (SPECIAL.has(e.key)) { send({ type: 'key', action: 'up', key: e.key }); return; }
     if (e.key.length === 1) send({ type: 'key', action: 'up', text: e.key });
   });

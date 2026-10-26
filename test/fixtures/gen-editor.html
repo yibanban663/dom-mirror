@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-editor</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+    #ce { border: 1px solid #aab; min-height: 60px; padding: 8px; border-radius: 4px; }
+    #keys { margin-top: 12px; padding: 8px; background: #eef; font-family: Consolas, monospace; min-height: 18px; }
+    #log { margin-top: 8px; font-family: Consolas, monospace; color: #456; }
+  </style>
+</head>
+<body>
+  <h3>富文本与键盘应用</h3>
+  <div id="ce" contenteditable="true">初始内容</div>
+  <div id="term" tabindex="0" style="margin-top:12px;border:1px dashed #99a;padding:8px;">键盘捕获器：点我后打字/方向键</div>
+  <div id="keys">KEYS:</div>
+  <div id="log">LOG:</div>
+  <script>
+    // 键盘型应用（终端/游戏类）：只监听 keydown，自身无可视输入控件
+    const term = document.getElementById('term');
+    const keys = document.getElementById('keys');
+    const log = document.getElementById('log');
+    const seq = [];
+    term.addEventListener('keydown', (e) => {
+      seq.push(e.key.length === 1 ? e.key : '[' + e.key + ']');
+      keys.textContent = 'KEYS:' + seq.join('');
+      if (e.key === 'Enter') { log.textContent = 'LOG:提交 ' + seq.join(''); seq.length = 0; }
+    });
+    document.getElementById('ce').addEventListener('input', () => {
+      log.textContent = 'LOG:ce-input:' + document.getElementById('ce').textContent.length;
+    });
+  </script>
+</body>
+</html>

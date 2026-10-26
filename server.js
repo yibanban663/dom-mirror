@@ -227,6 +227,39 @@ const PAGE_HELPERS = `(() => {
       return ctx;
     };
   }
+  // 表单控件属性 setter 劫持（v0.17，rrweb 同款技术）：源站 JS 以
+  // el.checked = true / el.value = x 直改状态时不产生任何属性变更，
+  // MutationObserver 完全不可见——镜像会永久丢失这类状态（全选按钮/过滤器/
+  // 程序化回填）。包一层原型 setter：原生赋值照常，随后把 {id,状态} 记入
+  // 待发队列（60ms 合并、同节点 last-write-wins），经 __xyPatch 通道下发。
+  if (!window.__xyPropPatched) {
+    window.__xyPropPatched = true;
+    window.__xyPropQ = new Map(); // id -> {id, checked?, value?, sel?}
+    const patchProp = (proto, prop, extract) => {
+      try {
+        const d = Object.getOwnPropertyDescriptor(proto, prop);
+        if (!d || !d.set || !d.get) return;
+        Object.defineProperty(proto, prop, {
+          get: d.get,
+          set: function (v) {
+            d.set.call(this, v);
+            try {
+              if (window.__xy && this.isConnected && this.form !== undefined) {
+                const st = extract(this);
+                if (st) window.__xyPropQ.set(window.__xy.idOf(this), Object.assign({ id: window.__xy.idOf(this) }, st));
+              }
+            } catch (e) {}
+          },
+          configurable: true,
+          enumerable: d.enumerable,
+        });
+      } catch (e) {}
+    };
+    patchProp(window.HTMLInputElement.prototype, 'checked', (el) => (el.type === 'checkbox' || el.type === 'radio') ? { checked: el.checked } : null);
+    patchProp(window.HTMLInputElement.prototype, 'value', (el) => ({ value: String(el.value) }));
+    patchProp(window.HTMLTextAreaElement.prototype, 'value', (el) => ({ value: String(el.value) }));
+    patchProp(window.HTMLSelectElement.prototype, 'value', (el) => ({ value: String(el.value), sel: [...el.selectedOptions].map(o => o.value) }));
+  }
   if (window.__xy) return;
   // 会话源站 origin（pageHelpersFor 按会话替换；多源会话缺省回退只影响绝对地址改写）
   const ORIGIN_PREFIX = "__XY_ORIGIN_PREFIX__";
@@ -263,16 +296,38 @@ const PAGE_HELPERS = `(() => {
     if (v.startsWith('//')) return v;
     if (v.startsWith('/')) return M_BASE + v;
     if (v.startsWith(ORIGIN_PREFIX)) return M_BASE + v.slice(ORIGIN_PREFIX.length);
-    return v;
+    // 相对路径（pic.png、./a/b.png）：按当前文档解析后走代理——站点静态资源大量
+    // 使用相对地址，不改写则客户端按镜像源解析直接 404
+    const p = toProxyUrl(v, location.href);
+    return p === null ? v : p;
+  }
+  // srcset/imagesrcset 多候选（"a.png 1x, b.png 2x"）：逐候选改写，描述符保留
+  function fixSrcset(v) {
+    if (!v) return v;
+    return v.split(',').map((part) => {
+      const t = part.trim();
+      if (!t) return '';
+      const sp = t.search(/\s/);
+      const u = sp < 0 ? t : t.slice(0, sp);
+      const rest = sp < 0 ? '' : t.slice(sp);
+      const fixed = fixUrl(u);
+      return fixed === u ? t : fixed + rest;
+    }).filter(Boolean).join(', ');
   }
   // CSS 文本内 url(...) 改写（字体/背景图）。相对 url() 按其所属样式表地址解析
   // （link 内相对路径相对 css 文件而非页面），随后统一走 /m 代理——否则客户端按
-  // 自己的源解析，webfont/背景图 404 回退默认字体，观感即"颜色不一样"
+  // 自己的源解析，webfont/背景图 404 回退默认字体，观感即"颜色不一样"。
+  // image-set("x.png" 1x) 用引号串而非 url()，二次扫描覆盖（含 -webkit- 前缀）。
   function cssUrlRewrite(cssText, cssBase) {
-    return String(cssText).replace(/url\\(\\s*(['"]?)([^'")]+)\\1\\s*\\)/g, (whole, q, u) => {
+    let out = String(cssText).replace(/url\\(\\s*(['"]?)([^'")]+)\\1\\s*\\)/g, (whole, q, u) => {
       const p = toProxyUrl(u, cssBase);
       return p === null ? whole : 'url(' + q + p + q + ')';
     });
+    out = out.replace(/(image-set\\(|-webkit-image-set\\()\\s*(['"])([^'"]+)\\2/g, (whole, fn, q, u) => {
+      const p = toProxyUrl(u, cssBase);
+      return p === null ? whole : fn + ' ' + q + p + q;
+    });
+    return out;
   }
   // 防抓取编码：文本码点 -> 会话 PUA 置换码点（混淆字体双映射回原字形渲染）。
   // 目标码点在补充平面（0xF0000+），源域全 BMP；域外字符原样透传。
@@ -299,7 +354,11 @@ const PAGE_HELPERS = `(() => {
         try { el.setAttribute('placeholder', encStr(a.value)); } catch (e) {}
         continue;
       }
-      if (a.name === 'href' || a.name === 'src' || a.name === 'action' || a.name === 'poster' || a.name === 'srcset') {
+      if (a.name === 'srcset' || a.name === 'imagesrcset') {
+        try { el.setAttribute(a.name, fixSrcset(a.value)); } catch (e) {}
+        continue;
+      }
+      if (a.name === 'href' || a.name === 'src' || a.name === 'action' || a.name === 'poster') {
         try { el.setAttribute(a.name, fixUrl(a.value)); } catch (e) {}
       }
     }
@@ -1145,6 +1204,15 @@ async function runSession(ws, req, lifecycle) {
                 }
                 return true;
               }
+              if (kind === 'ce') {
+                // contenteditable 内容同步（v0.17）：客户端本地原生编辑保流畅，内容
+                // 整体回传；此处 setInnerHTML + 派发 input，编辑器应用逻辑照常响应。
+                // 不派发 change（CE 规范 change 仅失焦），避免框架重复提交。
+                try { if (el.focus && !el.disabled) el.focus(); } catch (e) {}
+                el.innerHTML = value;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                return true;
+              }
               // React/Vue 受控输入：必须用原型原生 setter 改值，否则框架值追踪器忽略
               // 合成 input 事件，state 不更新 → 表单提交的是空值（实测生产站点
               // 键入即焦点（仅 input 事件）：真实浏览器里用户在某字段打字，该字段必为焦点；
@@ -1158,7 +1226,7 @@ async function runSession(ws, req, lifecycle) {
               if (desc && desc.set) desc.set.call(el, value); else el.value = value;
               el.dispatchEvent(new Event(kind, { bubbles: true }));
               return true;
-            }, m.kind, m.id !== undefined ? m.id : m.path, m.value);
+            }, m.kind, m.id !== undefined ? m.id : m.path, m.kind === 'ce' ? m.html : m.value);
             if (!ok && mode === 'dom') {
               // 防御不变式：失败只做瓦片化全量重同步；明文快照在任何模式下都不下发
               await startDomMirror().catch(() => {});
@@ -1464,11 +1532,17 @@ async function runSession(ws, req, lifecycle) {
         // 串行化处理，避免并发截图竞态
           patchChain = patchChain.then(async () => {
           try {
-            // 轻量主题补丁：html class 变更直改镜像根类名，不进重同步链
-            const dcPatch = patches.find(p => p && p.docClass !== undefined);
-            if (dcPatch) sendJson({ type: 'doc-class', cls: dcPatch.docClass });
-            const rest = patches.filter(p => p && p.docClass === undefined);
-            if (!rest.length) return;
+          // 轻量主题补丁：html class 变更直改镜像根类名，不进重同步链
+          const dcPatch = patches.find(p => p && p.docClass !== undefined);
+          if (dcPatch) sendJson({ type: 'doc-class', cls: dcPatch.docClass });
+          let rest = patches.filter(p => p && p.docClass === undefined);
+          // v0.17：属性补丁（程序化 checked/value）直发，不进结构差分
+          const propPatches = rest.filter(p => p.__xyProp);
+          if (propPatches.length && domActive && ws.readyState === 1) {
+            sendJson({ type: 'dom-props', props: propPatches.map(p => p.__xyProp) });
+          }
+          rest = rest.filter(p => !p.__xyProp);
+          if (!rest.length) return;
             if (rest.some(p => p && p.full)) {
               logger.log('[dbg] full patch why:', patches.filter(p => p && p.full).map(p => p.why || '?').slice(0, 3).join(' | ').slice(0, 200));
               // 全量重同步也必须走瓦片化路径（明文快照在瓦片模式下是防御漏洞）
@@ -1538,6 +1612,14 @@ async function runSession(ws, req, lifecycle) {
         if (out.length) window.__xyPatch(out);
       });
       window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      // v0.17：属性 setter 劫持队列（程序化 checked/value 变更）60ms 合并下发
+      if (window.__xyPropTimer) clearInterval(window.__xyPropTimer);
+      window.__xyPropTimer = setInterval(() => {
+        if (!window.__xyPropQ || !window.__xyPropQ.size) return;
+        const out = [...window.__xyPropQ.values()];
+        window.__xyPropQ.clear();
+        window.__xyPatch(out.map((p) => ({ __xyProp: p })));
+      }, 60);
       // v0.14：现存 shadow root 全量兜底观察（attachShadow patch 覆盖此后新建的）
       if (window.__xy && window.__xy.observeShadows) window.__xy.observeShadows();
       // v0.14：现存同源 iframe 文档观察（load 钩子覆盖此后加载的）

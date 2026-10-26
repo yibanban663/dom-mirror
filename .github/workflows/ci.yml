@@ -89,6 +89,8 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-enhance.sh
       - name: CSS 代理改写/多源会话/快照去重回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-assets.sh
+      - name: 通用性基准（六类业务形态等价断言）
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-generality.sh
       - name: 下拉框节点替换回归
         run: docker run --rm --network none --memory 1g --cpus 2 dom-mirror:ci timeout 30 node tools/verify-select.cjs
       - name: Vikunja 三通道业务回归

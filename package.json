@@ -1,6 +1,6 @@
 {
   "name": "@lizhen-xxaq/dom-mirror",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Remote browser DOM/CSS mirroring with a PNG frame fallback and optional font obfuscation.",
   "license": "Apache-2.0",
   "repository": {

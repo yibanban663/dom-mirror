@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-canvas-key</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+    canvas { border: 1px solid #99a; margin: 4px; }
+    #bigtable { margin-top: 10px; border-collapse: collapse; }
+    #bigtable td { border: 1px solid #dde; padding: 2px 8px; }
+    #report { margin-top: 12px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h3>画布/大表/键盘</h3>
+  <canvas id="c2d" width="120" height="60"></canvas>
+  <canvas id="cgl" width="120" height="60"></canvas>
+  <div id="keys" tabindex="0" style="border:1px dashed #99a;padding:6px;margin-top:8px">键盘捕获器：点我后打字</div>
+  <table id="bigtable"></table>
+  <div id="report">REPORT:</div>
+  <script>
+    const report = (t) => { document.getElementById('report').textContent = 'REPORT:' + t; };
+    // 2D：点击画布出现一次绘制（指令流路径）
+    const c2 = document.getElementById('c2d');
+    c2.addEventListener('pointerdown', (e) => {
+      const r = c2.getBoundingClientRect();
+      const g = c2.getContext('2d');
+      g.fillStyle = 'rgba(30,120,220,0.9)';
+      g.fillRect(e.clientX - r.left - 8, e.clientY - r.top - 8, 16, 16);
+      report('c2d-drawn');
+    });
+    // WebGL：常驻三角形（位图轮询路径）
+    const gl = document.getElementById('cgl').getContext('webgl');
+    if (gl) {
+      gl.clearColor(0.15, 0.55, 0.35, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      report('gl-init');
+    } else report('gl-FAIL');
+    // 键盘捕获
+    const seq = [];
+    document.getElementById('keys').addEventListener('keydown', (e) => {
+      seq.push(e.key.length === 1 ? e.key : '[' + e.key + ']');
+      if (e.key === 'Enter') { report('keys:' + seq.join('')); seq.length = 0; return; }
+      if (seq.length > 40) seq.shift();
+      report('keys:' + seq.join(''));
+    });
+    // 大表（2000 行 × 3 列）：结构规模/首屏性能
+    const tb = document.getElementById('bigtable');
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < 2000; i++) {
+      const tr = document.createElement('tr');
+      for (let c = 0; c < 3; c++) {
+        const td = document.createElement('td');
+        td.textContent = 'r' + i + 'c' + c;
+        if (c === 2) { td.className = 'hit'; td.dataset.row = String(i); }
+        tr.appendChild(td);
+      }
+      frag.appendChild(tr);
+    }
+    tb.appendChild(frag);
+    tb.addEventListener('click', (e) => {
+      const td = e.target.closest('td.hit');
+      if (td) report('row:' + td.dataset.row);
+    });
+  </script>
+</body>
+</html>
