@@ -694,16 +694,24 @@ const PAGE_HELPERS = `(() => {
         }
       }
       // v0.20：body 继承样式还原——镜像根是 div，源站 body{} 规则不命中，裸元素
-      // 此前继承的是"客户端外壳"的字体/颜色（观感偏差与文本度量 1-2px 偏移的
-      // 成因之一）。采集 body 的可继承计算样式随快照下发，客户端写进 .xy-body
+      // 此前继承的是"客户端外壳"的字体/颜色（观感偏差与文本度量偏移的
+      // 成因之一）。采集 body 的可继承计算样式随快照下发，客户端写进 .xy-body。
+      // line-height 特殊处理：计算值是绝对 px，会把源站的"无单位比值"语义压平
+      // （14px 子元素源站 1.5×14=21px，pin 24px 后一律 24px → 表单区整体 +3px
+      // 漂移，实测 password 输入框 top 462.3→465.3）。还原为比值恢复缩放语义。
       let bodyStyle = '';
       try {
         const bs = getComputedStyle(document.body);
         const parts = [];
-        for (const p2 of ['font-family', 'font-size', 'line-height', 'letter-spacing', 'word-spacing', 'color', 'text-align', 'direction', 'white-space']) {
+        for (const p2 of ['font-family', 'font-size', 'letter-spacing', 'word-spacing', 'color', 'text-align', 'direction', 'white-space']) {
           const v = bs.getPropertyValue(p2);
           if (v) parts.push(p2 + ':' + v);
         }
+        const lh = bs.getPropertyValue('line-height');
+        const fs = parseFloat(bs.getPropertyValue('font-size'));
+        if (lh === 'normal') parts.push('line-height:normal');
+        else if (/px$/.test(lh) && fs > 0) parts.push('line-height:' + +(parseFloat(lh) / fs).toFixed(4));
+        else if (lh) parts.push('line-height:' + lh);
         bodyStyle = parts.join(';');
       } catch (e) {}
       // frame（显式像素直出）模式：唯一保留截图的地方——整页 PNG 条带
