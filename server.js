@@ -693,6 +693,19 @@ const PAGE_HELPERS = `(() => {
           docAttrs += ' ' + a.name + '="' + String(a.value).replace(/"/g, '&quot;') + '"';
         }
       }
+      // v0.20：body 继承样式还原——镜像根是 div，源站 body{} 规则不命中，裸元素
+      // 此前继承的是"客户端外壳"的字体/颜色（观感偏差与文本度量 1-2px 偏移的
+      // 成因之一）。采集 body 的可继承计算样式随快照下发，客户端写进 .xy-body
+      let bodyStyle = '';
+      try {
+        const bs = getComputedStyle(document.body);
+        const parts = [];
+        for (const p2 of ['font-family', 'font-size', 'line-height', 'letter-spacing', 'word-spacing', 'color', 'text-align', 'direction', 'white-space']) {
+          const v = bs.getPropertyValue(p2);
+          if (v) parts.push(p2 + ':' + v);
+        }
+        bodyStyle = parts.join(';');
+      } catch (e) {}
       // frame（显式像素直出）模式：唯一保留截图的地方——整页 PNG 条带
       let frame = null;
       if (wantFrame) {
@@ -719,7 +732,7 @@ const PAGE_HELPERS = `(() => {
           frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
         }
       }
-      return { css, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim(), bodyId: idOf(document.body) };
+      return { css, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim(), bodyStyle, bodyId: idOf(document.body) };
     },
 
     // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
@@ -1899,7 +1912,7 @@ async function runSession(ws, req, lifecycle) {
     const cssFixed = snap.css + obfCssBlock;
     const cssSame = (lastCssSent !== null && lastCssSent === cssFixed);
     if (!cssSame) lastCssSent = cssFixed;
-    const payload = JSON.stringify(Object.assign({ type: 'dom-snapshot', css: cssSame ? undefined : cssFixed, cssSame: cssSame || undefined, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [], bodyId: snap.bodyId }));
+    const payload = JSON.stringify(Object.assign({ type: 'dom-snapshot', css: cssSame ? undefined : cssFixed, cssSame: cssSame || undefined, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', bodyStyle: snap.bodyStyle || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [], bodyId: snap.bodyId }));
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;

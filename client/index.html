@@ -376,7 +376,7 @@
     for (const i of String(ref).split('/')) { n = n.children[+i]; if (!n) return null; }
     return n;
   }
-  function buildMirror(css, html, docClass, docAttrs, newBodyId) {
+  function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const host = document.getElementById('mirrorHost');
     if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
     else mirrorRoot = host.shadowRoot;
@@ -405,6 +405,9 @@
     if (typeof mirrorRoot.setHTMLUnsafe === 'function') mirrorRoot.setHTMLUnsafe(mirrorHtml);
     else mirrorRoot.innerHTML = mirrorHtml;
     mirrorBody = mirrorRoot.querySelector('.xy-body');
+    // v0.20：源站 body 的可继承计算样式钉到镜像根——裸元素不再继承客户端外壳
+    // 的字体/颜色（body{} 选择器映射只覆盖源站显式设置的属性）
+    if (bodyStyle && mirrorBody) { try { mirrorBody.style.cssText += ';' + bodyStyle; } catch (e) {} }
     bodyId = (typeof newBodyId === 'number' && Number.isFinite(newBodyId)) ? newBodyId : 1;
     mirrorIds.clear();
     canvasStreams.clear();
@@ -1313,7 +1316,7 @@
               if (ws !== socket || socket.readyState !== 1 || serial !== snapshotSerial) return;
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               if (css) lastCss = css;
-              buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId);
+              buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId, j.bodyStyle);
               snapshotReady = true;
               activate();
               const restoredScroll = document.getElementById('mirrorScroll');

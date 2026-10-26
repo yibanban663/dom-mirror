@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>gen-style</title>
   <style>
-    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; font-family: Georgia, serif; color: rgb(150, 40, 40); }
     #target { padding: 12px; border-radius: 6px; }
     #imp { margin-top: 10px; padding: 10px; }
     #report { margin-top: 12px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
@@ -14,6 +14,7 @@
 <body>
   <div id="target" class="t">目标元素</div>
   <div id="imp">import 元素</div>
+  <div id="inh">裸元素（body 继承：serif / 深红）</div>
   <button id="adopt">adoptedStyleSheets 改色</button>
   <button id="link2">注入新 link</button>
   <div id="report">REPORT:</div>
@@ -21,8 +22,10 @@
     const report = (tag) => {
       const t = getComputedStyle(document.getElementById('target'));
       const i = getComputedStyle(document.getElementById('imp'));
+      const inh = getComputedStyle(document.getElementById('inh'));
       document.getElementById('report').textContent = 'REPORT:' + JSON.stringify({
         tag, bg: t.backgroundColor, col: t.color, border: t.borderTopColor, impColor: i.color, impWeight: i.fontWeight,
+        inhFont: inh.fontFamily, inhColor: inh.color, inhSize: inh.fontSize,
       });
     };
     document.getElementById('adopt').addEventListener('click', () => {

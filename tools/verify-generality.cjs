@@ -96,10 +96,15 @@ async function main() {
       await settle(900);
       out.checks.ce_typing = await page.evaluate(() => /ce-input:[3-9]/.test(window.__q('#log').textContent));
       await page.evaluate(() => window.__click('#term'));
+      const t0 = Date.now();
       await page.keyboard.type('ab', { delay: 30 });
+      let keyRtt = null;
+      await page.waitForFunction(() => /KEYS:a/.test(window.__q('#keys').textContent), { timeout: 8000, polling: 10 })
+        .then(() => { keyRtt = Date.now() - t0; }).catch(() => {});
+      out.perf.keyRttMs = keyRtt; // 键盘型应用首字符回显 RTT（10ms 轮询粒度）
       await page.keyboard.press('ArrowLeft');
       await page.keyboard.press('Enter');
-      await settle(900);
+      await settle(600);
       out.checks.term_keys = await page.evaluate(() => /KEYS:ab\[ArrowLeft\]/.test(window.__q('#keys').textContent));
       // 程序化选区镜像：源站 addRange → 客户端高亮层落在 #para 附近
       await page.evaluate(() => window.__click('#selbtn'));
@@ -187,6 +192,14 @@ async function main() {
       await page.evaluate(() => window.__click('#link2'));
       await settle(3200);
       out.checks.late_link = await page.evaluate(() => /"border":"rgb\(30, 150, 90\)"/.test(window.__rep()));
+      // v0.20：body 继承还原——镜像里的裸元素必须拿到源站 body 的 serif/深红
+      // （此前继承客户端外壳的字体/主题色）
+      out.checks.body_inherit = await page.evaluate(() => {
+        const el = window.__q('#inh');
+        if (!el) return false;
+        const cs = getComputedStyle(el);
+        return /Georgia/i.test(cs.fontFamily) && cs.color === 'rgb(150, 40, 40)';
+      });
       out.reports = [init.slice(0, 200), (await rep()).slice(0, 200)];
     }
 
@@ -278,10 +291,32 @@ async function main() {
       out.dnd_final = (await rep()).slice(0, 120);
     }
 
+    if (CASE === 'vlist') {
+      await page.waitForFunction(() => !!window.__q('#vwrap'), { timeout: 20000 });
+      await settle(1200);
+      const initial = await rep();
+      out.initial = initial.slice(0, 80);
+      // 镜像滚动内层容器 → 服务端跟随换窗 → 补丁回传；计每滚一笔的补丁字节
+      const bytesBefore = await page.evaluate(() => (window.__bytes['dom-patches'] || 0));
+      const scrollBy = async (px) => {
+        await page.evaluate((v) => { const el = window.__q('#vwrap'); el.scrollTop += v; }, px);
+        await settle(1400);
+      };
+      await scrollBy(29 * 12);
+      const b1 = await page.evaluate(() => (window.__bytes['dom-patches'] || 0)) - bytesBefore;
+      await scrollBy(29 * 25);
+      const b2 = await page.evaluate(() => (window.__bytes['dom-patches'] || 0)) - bytesBefore - b1;
+      out.perf = Object.assign(out.perf || {}, { vlistPatchBytesScroll1: b1, vlistPatchBytesScroll2: b2 });
+      out.vlist_final = (await rep()).slice(0, 80);
+      // 功能断言：服务端真实换窗（updates 增长 + first 前移）且窗口行数恒定
+      out.checks.vlist_updates = await page.evaluate(() => /^REPORT:first=\d{2,};updates=[3-9]\d/.test(window.__rep()));
+      out.checks.vlist_rows = await page.evaluate(() => window.__qa('#vwin .vrow').length === 20);
+    }
+
     out.bytes = await page.evaluate(() => window.__bytes).catch(() => ({}));
     // 流畅度/延迟基线（不参与 pass 判定）：主线程帧时间 p95 + 键盘型应用回显 RTT
     try {
-      out.perf = await page.evaluate(async () => {
+      const frames = await page.evaluate(async () => {
         // 帧时间采样 1.2s
         const ft = [];
         await new Promise((res) => {
@@ -296,7 +331,8 @@ async function main() {
         ft.sort((a, b) => a - b);
         return { frameP50: +ft[Math.floor(ft.length * 0.5)].toFixed(1), frameP95: +ft[Math.floor(ft.length * 0.95)].toFixed(1) };
       });
-    } catch (e) { out.perf = { err: String(e).slice(0, 80) }; }
+      out.perf = Object.assign(out.perf || {}, frames);
+    } catch (e) { out.perf = Object.assign(out.perf || {}, { err: String(e).slice(0, 80) }); }
     await page.close();
   } catch (e) {
     out.error = e.message;
