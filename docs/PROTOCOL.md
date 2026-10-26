@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.20.0）
+# WebSocket 协议（实现版本 0.21.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。WS 启用 permessage-deflate（阈值 512B，文本快照/补丁典型 5-10× 缩减）。
 
@@ -23,7 +23,7 @@
 | `upload-begin` | `tid,name,size,fid` | 镜像 file input 选择本地文件后发起上传；tid 为客户端生成传输号，fid 为字段节点 id |
 | `upload-chunk` | `tid,b64` | 上传分块（≤48KiB base64）；服务端校验累计大小 |
 | `upload-end` | `tid` | 分块结束；服务端落会话临时目录并 CDP setFileInputFiles 到远端字段 |
-| `ping` | `t,fp?` | RTT 探测；fp=镜像元素指纹（剔除引擎自建层），服务端与源站比对做分歧自愈 |
+| `ping` | `t,fp?,rum?` | RTT 探测；fp=镜像元素指纹（剔除引擎自建层），服务端与源站比对做分歧自愈；rum=真实会话性能数据（首拍即报、此后 10s 一拍：帧时间 p50/p95、交互到视觉延迟 p50/p95、快照/补丁计数、按消息类型字节），服务端落 [rum] 日志聚合 |
 | `dnd` | `kind,x,y,id?,text?` | v0.19：HTML5 拖拽转发——镜像上 dragstart/over/drop/end 合成到源站（DataTransfer 带 text/plain 载荷；over/drop 目标按坐标命中） |
 | `touch` | `kind,pts` | v0.19：触摸转发——touchstart/move/end 触点坐标 → CDP dispatchTouchEvent（本地 preventDefault 防合成鼠标双事件） |
 | `release` | 无 | 立即结束当前逻辑会话并关闭浏览器；关闭 WS 则进入保留期 |
@@ -86,6 +86,8 @@ DOM 客户端在 pointerdown 之前发送 `scroll`，包括页面位置和目标
 服务端给关闭握手最多 1 秒，未响应则强制终止；不等待对端确认才作废 token。若链路已断开或被强制终止，客户端可能只看到 1006，不能保证取得撤销提示；宿主仍须先拒绝旧凭据。401 是升级前的 HTTP 拒绝，浏览器的 WebSocket API 不提供其 HTTP 状态给页面，因此不能把任意连接失败都当作注销。
 
 页面刷新、关闭重开、服务进程重启不支持恢复；未送达服务端的输入无法保证保留，已提交但未确认的操作需要用户核对。0.10.0 客户端新增同步屏障，须与服务端一起升级。
+
+`POST /rum`（v0.21）：RUM 尾包通道——客户端 pagehide 时 sendBeacon 上报同 ping.rum 结构的会话数据（≤8KB 收口，落 [rum-beacon] 日志，204 应答；同源免预检）。
 
 ## 资源和边界
 

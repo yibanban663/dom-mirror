@@ -1071,6 +1071,18 @@ function handleRequest(req, res) {
     res.end(buf);
     return;
   }
+  // v0.21 RUM 尾包：pagehide 时 sendBeacon('/rum')（text/plain，同源免预检）。
+  // 只落日志聚合，不解析内容、无跨源暴露
+  if (req.method === 'POST' && String(req.url).split('?')[0] === '/rum') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 8192) { body = body.slice(0, 8192); req.destroy(); } });
+    req.on('end', () => {
+      try { logger.log('[rum-beacon] ' + body); } catch (e) {}
+      res.writeHead(204, { 'cache-control': 'no-store' });
+      res.end();
+    });
+    return;
+  }
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
     // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
@@ -1239,6 +1251,11 @@ async function runSession(ws, req, lifecycle) {
     switch (m.type) {
           case 'ping': {
             sendJson({ type: 'pong', t: m.t });
+            // v0.21 RUM：客户端 10s 心跳携带真实会话性能数据（帧时间/交互延迟/
+            // 字节分布），落日志聚合（[rum] 行）；sendBeacon 尾包走 POST /rum
+            if (m.rum && typeof m.rum === 'object') {
+              try { logger.log('[rum] ' + JSON.stringify(m.rum)); } catch (e) {}
+            }
             // v0.18：分歧检测（Timelapse/Dolos 思想）——客户端 ping 携带镜像元素
             // 指纹，与源站比对；持续漂移两拍且距上次自愈 >10s → 自动全量重同步。
             // 把"镜像悄悄坏了"变成"自愈+可观测"（sstats 前打一行日志）

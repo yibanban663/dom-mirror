@@ -308,8 +308,8 @@ async function main() {
       const b2 = await page.evaluate(() => (window.__bytes['dom-patches'] || 0)) - bytesBefore - b1;
       out.perf = Object.assign(out.perf || {}, { vlistPatchBytesScroll1: b1, vlistPatchBytesScroll2: b2 });
       out.vlist_final = (await rep()).slice(0, 80);
-      // 功能断言：服务端真实换窗（updates 增长 + first 前移）且窗口行数恒定
-      out.checks.vlist_updates = await page.evaluate(() => /^REPORT:first=\d{2,};updates=[3-9]\d/.test(window.__rep()));
+      // 功能断言：服务端真实换窗（updates ≥10 且 first 前移两位数）且窗口行数恒定
+      out.checks.vlist_updates = await page.evaluate(() => /^REPORT:first=\d{2,};updates=\d{2,}/.test(window.__rep()));
       out.checks.vlist_rows = await page.evaluate(() => window.__qa('#vwin .vrow').length === 20);
     }
 

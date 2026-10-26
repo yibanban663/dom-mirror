@@ -300,6 +300,41 @@
   let lastFpResync = 0; // 结构指纹重同步限频
   let pendingFocusPatches = [];
   let lastServerHoles = null, holeRafOn = false; // 服务端穿孔区（rAF 持续重申，免疫瓦片覆盖时序） // 聚焦输入期间挂起的补丁（失焦后统一应用）
+  // v0.21 RUM：真实会话性能采集——帧时间滑窗（240 帧）、交互到视觉延迟（发送
+  // 交互→首个被应用的下行消息）、按消息类型字节。10s 心跳随 ping 回传网关日志，
+  // pagehide 时 sendBeacon('/rum')；window.__xyRum 供外部抓取
+  const rum = { frames: [], inputLat: [], bytesBy: {}, snaps: 0, patches: 0, sentAt: 0, t0: Date.now() };
+  window.__xyRum = rum;
+  (function rumRaf() {
+    let prev = performance.now();
+    requestAnimationFrame(function raf(t) {
+      rum.frames.push(t - prev);
+      prev = t;
+      if (rum.frames.length > 240) rum.frames.shift();
+      requestAnimationFrame(raf);
+    });
+  })();
+  const rumInputSent = () => { rum.sentAt = performance.now(); };
+  const rumApplied = () => {
+    if (rum.sentAt) {
+      rum.inputLat.push(performance.now() - rum.sentAt);
+      if (rum.inputLat.length > 40) rum.inputLat.shift();
+      rum.sentAt = 0;
+    }
+  };
+  const rumReport = () => {
+    const pct = (arr, p) => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return +s[Math.min(s.length - 1, Math.floor(s.length * p))].toFixed(1); };
+    return {
+      s: Math.round((Date.now() - rum.t0) / 1000),
+      frameP50: pct(rum.frames, 0.5), frameP95: pct(rum.frames, 0.95),
+      inLatP50: pct(rum.inputLat, 0.5), inLatP95: pct(rum.inputLat, 0.95), inLatN: rum.inputLat.length,
+      snaps: rum.snaps, patches: rum.patches, bytesBy: rum.bytesBy, dpr: window.devicePixelRatio || 1,
+      vw: window.innerWidth, vh: window.innerHeight,
+    };
+  };
+  window.addEventListener('pagehide', () => {
+    try { navigator.sendBeacon('/rum', JSON.stringify(rumReport())); } catch (e) {}
+  });
   // 投机本地回显的当前孔（位图原件保存在 __xyLocalHole.saved，本地即时复原）
   function closeLocalHole() {
     const h = window.__xyLocalHole;
@@ -493,7 +528,7 @@
           syncPointerScroll(t);
           window.__xyDrag = anchorOf(t);
           const a = window.__xyDrag;
-          send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
+          rumInputSent(); send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
         }, true);
         mirrorRoot.addEventListener('pointermove', (e) => {
           if (!e.isPrimary) return;
@@ -535,7 +570,7 @@
             syncPointerScroll(t);
             window.__xyDrag = anchorOf(t);
             const a = window.__xyDrag;
-            send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
+            rumInputSent(); send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
           }, true);
           doc.addEventListener('pointermove', (e) => {
             if (!e.isPrimary) return;
@@ -779,6 +814,7 @@
             if (inp) inp.value = '';
           }
           e.__xyKeyFwd = true;
+          if (isDown) rumInputSent();
           send({ type: 'key', action: isDown ? 'down' : 'up', key: k });
           // Enter/Esc/Tab 不落本地（语义由服务端执行）；Backspace/Delete/方向键
           // 保持本地编辑生效（输入框本地编辑 + 值同步，服务端同样收到键事件）
@@ -789,6 +825,7 @@
           if (inField) return; // 输入控件/富文本：本地编辑 + input 事件同步
           e.preventDefault();
           e.__xyKeyFwd = true;
+          if (isDown) rumInputSent();
           send({ type: 'key', action: isDown ? 'down' : 'up', text: k });
         }
       };
@@ -1142,6 +1179,18 @@
     socket.onerror = () => { if (ws === socket) setStatus('连接错误', false); };
     socket.onmessage = (ev) => {
       if (ws !== socket) return;
+      // v0.21 RUM：按消息类型计字节（前缀探测，不整包二次解析）
+      try {
+        const h = ev.data.length > 44 ? ev.data.slice(0, 44) : ev.data;
+        let t = 'other';
+        if (h.includes('"dom-snapshot"')) t = 'dom-snapshot';
+        else if (h.includes('"dom-patches"')) t = 'dom-patches';
+        else if (h.includes('"canvas-tile"')) t = 'canvas-tile';
+        else if (h.includes('"canvas-ops"')) t = 'canvas-ops';
+        else if (h.includes('"anim-tiles"')) t = 'anim-tiles';
+        else if (h.includes('"scroll-sync"')) t = 'scroll-sync';
+        rum.bytesBy[t] = (rum.bytesBy[t] || 0) + ev.data.length;
+      } catch (e) {}
       {
         try {
           const j = JSON.parse(ev.data);
@@ -1317,6 +1366,8 @@
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               if (css) lastCss = css;
               buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId, j.bodyStyle);
+              rum.snaps++;
+              rumApplied(); // v0.21 RUM：快照应用=交互到视觉链路闭环
               snapshotReady = true;
               activate();
               const restoredScroll = document.getElementById('mirrorScroll');
@@ -1385,14 +1436,14 @@
             m('oTitle').textContent = j.title || '-';
             m('mIdle').textContent = 'mirror';
           }
-          if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); applyPatches(j.patches); }
+          if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); rum.patches += (j.patches || []).length; applyPatches(j.patches); rumApplied(); }
           if (j.type === 'canvas-tile') {
             // v3：canvas 元素按需捕获（有变化才推）——换掉镜像里的占位 img
             noteBytes(ev.data.length || ev.data.size || 0);
             noteFrame(0);
             try {
               const el = mirrorFind(j.id !== undefined ? j.id : j.path);
-              if (el && el.tagName === 'IMG') el.src = j.url;
+              if (el && el.tagName === 'IMG') { el.src = j.url; rumApplied(); }
             } catch (e) {}
           }
           if (j.type === 'canvas-ops') {
@@ -1434,6 +1485,7 @@
                 }
               }
             } catch (e) {}
+            rumApplied(); // v0.21 RUM：滚动同步应用=闭环
           }
           if (j.type === 'doc-class' && mirrorBody) {
             // 主题/状态类切换：直改镜像根类名（轻量，不重建）
@@ -1443,6 +1495,7 @@
             // v0.17：程序化表单态（源站 JS 直改 checked/value，MutationObserver 盲区，
             // 由原型 setter 劫持捕获下发）。静默应用（不派发事件，避免回环）；
             // 焦点中的元素跳过 value（访客正在本地编辑，防打断）
+            rumApplied();
             for (const p of (j.props || [])) {
               try {
                 const el = mirrorFind(p.id);
@@ -1569,7 +1622,11 @@
           fp = mirrorBody.querySelectorAll('*').length - art.length;
         }
       } catch (e) {}
-      ws.send(JSON.stringify(fp !== null ? { type: 'ping', t: performance.now(), fp } : { type: 'ping', t: performance.now() }));
+      const rumTick = (window.__rumTick = (window.__rumTick || 0) + 1);
+      const rumPayload = (rumTick === 1 || rumTick % 10 === 0) ? rumReport() : undefined; // 首拍即报（短会话也有心跳），此后 10s 一拍
+      const base = fp !== null ? { type: 'ping', t: performance.now(), fp } : { type: 'ping', t: performance.now() };
+      if (rumPayload) base.rum = rumPayload;
+      ws.send(JSON.stringify(base));
     }
   }, 1000);
 
@@ -1630,7 +1687,7 @@
       send({ type: 'mouse', action: 'wheel', x: e.clientX, y: e.clientY, dx: Math.round(e.deltaX), dy: Math.round(e.deltaY) });
     }, { passive: false, capture: true });
     let lastAt = 0, trailT = null;
-    const reportScroll = () => send({ type: 'scroll', x: Math.round(ms.scrollLeft), y: Math.round(ms.scrollTop) });
+    const reportScroll = () => { rumInputSent(); send({ type: 'scroll', x: Math.round(ms.scrollLeft), y: Math.round(ms.scrollTop) }); };
     ms.addEventListener('scroll', () => {
       if (ms.__xySync) return; // 服务端反向同步触发的滚动不再回传（防回环）
       const now = Date.now();

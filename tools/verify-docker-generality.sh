@@ -57,6 +57,16 @@ for c in forms editor media layout style canvas dnd vlist; do
     -e CASE="$c" -e MIRROR_URL=http://mirror:8088/ -e EVIDENCE_DIR=/tmp/ev \
     --entrypoint timeout "$image" 200 node tools/verify-generality.cjs > "$evidence/$c.json" 2> "$evidence/$c.err"; then
     echo "gen_${c}_OK"
+    # v0.21 RUM 通道断言：forms 会话必须产生 [rum] 心跳或 [rum-beacon] 尾包日志
+    if [ "$c" = "forms" ]; then
+      if docker logs "$server" 2>&1 | grep -qE '\[rum(-beacon)?\]'; then
+        echo "gen_rum_OK"
+      else
+        echo "gen_rum_FAIL"
+        docker logs "$server" 2>&1 | tail -5
+        overall=1
+      fi
+    fi
   else
     echo "gen_${c}_FAIL"
     cat "$evidence/$c.json" || true
