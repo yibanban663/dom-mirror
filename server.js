@@ -85,6 +85,18 @@ const PAGE_HELPERS = `(() => {
   }
   if (window.__xy) return;
   const ORIGIN_PREFIX = ${JSON.stringify(ORIGIN_BASE.origin)};
+  // 节点 ID 登记（v0.12）：id 与 DOM 位置解耦——元素移动/插入/删除后 id 不变，
+  // 补丁/滚动容器/输入锚点/画布捕获全部按 id 定位。path（children 索引串）在本
+  // 版本并行下发作回退，下一版本删除。参考 rrweb Mirror 的双向映射思路重写。
+  const XY_ID2NODE = new Map();
+  const XY_NODE2ID = new WeakMap();
+  let XY_NEXT_ID = 1;
+  function idOf(node) {
+    if (!node || node.nodeType !== 1) return null;
+    let id = XY_NODE2ID.get(node);
+    if (id === undefined) { id = XY_NEXT_ID++; XY_NODE2ID.set(node, id); XY_ID2NODE.set(id, node); }
+    return id;
+  }
   function fixUrl(v) {
     if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v)) return v;
     if (v.startsWith('//')) return v;
@@ -176,6 +188,22 @@ const PAGE_HELPERS = `(() => {
         c.replaceWith(img);
       } catch (e) {}
     });
+    // v0.12：镜像元素携带 data-xy-id。克隆树与源站树按同一跳过规则（SCRIPT/
+    // NOSCRIPT/TEMPLATE、已删除的注释）并行游走；canvas→img 替换后的 img 占用
+    // 原画布的 id（canvas-tile 按 id 找回镜像 img）。文本节点不参与。
+    if (root.nodeType === 1) {
+      try {
+        const liveKids = (p) => [...p.children].filter(c => !XY_SKIP.has(c.tagName.toUpperCase()));
+        const stamp = (ln, cn) => {
+          if (cn.nodeType !== 1 || ln.nodeType !== 1) return;
+          try { cn.setAttribute('data-xy-id', String(idOf(ln))); } catch (e) {}
+          const lc = liveKids(ln), cc = [...cn.children];
+          const n = Math.min(lc.length, cc.length);
+          for (let i = 0; i < n; i++) stamp(lc[i], cc[i]);
+        };
+        stamp(root, clone);
+      } catch (e) {}
+    }
     return clone;
   }
   // 只按元素编号：HTML 重解析会丢弃空文本、合并相邻文本，不能使用 childNodes。
@@ -195,27 +223,28 @@ const PAGE_HELPERS = `(() => {
     return n === document.body ? parts.join('/') : null;
   }
   window.__xy = {
-    sanitizeClone, pathOf,
-    // 内部滚动容器收集：可滚动且 scrollTop/Left>0 的元素（path+偏移）。
-    // 源站 JS 自动滚动（如聊天自动滚到底）必须同步到代理，否则代理盒子
-    // 停在未滚动位置，与瓦片/源站错位（实测流式后气泡整体低 4px）
+    sanitizeClone, pathOf, idOf,
+    // 内部滚动容器收集：可滚动且 scrollTop/Left>0 的元素（id+偏移；path 为并行
+    // 回退字段，下一版本删除）。源站 JS 自动滚动（如聊天自动滚到底）必须同步到
+    // 代理，否则代理盒子停在未滚动位置，与瓦片/源站错位（实测流式后气泡整体低 4px）
     scrollers() {
       const out = [];
       try {
         for (const el of document.body.querySelectorAll('*')) {
           if ((el.scrollTop > 0 || el.scrollLeft > 0) && el.scrollHeight > el.clientHeight + 1) {
             const p = pathOf(el);
-            if (p !== null) out.push([p, Math.round(el.scrollTop), Math.round(el.scrollLeft)]);
+            if (p !== null) out.push({ id: idOf(el), path: p, top: Math.round(el.scrollTop), left: Math.round(el.scrollLeft) });
             if (out.length > 12) break;
           }
         }
       } catch (e) {}
       return out;
     },
-    find(path) {
-      if (path === '') return document.body;
+    find(ref) {
+      if (typeof ref === 'number') return XY_ID2NODE.get(ref) || null;
+      if (ref === '' || ref === undefined || ref === null) return document.body;
       let n = document.body;
-      for (const i of path.split('/')) {
+      for (const i of String(ref).split('/')) {
         n = pathChildren(n)[+i];
         if (!n) return null;
       }
@@ -273,7 +302,7 @@ const PAGE_HELPERS = `(() => {
           frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
         }
       }
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim() };
+      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim(), bodyId: idOf(document.body) };
     },
 
     // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
@@ -313,9 +342,10 @@ const PAGE_HELPERS = `(() => {
       const path = pathOf(target);
       if (path === null) return { full: true, why: record.type + ':noPath:' + target.nodeName + (target.isConnected ? '' : ':DETACHED') };
       // v3：inner/outer 仅作标记（内容由 tilesPatches 在整页截图后统一 tileize，
-      // 此处克隆整段再丢弃是纯浪费）；客户端按 p.inner/p.outer !== undefined 分派
-      if (record.type === 'attributes') return { path, outer: 1 };
-      return { path, inner: 1 };
+      // 此处克隆整段再丢弃是纯浪费）；客户端按 p.inner/p.outer !== undefined 分派。
+      // v0.12：补丁携带目标 id（数值），path 并行保留一个版本。
+      if (record.type === 'attributes') return { path, id: idOf(target), outer: 1 };
+      return { path, id: idOf(target), inner: 1 };
     },
   };
 })();`;
@@ -687,11 +717,11 @@ async function runSession(ws, req, lifecycle) {
             break;
           }
           case 'dom': {
-            // 客户端镜像 DOM 上的真实交互 → 服务端真实页面元素
+            // 客户端镜像 DOM 上的真实交互 → 服务端真实页面元素（v0.12：按 id 定位）
             noteInput();
-            if (m.kind === 'click') logger.log('[dbg] dom click path=' + m.path);
-            const ok = await page.evaluate((kind, path, value) => {
-              let el = window.__xy.find(path);
+            if (m.kind === 'click') logger.log('[dbg] dom click ref=' + (m.id !== undefined ? '#' + m.id : m.path));
+            const ok = await page.evaluate((kind, ref, value) => {
+              let el = window.__xy.find(ref);
               // 镜像里的文字占位符(data-xy-space)与源站文本节点同位：文本节点不能 click，
               // 映射到父元素——真实浏览器里文本上的点击本来就落在父元素
               if (el && el.nodeType === 3) el = el.parentElement;
@@ -724,7 +754,7 @@ async function runSession(ws, req, lifecycle) {
               if (desc && desc.set) desc.set.call(el, value); else el.value = value;
               el.dispatchEvent(new Event(kind, { bubbles: true }));
               return true;
-            }, m.kind, m.path, m.value);
+            }, m.kind, m.id !== undefined ? m.id : m.path, m.value);
             if (!ok && mode === 'dom') {
               // 防御不变式：失败只做瓦片化全量重同步；明文快照在任何模式下都不下发
               await startDomMirror().catch(() => {});
@@ -740,16 +770,16 @@ async function runSession(ws, req, lifecycle) {
             // 锚点平移：客户端镜像布局与服务端有偏差（字体度量/宽度差），纯坐标会
             // 点错位置。以按下时的目标元素为锚：服务端实测该元素矩形，与客户端
             // 记录的镜像矩形做同一平移——整个手势期间偏移恒定，滑块/拖放语义成立
-            if (m.apath !== undefined && m.apath !== null) {
-              const tr = await page.evaluate((path, ax, ay) => {
+            if (m.apath !== undefined && m.apath !== null || m.aid !== undefined && m.aid !== null) {
+              const tr = await page.evaluate((ref, ax, ay) => {
                 try {
-                  let el = window.__xy ? window.__xy.find(path) : null;
+                  let el = window.__xy ? window.__xy.find(ref) : null;
                   if (el && el.nodeType === 3) el = el.parentElement;
                   if (!el || !el.getBoundingClientRect) return null;
                   const r = el.getBoundingClientRect();
                   return { dx: r.left - ax, dy: r.top - ay };
                 } catch (e) { return null; }
-              }, m.apath, m.ax, m.ay).catch(() => null);
+              }, m.aid !== undefined ? m.aid : m.apath, m.ax, m.ay).catch(() => null);
               if (tr) { mx += tr.dx; my += tr.dy; }
             }
             const common = { x: mx, y: my, button: m.button || 'left' };
@@ -817,8 +847,12 @@ async function runSession(ws, req, lifecycle) {
               try { window.scrollTo(x, y); } catch (e) {}
               for (const s of (inner || [])) {
                 try {
-                  const el = window.__xy ? window.__xy.find(s[0]) : null;
-                  if (el) { el.scrollTop = s[1]; el.scrollLeft = s[2]; }
+                  // v0.12：条目为 {id,top,left}（旧元组 [ref,top,left] 仅在过渡期兼容）
+                  const ref = Array.isArray(s) ? s[0] : (s.id !== undefined ? s.id : s.path);
+                  const top = Array.isArray(s) ? s[1] : s.top;
+                  const left = Array.isArray(s) ? s[2] : s.left;
+                  const el = window.__xy ? window.__xy.find(ref) : null;
+                  if (el) { el.scrollTop = top; el.scrollLeft = left; }
                 } catch (e) {}
               }
             }, m.x || 0, m.y || 0, m.inner || []).catch(() => {});
@@ -931,17 +965,18 @@ async function runSession(ws, req, lifecycle) {
             // 同路径去重（流式回复逐字变更只保留最新态），每批一次整页截图统一
             // tileize。事件驱动：静止页零消息、零流量，不存在任何帧率概念。
             for (const p of rest) {
-              if (!p || p.path === undefined) continue;
-              // outer 含子树：同路径 outer 与 inner 在合并窗内相遇时保留 outer
+              if (!p || (p.id === undefined && p.path === undefined)) continue;
+              const key = (p.id !== undefined) ? '#' + p.id : p.path;
+              // outer 含子树：同目标 outer 与 inner 在合并窗内相遇时保留 outer
               const kind2 = (p.outer !== undefined) ? 'outer' : 'inner';
-              if (kind2 === 'inner' && structBuf.get(p.path) === 'outer') continue;
-              structBuf.set(p.path, kind2);
+              if (kind2 === 'inner' && structBuf.get(key) === 'outer') continue;
+              structBuf.set(key, kind2);
             }
             if (structTimer) return;
             structTimer = setTimeout(async () => {
               structTimer = null;
               if (dead || ws.readyState !== 1) { structBuf.clear(); return; }
-              const batch = [...structBuf.entries()].map(([path, kind2]) => ({ path, [kind2]: 1 }));
+              const batch = [...structBuf.entries()].map(([key, kind2]) => ({ key, [kind2]: 1 }));
               structBuf.clear();
               // 异步兜底：截图超时/导航销毁上下文一旦以 unhandled rejection
               // 冒泡会击穿整个网关进程（Node>=15 默认退出）
@@ -1030,7 +1065,7 @@ async function runSession(ws, req, lifecycle) {
     }
     const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
     const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + obfCssBlock;
-    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [] });
+    const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [], bodyId: snap.bodyId });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
@@ -1055,30 +1090,31 @@ async function runSession(ws, req, lifecycle) {
   async function tilesPatches(patches) {
     if (patches.some(p => p && p.full)) { await startDomMirror(); return; }
     // 祖先后代去重：祖先 innerHTML 已含后代最终态；按深度排序祖先优先，
-    // 后到的祖先会移除已收入的其后代
-    const sorted = [...patches].filter(p => p && p.path !== undefined && (p.inner !== undefined || p.outer !== undefined))
-      .sort((a, b) => String(a.path).split('/').length - String(b.path).split('/').length);
+    // 后到的祖先会移除已收入的其后代（深度沿用 path 计算；id 版本 path 恒存在）
+    const sorted = [...patches].filter(p => p && p.key !== undefined && (p.inner !== undefined || p.outer !== undefined))
+      .sort((a, b) => String(a.path ?? '').split('/').length - String(b.path ?? '').split('/').length);
     const items = [];
     for (const p of sorted) {
-      const pp = String(p.path);
+      const pp = String(p.path ?? p.key);
       if (items.some(q => pp === q.path || pp.startsWith(q.path + '/'))) continue;
       for (let k = items.length - 1; k >= 0; k--) {
         if (items[k].path.startsWith(pp + '/')) items.splice(k, 1);
       }
-      items.push({ path: pp, outer: p.outer !== undefined ? 1 : undefined, inner: p.outer !== undefined ? undefined : 1 });
+      items.push({ key: p.key, path: pp, outer: p.outer !== undefined ? 1 : undefined, inner: p.outer !== undefined ? undefined : 1 });
     }
     if (!items.length) return;
     const out = await withTimeout(page.evaluate((list) => {
       const out2 = [];
       for (const it of list) {
         try {
-          let live = window.__xy.find(it.path);
+          const ref = (it.key !== undefined && String(it.key)[0] === '#') ? Number(String(it.key).slice(1)) : it.path;
+          let live = window.__xy.find(ref);
           if (!live) continue;
           if (live.nodeType === 3) live = live.parentElement;
           if (!live || live.nodeType !== 1) continue;
           const cl = window.__xy.sanitizeClone(live);
           const html = (it.outer !== undefined) ? cl.outerHTML : cl.innerHTML;
-          if (html) out2.push((it.outer !== undefined) ? { path: it.path, outer: html } : { path: it.path, inner: html });
+          if (html) out2.push((it.outer !== undefined) ? { id: ref, path: it.path, outer: html } : { id: typeof ref === 'number' ? ref : undefined, path: it.path, inner: html });
         } catch (e) {}
       }
       return out2;
@@ -1089,7 +1125,7 @@ async function runSession(ws, req, lifecycle) {
     // 与上次已下发比对，全同批次直接跳过（省带宽与客户端重排）
     if (lastPatchSent.size > 500) lastPatchSent.clear();
     const out2 = out.filter(p => {
-      const key = (p.outer !== undefined ? 'o:' : 'i:') + p.path;
+      const key = (p.id !== undefined ? 'o#' + p.id : 'p:' + (p.path ?? '')) + (p.outer !== undefined ? ':o' : ':i');
       const html = p.outer !== undefined ? p.outer : p.inner;
       if (lastPatchSent.get(key) === html) return false;
       lastPatchSent.set(key, html);
@@ -1121,7 +1157,7 @@ async function runSession(ws, req, lifecycle) {
               if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
               const path = window.__xy.pathOf(c);
               if (path === null) continue;
-              out.push({ path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
+              out.push({ id: window.__xy.idOf(c), path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
               if (out.length >= 3) break;
             }
           } catch (e) {}
@@ -1170,7 +1206,7 @@ async function runSession(ws, req, lifecycle) {
           const st2 = lastSigs.get(it.path);
           if (st2) { st2.unchanged = 0; st2.nextAt = 0; }
           if (ws.readyState === 1) {
-            const pl = JSON.stringify({ type: 'canvas-tile', path: it.path, url: 'data:image/png;base64,' + shot.data });
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, url: 'data:image/png;base64,' + shot.data });
             ws.send(pl);
             ws._bytes = (ws._bytes || 0) + pl.length;
             ws._chunks = (ws._chunks || 0) + 1;

@@ -192,6 +192,32 @@
 
   // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
   let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
+  // v0.12 节点 id → 镜像元素（服务端 data-xy-id；与 DOM 位置解耦，重排/移动不漂移）
+  const mirrorIds = new Map();
+  let bodyId = 1;
+  function idOfMirror(el) {
+    if (!el || !el.getAttribute) return null;
+    const v = parseInt(el.getAttribute('data-xy-id'), 10);
+    return Number.isFinite(v) ? v : null;
+  }
+  function registerSubtree(el) {
+    if (!el || el.nodeType !== 1 || !el.querySelectorAll) return;
+    const selfId = idOfMirror(el);
+    if (selfId !== null) mirrorIds.set(selfId, el);
+    for (const c of el.querySelectorAll('[data-xy-id]')) {
+      const v = parseInt(c.getAttribute('data-xy-id'), 10);
+      if (Number.isFinite(v)) mirrorIds.set(v, c);
+    }
+  }
+  function unregisterSubtree(el) {
+    if (!el || el.nodeType !== 1 || !el.querySelectorAll) return;
+    const selfId = idOfMirror(el);
+    if (selfId !== null) mirrorIds.delete(selfId);
+    for (const c of el.querySelectorAll('[data-xy-id]')) {
+      const v = parseInt(c.getAttribute('data-xy-id'), 10);
+      if (Number.isFinite(v)) mirrorIds.delete(v);
+    }
+  }
   let snapSelfCheckRetries = 0;
   let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
   let lastFpResync = 0; // 结构指纹重同步限频
@@ -234,14 +260,19 @@
     }
     return n === mirrorBody ? parts.join('/') : null;
   }
-  function mirrorFind(path) {
+  function mirrorFind(ref) {
     if (!mirrorBody) return null;
-    if (path === '' || path === undefined) return mirrorBody;
+    if (typeof ref === 'number') {
+      if (ref === bodyId) return mirrorBody;
+      const el = mirrorIds.get(ref);
+      return (el && el.isConnected) ? el : null;
+    }
+    if (ref === '' || ref === undefined) return mirrorBody;
     let n = mirrorBody;
-    for (const i of String(path).split('/')) { n = n.children[+i]; if (!n) return null; }
+    for (const i of String(ref).split('/')) { n = n.children[+i]; if (!n) return null; }
     return n;
   }
-  function buildMirror(css, html, docClass, docAttrs) {
+  function buildMirror(css, html, docClass, docAttrs, newBodyId) {
     const host = document.getElementById('mirrorHost');
     if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
     else mirrorRoot = host.shadowRoot;
@@ -260,11 +291,15 @@
     let keepFocus = null;
     const ae = mirrorRoot.activeElement;
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
-      const fp = pathOfMirror(ae);
-      if (fp !== null) keepFocus = { path: fp, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
+      const fid = idOfMirror(ae);
+      const fp = fid !== null ? null : pathOfMirror(ae);
+      if (fid !== null || fp !== null) keepFocus = { id: fid, path: fp, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
     }
     mirrorRoot.innerHTML = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     mirrorBody = mirrorRoot.querySelector('.xy-body');
+    bodyId = (typeof newBodyId === 'number' && Number.isFinite(newBodyId)) ? newBodyId : 1;
+    mirrorIds.clear();
+    registerSubtree(mirrorBody);
     // 防抓取混淆字体（关键兼容）：@font-face 写在 shadow root 样式里在部分 Chromium
     // （Windows 实测）不生效——字体栈落到本地"Microsoft YaHei"，PUA 码点无字形 → 全页
     // 豆腐块。同一组 @font-face 必须额外注入文档级（document.head），文档级字体对所有
@@ -309,9 +344,9 @@
       {
         let lastPtAt = 0;
         const anchorOf = (t) => {
-          const p = (t && t.getBoundingClientRect) ? pathOfMirror(t) : null;
+          const aid = (t && t.getAttribute) ? idOfMirror(t) : null;
           const r = (t && t.getBoundingClientRect) ? t.getBoundingClientRect() : null;
-          return (p !== null && r) ? { path: p, x: r.left, y: r.top } : null;
+          return (aid !== null && r) ? { id: aid, x: r.left, y: r.top } : null;
         };
         const syncPointerScroll = (target) => {
           if (frameMode) return; // frame 的滚动以服务端画面为准
@@ -319,8 +354,8 @@
           const inner = [];
           for (let el = target.parentElement; el && el !== mirrorBody; el = el.parentElement) {
             if (el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth) continue;
-            const path = pathOfMirror(el);
-            if (path !== null) inner.push([path, Math.round(el.scrollTop), Math.round(el.scrollLeft)]);
+            const sid = idOfMirror(el);
+            if (sid !== null) inner.push({ id: sid, top: Math.round(el.scrollTop), left: Math.round(el.scrollLeft) });
           }
           // scroll 事件可能晚于 pointerdown；先发当前实际位置，服务端串行队列
           // 会先完成滚动，再测量锚点并派发按压，避免首击落在旧视口之外。
@@ -335,7 +370,7 @@
           syncPointerScroll(t);
           window.__xyDrag = anchorOf(t);
           const a = window.__xyDrag;
-          send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { apath: a.path, ax: a.x, ay: a.y } : {}));
+          send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
         }, true);
         mirrorRoot.addEventListener('pointermove', (e) => {
           if (!e.isPrimary) return;
@@ -343,13 +378,13 @@
           const now = Date.now();
           if (!a && now - lastPtAt < 40) return;
           lastPtAt = now;
-          send(Object.assign({ type: 'mouse', action: 'move', x: e.clientX, y: e.clientY, buttons: a ? 1 : 0 }, a ? { apath: a.path, ax: a.x, ay: a.y } : {}));
+          send(Object.assign({ type: 'mouse', action: 'move', x: e.clientX, y: e.clientY, buttons: a ? 1 : 0 }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
         }, true);
         const endDrag = (e) => {
           if (e.button !== 0 || !window.__xyDrag) return;
           const a = window.__xyDrag;
           window.__xyDrag = null;
-          send(Object.assign({ type: 'mouse', action: 'up', x: e.clientX, y: e.clientY, button: 'left' }, { apath: a.path, ax: a.x, ay: a.y }));
+          send(Object.assign({ type: 'mouse', action: 'up', x: e.clientX, y: e.clientY, button: 'left' }, { aid: a.id, ax: a.x, ay: a.y }));
         };
         mirrorRoot.addEventListener('pointerup', endDrag, true);
         mirrorRoot.addEventListener('pointercancel', endDrag, true);
@@ -366,21 +401,25 @@
           const now = Date.now();
           if (now - lastInAt < 40) return;
           lastInAt = now;
-          const p = pathOfMirror(t);
-          if (p === null) return;
+          const sid = idOfMirror(t);
+          if (sid === null) return;
           const msx = document.getElementById('mirrorScroll');
-          send({ type: 'scroll', x: msx ? Math.round(msx.scrollLeft) : 0, y: msx ? Math.round(msx.scrollTop) : 0, inner: [[p, Math.round(t.scrollTop), Math.round(t.scrollLeft)]] });
+          send({ type: 'scroll', x: msx ? Math.round(msx.scrollLeft) : 0, y: msx ? Math.round(msx.scrollTop) : 0, inner: [{ id: sid, top: Math.round(t.scrollTop), left: Math.round(t.scrollLeft) }] });
         }, true);
       }
       mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
       mirrorRoot.addEventListener('input', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
-        // v4：输入框是真实控件，打字回显原生；值同步服务端
+        // v4：输入框是真实控件，打字回显原生；值同步服务端（v0.12：按 id 定位）
+        const id = idOfMirror(e.target);
+        if (id !== null) { lastTyped.set(id, e.target.value); send({ type: 'dom', kind: 'input', id, value: e.target.value }); return; }
         const p = pathOfMirror(e.target);
         if (p !== null) { lastTyped.set(p, e.target.value); send({ type: 'dom', kind: 'input', path: p, value: e.target.value }); }
       });
       mirrorRoot.addEventListener('change', (e) => {
         if (!e.target.matches('input, select, textarea')) return;
+        const id = idOfMirror(e.target);
+        if (id !== null) { lastTyped.set(id, e.target.value); send({ type: 'dom', kind: 'change', id, value: e.target.value }); return; }
         const p = pathOfMirror(e.target);
         if (p !== null) { lastTyped.set(p, e.target.value); send({ type: 'dom', kind: 'change', path: p, value: e.target.value }); }
       });
@@ -388,9 +427,9 @@
       mirrorRoot.addEventListener('focusin', (e) => {
         const t = e.target;
         if (!t.matches || !t.matches('input, textarea') || t.value !== '' || t.isContentEditable) return;
-        const p = pathOfMirror(t);
-        if (p === null || !lastTyped.has(p)) return;
-        const v = lastTyped.get(p);
+        const id = idOfMirror(t);
+        if (id === null || !lastTyped.has(id)) return;
+        const v = lastTyped.get(id);
         t.value = v;
         try { t.setSelectionRange(v.length, v.length); } catch (err) {}
       });
@@ -411,8 +450,8 @@
             // Enter 通常是提交/发送：服务端会清空字段。忘掉本地已键入值，
             // 否则重同步后 focusin 会把已发送的文字塞回输入框。
             const t = e.target.closest ? e.target.closest('input, textarea') : null;
-            const p = t ? pathOfMirror(t) : null;
-            if (p !== null) lastTyped.delete(p);
+            const tid = t ? idOfMirror(t) : null;
+            if (tid !== null) lastTyped.delete(tid);
             // 同步清空本地值：失焦时原生 change 事件会回传当前值，
             // 残留旧值会把服务端已清空的字段重新写脏
             if (t) t.value = '';
@@ -518,7 +557,7 @@
     // 还原重建前的焦点（打字→重同步→回车链路不断）
     if (keepFocus) {
       try {
-        const el = mirrorFind(keepFocus.path);
+        const el = mirrorFind(keepFocus.id !== null ? keepFocus.id : keepFocus.path);
         if (el && el.focus) {
           el.focus();
           if (keepFocus.sel && el.setSelectionRange && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value.length) {
@@ -637,25 +676,28 @@
     if (!mirrorBody) return;
     const dpr = window.devicePixelRatio || 1;
     // 焦点保护：React 受控输入每次键入都会重渲染字段节点，补丁把输入框整个换掉，
-    // 焦点掉回 body → 后续字符全部丢失（实测只打进第一个字符）。替换前记焦点路径，
+    // 焦点掉回 body → 后续字符全部丢失（实测只打进第一个字符）。替换前记焦点元素，
     // 替换后回焦点（focusin 会按 lastTyped 恢复半截值）
     const ae = mirrorRoot ? mirrorRoot.activeElement : null;
-    const aePath = (ae && ae !== mirrorBody && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ? pathOfMirror(ae) : null;
+    const aeActive = ae && ae !== mirrorBody && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
     for (const p of patches) {
       // 聚焦输入期间挂起涉及该输入的补丁：React 每键重渲染都换输入框节点，
       // 与打字/值回填形成竞态（实测值被打乱成 "sescac-loped"）。打字时用户即
       // 权威（frame 模式输入框穿孔本地原生渲染；dom 模式瓦片随值隐藏），
-      // 失焦后统一补挂
-      if (aePath !== null && typeof p.path === 'string' && (p.path === aePath || aePath.startsWith(p.path + '/') || p.path.startsWith(aePath + '/'))) {
-        pendingFocusPatches.push(p);
-        continue;
+      // 失焦后统一补挂（v0.12：按 DOM contains 判定目标与焦点的关系）
+      if (aeActive) {
+        const target0 = mirrorFind(p.id !== undefined ? p.id : p.path);
+        if (target0 && (target0 === ae || target0.contains(ae) || ae.contains(target0))) {
+          pendingFocusPatches.push(p);
+          continue;
+        }
       }
       try {
         // 像素瓦片补丁（v3 元素锚定）：瓦片作为元素背景落在镜像文档流里，
         // 随布局/滚动自然移动——无图层、无绝对坐标
         if (p.tile || p.selTile) {
-          const el = mirrorFind(p.path);
-          if (!el) throw new Error('path miss');
+          const el = mirrorFind(p.id !== undefined ? p.id : p.path);
+          if (!el) throw new Error('id miss');
           const t = p.tile || p.selTile;
           const bg = 'url("' + t.url + '")';
           el.style.backgroundImage = bg;
@@ -670,30 +712,36 @@
           }
           continue;
         }
-        const el = mirrorFind(p.path);
-        if (!el) throw new Error('path miss');
+        const el = mirrorFind(p.id !== undefined ? p.id : p.path);
+        if (!el) throw new Error('id miss');
         // 结构替换前清子树旧瓦片，防幽灵残影
-        clearSubtreeTiles(p.path);
+        clearSubtreeTiles(String(p.path ?? ''));
         if (p.inner !== undefined) {
           // frame 模式：body 级补丁会连瓦片图层一起换掉——先摘下再挂回
           const savedLayer = frameMode ? (mirrorBody ? mirrorBody.querySelector('.xy-tiles') : null) : null;
+          for (const c of [...el.children]) unregisterSubtree(c);
           el.innerHTML = p.inner;
+          registerSubtree(el);
           if (savedLayer && el === mirrorBody) el.appendChild(savedLayer);
         }
         else if (p.outer !== undefined) {
           const tpl = document.createElement('template');
           tpl.innerHTML = p.outer;
-          el.replaceWith(tpl.content.firstChild);
+          const next = tpl.content.firstChild;
+          unregisterSubtree(el);
+          el.replaceWith(next);
+          registerSubtree(next);
         }
       } catch (e) {
-        console.log('[patch-miss]', p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'));
+        console.log('[patch-miss]', p.id !== undefined ? '#' + p.id : p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'));
         if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 请求全量重同步
         return;
       }
     }
-    if (aePath !== null) {
+    if (aeActive) {
       try {
-        const el2 = mirrorFind(aePath);
+        const aeId = idOfMirror(ae);
+        const el2 = aeId !== null ? mirrorFind(aeId) : null;
         if (el2 && el2.focus && mirrorRoot.activeElement !== el2) el2.focus();
       } catch (e) {}
     }
@@ -744,6 +792,12 @@
       {
         try {
           const j = JSON.parse(ev.data);
+          // 滚动条目访问器：v0.12 起为 {id,top,left}（旧元组 [path,top,left] 过渡兼容）
+          const scrollEntry = (s) => ({
+            el: mirrorFind(Array.isArray(s) ? s[0] : (s.id !== undefined ? s.id : s.path)),
+            top: Array.isArray(s) ? s[1] : s.top,
+            left: Array.isArray(s) ? s[2] : s.left,
+          });
           if (j.type === 'session') {
             resumeToken = j.token;
             if (j.resumed) { lastTyped.clear(); pendingFocusPatches = []; }
@@ -802,9 +856,9 @@
             if (Array.isArray(j.scrolls)) {
               for (const s of j.scrolls) {
                 try {
-                  const el = mirrorFind(s[0]);
-                  if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - s[1]) > 1) el.scrollTop = s[1];
-                  if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - s[2]) > 1) el.scrollLeft = s[2];
+                  const { el, top, left } = scrollEntry(s);
+                  if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+                  if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - left) > 1) el.scrollLeft = left;
                 } catch (e) {}
               }
             }
@@ -840,7 +894,7 @@
             Promise.all(preload).then(() => {
               if (ws !== socket || socket.readyState !== 1 || serial !== snapshotSerial) return;
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
-              buildMirror(j.css, j.html, j.docClass, j.docAttrs);
+              buildMirror(j.css, j.html, j.docClass, j.docAttrs, j.bodyId);
               snapshotReady = true;
               activate();
               const restoredScroll = document.getElementById('mirrorScroll');
@@ -886,8 +940,8 @@
               if (Array.isArray(j.scrollers)) {
                 for (const s of j.scrollers) {
                   try {
-                    const el = mirrorFind(s[0]);
-                    if (el && el.scrollTop !== undefined) { el.scrollTop = s[1]; el.scrollLeft = s[2]; }
+                    const { el, top, left } = scrollEntry(s);
+                    if (el && el.scrollTop !== undefined) { el.scrollTop = top; el.scrollLeft = left; }
                   } catch (e) {}
                 }
               }
@@ -915,7 +969,7 @@
             noteBytes(ev.data.length || ev.data.size || 0);
             noteFrame(0);
             try {
-              const el = mirrorFind(j.path);
+              const el = mirrorFind(j.id !== undefined ? j.id : j.path);
               if (el && el.tagName === 'IMG') el.src = j.url;
             } catch (e) {}
           }
@@ -931,9 +985,9 @@
               if (Array.isArray(j.scrolls)) {
                 for (const s of j.scrolls) {
                   try {
-                    const el = mirrorFind(s[0]);
-                    if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - s[1]) > 1) el.scrollTop = s[1];
-                    if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - s[2]) > 1) el.scrollLeft = s[2];
+                    const { el, top, left } = scrollEntry(s);
+                    if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+                    if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - left) > 1) el.scrollLeft = left;
                   } catch (e) {}
                 }
               }

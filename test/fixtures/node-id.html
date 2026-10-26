@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Node id reorder</title>
+<style>
+  body { font: 14px Arial, sans-serif; padding: 24px; color: #16263a; }
+  #list div { padding: 8px 4px; border-bottom: 1px solid #dde; }
+  #target { color: #0a7f5c; font-weight: bold; }
+  button { margin: 4px; padding: 6px 14px; }
+</style>
+</head>
+<body>
+<h3>Node id stability</h3>
+<div id="list">
+  <div id="a0">Item 0</div>
+  <div id="a1">Item 1</div>
+  <div id="target">TARGET-INITIAL</div>
+  <div id="a2">Item 2</div>
+</div>
+<button id="b-insert">insert before target</button>
+<button id="b-move">move target to end</button>
+<button id="b-remove">remove first sibling</button>
+<button id="b-update">update target text</button>
+<div id="state">ready</div>
+<script>
+  let n = 0;
+  const list = document.getElementById('list');
+  const state = document.getElementById('state');
+  const target = () => document.getElementById('target');
+  document.getElementById('b-insert').onclick = () => {
+    const d = document.createElement('div');
+    d.id = 'n' + (++n);
+    d.textContent = 'Inserted ' + n;
+    list.insertBefore(d, target());
+    state.textContent = 'inserted-' + n;
+  };
+  document.getElementById('b-move').onclick = () => {
+    list.appendChild(target());
+    state.textContent = 'moved-' + (++n);
+  };
+  document.getElementById('b-remove').onclick = () => {
+    const first = list.querySelector('#a0, #a1, #a2');
+    if (first) first.remove();
+    state.textContent = 'removed-' + (++n);
+  };
+  document.getElementById('b-update').onclick = () => {
+    target().textContent = 'TARGET-' + (++n);
+    state.textContent = 'updated-' + n;
+  };
+</script>
+</body>
+</html>

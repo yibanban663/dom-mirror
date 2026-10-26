@@ -1,3 +1,17 @@
+# v0.12.0
+
+- 节点 ID 体系替换索引路径定位：源站序列化时按 WeakMap 双向映射分配递增数值
+  id，镜像元素以 data-xy-id 携带，快照带 bodyId。元素移动/插入/删除后 id 不变，
+  列表重排/相邻插入不再引起路径漂移（参考 rrweb Mirror 思路重写）。
+- 补丁（inner/outer）、输入定位（input/change/click）、鼠标锚点（aid/ax/ay）、
+  内部滚动容器（{id,top,left} 对象条目）、canvas 元素捕获（canvas-tile id）
+  全部改按 id 命中；path 字段并行下发仅作过渡回退，下一版本删除。
+- 客户端镜像维护 id→元素映射，结构替换时同步注销/登记子树 id；聚焦补丁挂起
+  判定由路径前缀改为 DOM contains。
+- 新增回归：tools/verify-node-id.cjs（插入/移动/更新/删除混合序列后补丁按 id
+  命中、零 patch-miss、镜像元素携带 data-xy-id），CI 接入
+  tools/verify-docker-node-id.sh；既有 scroll/select/data-boundary 回归保持绿。
+
 # v0.11.0
 
 - 完成两轮反序 memory/disk 各三十轮对照，保留四组预算失败结果；补 V8 页池/帧长度独立诊断及关闭额外诊断的 semi-space 参数对照，宿主显式 semi-space=4 通过 30/30 原内存预算和 Vikunja 核心/恢复验收，不修改库默认 allocator、GC/cache 或公共 API。
