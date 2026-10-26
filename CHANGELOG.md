@@ -1,3 +1,15 @@
+# v0.15.0
+
+- adoptedStyleSheets 追踪：构造样式表（new CSSStyleSheet + adopted）对 style/link
+  观察器不可见——快照并入 cssRules 规则文本，1Hz CSS 指纹改为逐规则内容哈希
+  （replace/replaceSync 改内容不改规则数也能触发全量重同步）。
+- 输入值掩码（maskInputTypes，默认关闭）：命中类型的输入值以等长 * 下发，
+  hidden/password/file 的整体剔除语义优先；交互不受影响（客户端本地输入为真实值），
+  掩码只作用于服务端下发侧。demo 以 MASK_INPUT_TYPES 环境变量配置。
+- 新增回归 verify-enhance（adopted 收集/内容变化重同步/掩码等长断言）；
+  CI 接入 0.12-0.15 全部六组新回归（node-id/longtail-p0/shadow/iframe/canvas2d/
+  enhance）与证据上传；check.js 收录全部新 fixture 脚本编译。
+
 # v0.14.0
 
 - Shadow DOM：open 影子根以声明式 <template shadowrootmode> 内联（客户端 setHTMLUnsafe

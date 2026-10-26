@@ -44,6 +44,7 @@ async function startDemo(createMirror = require('..').createMirror) {
       presentation: process.env.PROD_PRESENTATION === '1' ? 'embedded' : 'demo',
       obfuscate: process.env.OBFUSCATE !== '0',
       canvasStream: process.env.CANVAS_STREAM !== '0',
+      maskInputTypes: (process.env.MASK_INPUT_TYPES || '').split(',').map(v => v.trim()).filter(Boolean),
     });
     const server = http.createServer(mirror.handleRequest);
     servers.push(server);

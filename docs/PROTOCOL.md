@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.14.0）
+# WebSocket 协议（实现版本 0.15.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
 
@@ -101,3 +101,8 @@ HTML/CSS/属性和值可能携带业务数据。frame 并非纯像素保密协�
 - **Shadow DOM**：源站元素的 open shadowRoot 以声明式 `<template shadowrootmode="open">` 内联进镜像 HTML；客户端以 `setHTMLUnsafe` 解析重建影子树（`innerHTML` 不再解析声明式影子 DOM）。影子内变化上溯最外层 light 宿主重发 outer（整体替换重建影子树——影子内焦点会在重发时丢失，已知限制）。closed 影子根不序列化。影子内元素的输入/组合事件经 composedPath 取真实目标后按 id 转发；影子内 canvas 与滚动容器参与捕获与上报。attachShadow 被补丁，注入之后新建的组件影子根同样被观察。
 - **同源 iframe**：内容序列化进 `srcdoc`（与主文档同一 sanitize：剥 script/事件属性、资源 URL 改写 /m 代理）；镜像 iframe 是独立浏览上下文，客户端在其文档上挂同一套转发监听（指针/输入/组合/功能键），元素 id 与主文档同一空间；iframe 内指针坐标按 frameElement 链换算到主视口。**跨域 iframe 不转发**：显示等尺寸占位块并记日志。iframe 内部滚动的懒加载跟随为已知限制。
 - **canvas 2D 指令流**：注入之后创建的 2D 上下文记录绘制指令（方法调用与样式属性赋值，渐变定义+色标、图像源、ImageData 均序列化），60ms 合并以 `canvas-ops` 下发，客户端在镜像 canvas 同序重放（图像异步加载完成后整环重放）。不可序列化参数（跨域图源/Pattern/滤镜/未知对象）的画布、注入前已创建的上下文与 WebGL 一律回退位图捕获。指令环上限 1024 条（超限截断，clearRect 循环类图表天然幂等）。宿主可用 `canvasStream:false` 关闭整条指令流（全部走位图）。
+
+## 构造样式表与输入掩码（0.15.0）
+
+- **adoptedStyleSheets**：`new CSSStyleSheet()` 构造并 adopted 的样式表对 style/link 观察器不可见——快照直接并入其规则文本（cssRules.cssText），1Hz CSS 指纹包含逐规则内容哈希，`replace/replaceSync` 改动内容（规则数不变也）触发全量重同步。影子根与 iframe 文档内的 adopted 样式表本版不追踪。
+- **maskInputTypes**：宿主配置的输入类型（如 `['text','search']`）在快照/补丁中以等长 `*` 掩码下发（默认关闭；`hidden/password/file` 的整体剔除语义不变，优先于掩码）。交互不受影响：客户端本地输入为真实值并明文回传源站，掩码只作用于服务端下发侧；textarea 以 `text` 类型配置时一并掩码。掩码不是加密——长度与输入行为仍可观测。

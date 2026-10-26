@@ -23,6 +23,8 @@ export interface MirrorOptions {
   obfuscate?: boolean;
   /** Mirror canvases with 2D contexts created after injection as draw-command streams (default true); others fall back to bitmap capture. */
   canvasStream?: boolean;
+  /** Input types whose mirrored values are replaced with same-length asterisks in snapshots/patches (default off). Interactivity is unaffected. */
+  maskInputTypes?: string[];
   /** Remove these named attributes from mirrored elements, including html/body metadata. */
   redactAttributes?: string[];
   /** Synchronous, trusted host identity. Empty/null/undefined or errors reject the WS upgrade. */

@@ -262,6 +262,7 @@ const PAGE_HELPERS = `(() => {
     return hit ? out : s;
   }
   const REDACT_ATTRIBUTES = new Set(${JSON.stringify(config.redactAttributes)});
+  const MASK_INPUT_TYPES = new Set(${JSON.stringify([...config.maskInputTypes])});
   function stripAttributes(el) {
     for (const a of [...el.attributes]) {
       if (REDACT_ATTRIBUTES.has(a.name.toLowerCase())) { el.removeAttribute(a.name); continue; }
@@ -298,9 +299,15 @@ const PAGE_HELPERS = `(() => {
     const liveControls = controls(root);
     controls(clone).forEach((control, i) => {
       const live = liveControls[i];
-      if (control.tagName === 'TEXTAREA') { control.textContent = live.value; return; }
+      if (control.tagName === 'TEXTAREA') {
+        // v0.15 掩码选项：命中的输入值以等长 * 下发（对齐 hidden/password/file 的
+        // 剔除语义；默认关闭，宿主按业务配置）。交互不受影响——客户端本地输入为
+        // 真实值，掩码只作用于快照/补丁下发侧
+        if (live.type === 'text' && MASK_INPUT_TYPES.has('textarea')) { control.textContent = '*'.repeat(Math.min(32, live.value.length)); return; }
+        control.textContent = live.value; return;
+      }
       if (['hidden', 'password', 'file'].includes(control.type)) { control.removeAttribute('value'); return; }
-      if (control.type !== 'hidden') control.setAttribute('value', live.value);
+      if (control.type !== 'hidden') control.setAttribute('value', MASK_INPUT_TYPES.has(control.type) ? '*'.repeat(Math.min(32, live.value.length)) : live.value);
       if (control.type === 'checkbox' || control.type === 'radio') control.toggleAttribute('checked', live.checked);
     });
     if (clone.querySelectorAll) {
@@ -520,6 +527,14 @@ const PAGE_HELPERS = `(() => {
       const DPR = window.__xyDpr || 1;
       const clone = sanitizeClone(document.body);
       const styleCss = [...document.querySelectorAll('style')].map(s2 => s2.textContent).join('\\n');
+      // v0.15：构造样式表（new CSSStyleSheet + adoptedStyleSheets）——style/link
+      // 观察器看不见，快照直接并入规则文本；1Hz 指纹含 adopted 规则数签名
+      let adoptedCss = '';
+      try {
+        for (const sheet of (document.adoptedStyleSheets || [])) {
+          try { for (const r of sheet.cssRules) adoptedCss += r.cssText + '\\n'; } catch (e) {}
+        }
+      } catch (e) {}
       const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
       let linkCss = '';
       try {
@@ -564,7 +579,7 @@ const PAGE_HELPERS = `(() => {
           frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
         }
       }
-      return { css: styleCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim(), bodyId: idOf(document.body) };
+      return { css: styleCss + '\\n' + adoptedCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim(), bodyId: idOf(document.body) };
     },
 
     // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
@@ -1925,7 +1940,22 @@ async function runSession(ws, req, lifecycle) {
             try {
               sig = await page.evaluate(() => {
                 const links = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
-                return links.join('|') + '#' + document.querySelectorAll('style').length;
+                // v0.15：adoptedStyleSheets 内容哈希签名（replace/replaceSync 改内容
+                // 不一定改规则数，逐规则字符级哈希；1Hz 一次开销可忽略）
+                let adopted = '';
+                try {
+                  for (const s2 of (document.adoptedStyleSheets || [])) {
+                    try {
+                      for (const r of s2.cssRules) {
+                        const t = r.cssText;
+                        let h = 0;
+                        for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0;
+                        adopted += h.toString(36) + ',';
+                      }
+                    } catch (e) {}
+                  }
+                } catch (e) {}
+                return links.join('|') + '#' + document.querySelectorAll('style').length + '#' + adopted;
               });
             } catch (e) {}
             if (sig !== null) {

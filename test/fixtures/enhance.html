@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Enhancements</title>
+<style>
+  body { font: 14px Arial, sans-serif; padding: 24px; color: #16263a; }
+  #target { padding: 14px; border: 1px solid #ccd; border-radius: 6px; margin: 10px 0; }
+  button { padding: 6px 14px; }
+  input { padding: 6px; }
+</style>
+</head>
+<body>
+<h3>adoptedStyleSheets + input masking</h3>
+<div id="target">target-box</div>
+<input id="q" type="text" value="secret-token" autocomplete="off">
+<button id="mk">flip adopted sheet</button>
+<script>
+  // 构造样式表（style/link 观察器不可见）：初始绿色，1.8s 后自动翻红
+  // （回归聚焦 adopted 追踪本身；点击管线由 node-id/shadow/iframe/canvas2d 回归覆盖）
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync('#target{background-color:#51cf66}');
+  document.adoptedStyleSheets = [sheet];
+  setTimeout(() => {
+    sheet.replaceSync('#target{background-color:#ff6b6b}');
+  }, 1800);
+</script>
+</body>
+</html>
