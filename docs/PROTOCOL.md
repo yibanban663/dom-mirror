@@ -1,4 +1,4 @@
-# WebSocket 协议（实现版本 0.15.0）
+# WebSocket 协议（实现版本 0.16.0）
 
 连接入口为 `GET /ws`。当前消息均为 JSON 文本，图片通过 data URL 嵌入；无 H.264、JPEG/WebP 二进制流。通道只接受 `dom` 和 `frame`。
 
@@ -34,7 +34,7 @@
 | `sync-ready` | 无 | 首次建立或恢复的全量同步已发送；客户端完成快照构建后才开放操作 |
 | `meta` | `w,h,title?,maxSessions?,mode?,prod` | 初始会话信息或视口调整；不直接发送源站 URL |
 | `mode` | `mode` | 通道切换确认 |
-| `dom-snapshot` | `css,html,title,w,h,tiles,frame,docClass,docAttrs,sx,sy,scrollers,bodyId` | 全量镜像；html 元素携带 `data-xy-id`，bodyId 为镜像根对应的源站 body id；frame 模式附带 PNG 条带底板 |
+| `dom-snapshot` | `css,html,title,w,h,tiles,frame,docClass,docAttrs,sx,sy,scrollers,bodyId` | 全量镜像；html 元素携带 `data-xy-id`，bodyId 为镜像根对应的源站 body id；frame 模式附带 PNG 条带底板。css 按文档序收集（style/link 交错保持原级联顺序，adopted 排最后），其中 url() 与元素资源 URL 一并改写为 /m 代理路径；客户端对 css+html 与上一次完全相同的快照跳过整树重建（仅跟随滚动/标题），导航兜底重拍不再整页闪动 |
 | `dom-patches` | `patches` | 子树 innerHTML/outerHTML 补丁，元素携带 id 与 path（id 为主，path 过渡回退） |
 | `doc-class` | `cls` | 更新镜像根 class |
 | `scroll-sync` | `sx,sy,scrolls` | 服务端滚动位置；scrolls 为 `{id,top,left}` 对象数组 |
@@ -84,9 +84,9 @@ DOM 客户端在 pointerdown 之前发送 `scroll`，包括页面位置和目标
 
 ## 资源和边界
 
-`/m/*` 只代理固定 `ORIGIN_URL` 同源、扩展名在白名单内的表现层资源，拒绝重定向和 HTML/JSON/JS/XML 响应。`/m/obf/<sid>/*` 为混淆字体路径。
+`/m/*` 只代理固定 `ORIGIN_URL` 同源、扩展名在白名单内的表现层资源，拒绝重定向和 HTML/JSON/JS/XML 响应。`/m/obf/<sid>/*` 为混淆字体路径。CSS `url()`（含相对样式表地址的相对 url）与元素资源 URL 在快照采集时统一改写为上述代理路径，webfont/背景图在客户端不再因相对地址 404 回退系统字体。
 
-`x-rbi-origin` 仅在 `RBI_ALLOWED_ORIGINS` 显式允许时接受；网关需剥除访客伪造头。该选项不提供完整的多源站资源路由。
+`x-rbi-origin` 仅在 `RBI_ALLOWED_ORIGINS` 显式允许时接受；网关需剥除访客伪造头。多源会话的资源以 `/m/o/<base64url(origin)>/path` 下发（缺省源站仍是短式 `/m`），代理按该段路由到对应白名单源站——同一网关可同时镜像多个源站且互不串源。
 
 HTML/CSS/属性和值可能携带业务数据。frame 并非纯像素保密协议，字体混淆也非加密。完整限制见 [README](../README.md)。
 

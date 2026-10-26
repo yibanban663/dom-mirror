@@ -228,7 +228,13 @@ const PAGE_HELPERS = `(() => {
     };
   }
   if (window.__xy) return;
-  const ORIGIN_PREFIX = ${JSON.stringify(ORIGIN_BASE.origin)};
+  // 会话源站 origin（pageHelpersFor 按会话替换；多源会话缺省回退只影响绝对地址改写）
+  const ORIGIN_PREFIX = "__XY_ORIGIN_PREFIX__";
+  // /m 短式只对 ORIGIN_URL 缺省源站成立（proxyAsset 短式固定路由到它）；
+  // x-rbi-origin 多源会话下发 /m/o/<b64url(origin)>，proxyAsset 按该段路由到
+  // 真实源站（白名单校验），避免把 :82 的资产取到 :81 的源站
+  const DEFAULT_PREFIX = "__XY_DEFAULT_PREFIX__";
+  const M_BASE = (location.origin === DEFAULT_PREFIX) ? '/m' : '/m/o/' + btoa(location.origin).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
   // 节点 ID 登记（v0.12）：id 与 DOM 位置解耦——元素移动/插入/删除后 id 不变，
   // 补丁/滚动容器/输入锚点/画布捕获全部按 id 定位。path（children 索引串）在本
   // 版本并行下发作回退，下一版本删除。参考 rrweb Mirror 的双向映射思路重写。
@@ -241,12 +247,32 @@ const PAGE_HELPERS = `(() => {
     if (id === undefined) { id = XY_NEXT_ID++; XY_NODE2ID.set(node, id); XY_ID2NODE.set(id, node); }
     return id;
   }
+  // 源站同源 URL → 网关代理路径。base 缺省按当前文档解析；返回 null 表示不改写
+  // （data:/blob:/第三方绝对地址——与历史行为一致，第三方资源客户端直连）
+  function toProxyUrl(v, base) {
+    if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v)) return null;
+    if (/^\\/\\//.test(v)) return null;
+    try {
+      const u = new URL(v, base || location.href);
+      if (u.origin !== location.origin) return null;
+      return M_BASE + u.pathname + u.search;
+    } catch (e) { return null; }
+  }
   function fixUrl(v) {
     if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v)) return v;
     if (v.startsWith('//')) return v;
-    if (v.startsWith('/')) return '/m' + v;
-    if (v.startsWith(ORIGIN_PREFIX)) return '/m' + v.slice(ORIGIN_PREFIX.length);
+    if (v.startsWith('/')) return M_BASE + v;
+    if (v.startsWith(ORIGIN_PREFIX)) return M_BASE + v.slice(ORIGIN_PREFIX.length);
     return v;
+  }
+  // CSS 文本内 url(...) 改写（字体/背景图）。相对 url() 按其所属样式表地址解析
+  // （link 内相对路径相对 css 文件而非页面），随后统一走 /m 代理——否则客户端按
+  // 自己的源解析，webfont/背景图 404 回退默认字体，观感即"颜色不一样"
+  function cssUrlRewrite(cssText, cssBase) {
+    return String(cssText).replace(/url\\(\\s*(['"]?)([^'")]+)\\1\\s*\\)/g, (whole, q, u) => {
+      const p = toProxyUrl(u, cssBase);
+      return p === null ? whole : 'url(' + q + p + q + ')';
+    });
   }
   // 防抓取编码：文本码点 -> 会话 PUA 置换码点（混淆字体双映射回原字形渲染）。
   // 目标码点在补充平面（0xF0000+），源域全 BMP；域外字符原样透传。
@@ -526,7 +552,32 @@ const PAGE_HELPERS = `(() => {
     async snapshotReal(wantFrame) {
       const DPR = window.__xyDpr || 1;
       const clone = sanitizeClone(document.body);
-      const styleCss = [...document.querySelectorAll('style')].map(s2 => s2.textContent).join('\\n');
+      // v0.16：样式表按文档顺序收集（此前 style 全部前置 + link 后置会翻转
+      // 同特异性规则的级联胜负——运行时注入的 <style> 覆盖被 <link> 反杀）；
+      // adopted 样式表按规范排在其余作者样式之后。每段 url() 就地改写为 /m
+      // 代理（相对地址按所属样式表解析），字体/背景图在客户端不再 404 回退。
+      const cssNodes = [...document.querySelectorAll('style, link[rel="stylesheet"]')];
+      const linkTexts = await Promise.all(cssNodes.map((n) => {
+        if (n.tagName !== 'LINK') return Promise.resolve(null);
+        const h = n.getAttribute('href');
+        if (!h) return Promise.resolve('');
+        return fetch(h).then(r => r.ok ? r.text() : '').catch((e) => { console.warn('[snapcss] fetch fail', h, String(e).slice(0, 60)); return ''; });
+      }));
+      const cssParts = [];
+      let styleLen = 0, linkLen = 0;
+      cssNodes.forEach((n, i) => {
+        if (n.tagName === 'LINK') {
+          const h = n.getAttribute('href') || '';
+          const abs = (() => { try { return new URL(h, location.href).href; } catch (e) { return null; } })();
+          const t = linkTexts[i] || '';
+          linkLen += t.length;
+          if (t && abs) cssParts.push(cssUrlRewrite(t, abs));
+        } else {
+          const t = n.textContent || '';
+          styleLen += t.length;
+          if (t) cssParts.push(cssUrlRewrite(t, location.href));
+        }
+      });
       // v0.15：构造样式表（new CSSStyleSheet + adoptedStyleSheets）——style/link
       // 观察器看不见，快照直接并入规则文本；1Hz 指纹含 adopted 规则数签名
       let adoptedCss = '';
@@ -535,13 +586,10 @@ const PAGE_HELPERS = `(() => {
           try { for (const r of sheet.cssRules) adoptedCss += r.cssText + '\\n'; } catch (e) {}
         }
       } catch (e) {}
-      const hrefs = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
-      let linkCss = '';
-      try {
-        const texts = await Promise.all(hrefs.map(h => fetch(h).then(r => r.ok ? r.text() : '').catch((e) => { console.warn('[snapcss] fetch fail', h, String(e).slice(0, 60)); return ''; })));
-        linkCss = texts.join('\\n');
-      } catch (e) { console.warn('[snapcss] batch fail', String(e).slice(0, 60)); }
-      window.__xyCssDiag = { hrefs, lens: hrefs.map((h, i) => (linkCss.length)), styleLen: styleCss.length, linkLen: linkCss.length, kf: (linkCss.match(/@keyframes/g) || []).length, at: Date.now(), url: location.pathname };
+      if (adoptedCss) cssParts.push(cssUrlRewrite(adoptedCss, location.href));
+      const css = cssParts.join('\\n');
+      const hrefs = cssNodes.filter(n => n.tagName === 'LINK').map(l => l.getAttribute('href')).filter(Boolean);
+      window.__xyCssDiag = { hrefs, styleLen, linkLen, kf: (css.match(/@keyframes/g) || []).length, at: Date.now(), url: location.pathname };
       let docClass = '', docAttrs = '';
       for (const root of [document.documentElement, document.body]) {
         if (!root) continue;
@@ -579,7 +627,7 @@ const PAGE_HELPERS = `(() => {
           frame = { pageW: sheet.width / DPR, pageH: Math.round(pageH), tiles: bands };
         }
       }
-      return { css: styleCss + '\\n' + adoptedCss + '\\n' + linkCss, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim(), bodyId: idOf(document.body) };
+      return { css, html: clone.innerHTML, title: document.title, tiles: [], frame, sx: window.scrollX, sy: window.scrollY, scrollers: window.__xy.scrollers(), docClass: docClass.trim(), docAttrs: docAttrs.trim(), bodyId: idOf(document.body) };
     },
 
     // Skia 文字引擎：文本不出现在镜像 DOM（占位符撑布局），文字以"引擎绘制指令"
@@ -653,6 +701,15 @@ const PAGE_HELPERS = `(() => {
     },
   };
 })();`;
+// 会话级 PAGE_HELPERS：按 sessionOrigin 替换源站前缀（多源会话的绝对地址改写与
+// /m/o/<b64> 资产下发都依赖它；替换失败时运行态回退仅影响绝对地址）。第二个
+// 占位符固定替换为 ORIGIN_URL 缺省源站——短式 /m 只路由到它。
+function pageHelpersFor(originPrefix) {
+  const esc = JSON.stringify(String(originPrefix)).slice(1, -1);
+  return PAGE_HELPERS
+    .split('__XY_DEFAULT_PREFIX__').join(JSON.stringify(ORIGIN_BASE.origin).slice(1, -1))
+    .split('__XY_ORIGIN_PREFIX__').join(esc);
+}
 
 // ---------- 静态文件 ----------
 const { sendFile, staticHandler, clear: clearStaticFiles } = createStaticFiles();
@@ -680,13 +737,40 @@ const KEYMAP = {
 
 // ---------- HTTP + WS ----------
 // /m/* —— 扩展名及响应类型受限的静态资源代理，不解析或剔除资源内数据。
-const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? require('https') : require('http');
+// 多源会话（x-rbi-origin 白名单）资产以 /m/o/<b64url(origin)>/path 下发，
+// 短式 /m/path 固定路由到 ORIGIN_URL 缺省源站（历史形态，缓存友好）。
+const ORIGIN_ALLOWED = new Set([ORIGIN_BASE.origin, ...ALLOWED_ORIGINS.map(x => String(x).replace(/\/+$/, ''))]);
+const httpBoth = { http: require('http'), https: require('https') };
+const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? httpBoth.https : httpBoth.http;
+// /m 代理路径 → 绝对 URL（obf 网站字体下载等 Node 侧消费方使用）；非代理形态原样返回
+function unproxyAsset(u) {
+  const s = String(u);
+  let mo = s.match(/^\/m\/o\/([A-Za-z0-9_-]+)(\/[^\s?#]*)?(\?[^\s#]*)?$/);
+  if (mo) {
+    let org = ''; try { org = Buffer.from(mo[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch (e) { return s; }
+    return org + (mo[2] || '/') + (mo[3] || '');
+  }
+  mo = s.match(/^\/m(\/[^\s?#]*)(\?[^\s#]*)?$/);
+  if (mo) return ORIGIN_URL.replace(/\/+$/, '') + mo[1] + (mo[2] || '');
+  return s;
+}
 function proxyAsset(req, res) {
   // 白名单：只代理表现层静态资源（CSS url() 引用的图片/字体等）。
   // 不加白名单时 GET /m/ 可直接拉到源站整页明文（含页面内密钥）——击穿"数据不出站"
-  const u = assetUrl(req.url.slice(2), ORIGIN_BASE);
+  let rest = req.url.slice(2);
+  let base = ORIGIN_BASE;
+  const mo = rest.match(/^\/o\/([A-Za-z0-9_-]+)(\/.*)?$/);
+  if (mo) {
+    let org = null;
+    try { org = new URL(Buffer.from(mo[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch (e) {}
+    if (!org || !/^https?:$/.test(org.protocol) || !ORIGIN_ALLOWED.has(org.origin)) { res.writeHead(403); res.end('asset origin'); return; }
+    base = new URL(org.origin + '/');
+    rest = mo[2] || '/';
+  }
+  const mod = base.protocol === 'https:' ? httpBoth.https : httpBoth.http;
+  const u = assetUrl(rest, base);
   if (!u) { res.writeHead(403); res.end('asset allowlist'); return; }
-  const upstream = trackRequest(httpOrigin.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
+  const upstream = trackRequest(mod.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
     const ct = (up.headers['content-type'] || '').toLowerCase();
     if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300 || /text\/html|json|javascript|xml/.test(ct)) {
       up.resume();
@@ -733,12 +817,13 @@ let obfRR = 0;
 const obfSessions = new Map();   // sid -> pool entry（含 .siteFonts 网站字体孪生）
 const obfFontCache = new Map();  // 文件路径 -> Buffer（LRU≤8，~3-8MB/项）
 const obfTwinCache = new Map();  // url|seed -> Buffer（网站字体 PUA 孪生，LRU≤12）
-const obfHttp = ORIGIN_BASE.protocol === 'https:' ? require('https') : require('http');
 // 下载源站字体文件（同源静态资源，服务端代取）
 function obfFetchFont(url, timeoutMs = 12000) {
   return new Promise((resolve) => {
     try {
-      const req = trackRequest(obfHttp.get(url, { timeout: timeoutMs }, (r) => {
+      // 多源会话的网站字体可能跨协议（ORIGIN_URL 与 x-rbi-origin 源不同）
+      const mod = String(url).startsWith('https:') ? httpBoth.https : httpBoth.http;
+      const req = trackRequest(mod.get(url, { timeout: timeoutMs }, (r) => {
         if ((r.statusCode || 0) >= 400) { r.resume(); resolve(null); return; }
         const chunks = [];
         r.on('data', (c) => chunks.push(c));
@@ -977,6 +1062,9 @@ async function runSession(ws, req, lifecycle) {
 
   // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
   const sessionOrigin = req.rbiOrigin || ORIGIN_URL;
+    let sessHelpers;
+    try { sessHelpers = pageHelpersFor(new URL(sessionOrigin).origin); }
+    catch (e) { sessHelpers = pageHelpersFor(ORIGIN_BASE.origin); }
     logger.log('[sess  ] origin =', sessionOrigin);
     let prodMode = (sessionOrigin !== ORIGIN_URL) || config.presentation === 'embedded'; // 网关模式/专用实例：访客端隐藏演示壳，只呈现业务页面
 
@@ -1365,7 +1453,7 @@ async function runSession(ws, req, lifecycle) {
     return domStarting;
   }
   async function doStartDomMirror() {
-    await page.evaluate(PAGE_HELPERS);
+    await page.evaluate(sessHelpers);
     if (obfSess && mode === 'dom') {
       // 编码表注入源站页（sanitizeClone 序列化时置换文本码点）
       await page.evaluate((m) => { window.__xyObfMap = m; }, obfSess.plain).catch(() => {});
@@ -1439,7 +1527,7 @@ async function runSession(ws, req, lifecycle) {
     // 导航（POST→302→落地页）会让快照发出旧内容且新文档上无任何 observer——
     // 该会话从此零补丁零触发（实测 css 永久冻结的一种成因）。先挂可观测窗口
     // 覆盖整个快照期；PAGE_HELPERS 注入加超时防导航竞态悬挂。
-    await withTimeout(page.evaluate(PAGE_HELPERS), 8000, 'helpers').catch((e) => {
+    await withTimeout(page.evaluate(sessHelpers), 8000, 'helpers').catch((e) => {
       logger.log('[dom   ] helpers inject fail:', e && e.message);
     });
     await page.evaluate(() => {
@@ -1487,7 +1575,7 @@ async function runSession(ws, req, lifecycle) {
         const fam = (blk.match(/font-family\s*:\s*['"]?([^;'"]+?)['"]?\s*(?:;|$)/) || [])[1];
         let url = (blk.match(/src\s*:[^;]*?url\((['"]?)([^)'"]+?\.(?:woff2|woff|ttf|otf))\1/i) || [])[2];
         if (!fam || !url || /^data:/i.test(url)) continue;
-        try { url = new URL(url, sessionOrigin).href; } catch (e) { continue; }
+        try { url = new URL(unproxyAsset(url), sessionOrigin).href; } catch (e) { continue; }
         const wRaw = ((blk.match(/font-weight\s*:\s*([^;]+)/) || [])[1] || '400').trim();
         const w = /^\d+$/.test(wRaw) ? wRaw : '400';
         if (siteFonts.some(x => x.fam === fam && x.w === w)) continue;
@@ -1506,7 +1594,8 @@ async function runSession(ws, req, lifecycle) {
       } else ent.siteFonts = null;
     }
     const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
-    const cssFixed = snap.css.replace(/url\((['"]?)\//g, 'url($1/m/') + obfCssBlock;
+    // css 内 url() 已在快照采集时按所属样式表基址改写为 /m(/m/o) 代理路径
+    const cssFixed = snap.css + obfCssBlock;
     const payload = JSON.stringify({ type: 'dom-snapshot', css: cssFixed, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [], bodyId: snap.bodyId });
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
@@ -1983,7 +2072,7 @@ async function runSession(ws, req, lifecycle) {
         if (!domActive || ws.readyState !== 1) return;
         navChain = navChain.then(async () => {
           try {
-            await page.evaluate(PAGE_HELPERS).catch(() => {});
+            await page.evaluate(sessHelpers).catch(() => {});
             if (mode === 'dom' || mode === 'frame') await startDomMirror();
             for (const d of [600, 1500]) {
               setTimeout(() => {

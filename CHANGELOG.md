@@ -1,3 +1,20 @@
+# v0.16.0
+
+- 同内容快照去重：服务端导航后 +600ms/+1500ms 兜底重拍在静态页上产出字节级相同
+  的快照，客户端整树重建三连即"页面像刷新了 3 次"。css+html 与上次完全一致的
+  快照跳过重建，仅跟随滚动/标题；内容变化路径不变。
+- 快照 CSS 按文档序收集：此前 style 全量前置 + link 后置会翻转同特异性规则的
+  级联胜负（运行时注入的 <style> 覆盖被 <link> 反杀）；adopted 样式表按规范
+  排在其余作者样式之后。
+- CSS url() 与资源 URL 代理改写收口：相对 url() 按其所属样式表地址解析后统一
+  改写为 /m 代理（此前仅根绝对路径），webfont/背景图不再因客户端相对地址 404
+  回退系统字体（观感差异的来源之一）。
+- 多源会话资产路由：x-rbi-origin 白名单会话的资源以 /m/o/<base64url(origin)>/
+  path 下发，代理按该段路由到对应白名单源站；短式 /m 固定路由 ORIGIN_URL。
+  PAGE_HELPERS 按会话注入源站前缀（origin 占位符），同一网关可同时镜像多源站。
+- 新增回归 verify-assets（短式/多源改写与路由、未白名单 403、级联顺序、快照
+  去重 3→≤1）与 tools/check-helpers.cjs（注入代码语法校验）；CI 接入。
+
 # v0.15.0
 
 - adoptedStyleSheets 追踪：构造样式表（new CSSStyleSheet + adopted）对 style/link
@@ -216,7 +233,7 @@ Fixes:
 
 Verified on a real external Chromium through the production ingress: fresh
 login now delivers 30/30 keyframes (264KB css), computed-style census shows
-sr-fade-in/sr-view-in/soulraid-spin running in the mirror, and a 4-frame
+sr-fade-in/sr-view-in/sr-spin running in the mirror, and a 4-frame
 burst during view switch measures 6.6%/7.3%/3.5% pixel change (was 0.000%).
 
 # v0.7.1 — fix: obfuscation fonts must register at document level

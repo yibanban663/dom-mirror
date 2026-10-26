@@ -1006,7 +1006,7 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${proto}://${location.host}/ws`);
     ws = socket;
-    let snapshotReady = false, syncReady = false, snapshotSerial = 0;
+    let snapshotReady = false, syncReady = false, snapshotSerial = 0, lastSnapKey = null;
     const activate = () => {
       if (!snapshotReady || !syncReady || !retryAllowed || ws !== socket || socket.readyState !== 1) return;
       availability(true); retryDelay = 500; setStatus('会话在线', true);
@@ -1164,6 +1164,21 @@
             }
           }
           if (j.type === 'dom-snapshot') {
+            // 同内容快照去重：服务端导航后 +600ms/+1500ms 兜底重拍在静态页上产出
+            // 字节级相同的快照，整树重建=整页闪动（"每个页面像刷新了 3 次"的直接
+            // 来源）。css+html 与上一次已应用快照一致时跳过重建，仅跟随滚动/标题。
+            const snapKey = j.css + '\u0000' + j.html;
+            if (!j.frame && !frameMode && lastSnapKey === snapKey && mirrorBody) {
+              const rs = document.getElementById('mirrorScroll');
+              if (rs) {
+                rs.__xySync = true;
+                rs.scrollLeft = j.sx || 0; rs.scrollTop = j.sy || 0;
+                setTimeout(() => { rs.__xySync = false; }, 80);
+              }
+              if (j.title != null && document.title !== j.title) document.title = j.title;
+              return;
+            }
+            if (!j.frame) lastSnapKey = snapKey;
             const serial = ++snapshotSerial;
             snapshotReady = false;
             noteBytes(ev.data.length || ev.data.size || 0);
