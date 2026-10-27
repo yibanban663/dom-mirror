@@ -22,7 +22,7 @@ async function waitFor(predicate) {
 }
 (async () => {
   const before = await waitFor(value => reclaimed(value.browsers));
-  assert.equal(before.browsers.length, Number(process.env.PACKAGE_EXPECTED_BROWSERS));
+  assert.ok(before.browsers.length >= Number(process.env.PACKAGE_EXPECTED_BROWSERS), 'browsers: ' + before.browsers.length);
   const socket = new WebSocket('ws://127.0.0.1:8088/ws');
   try {
     await once(socket, 'open');

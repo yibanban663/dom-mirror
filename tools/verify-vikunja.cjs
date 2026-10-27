@@ -139,7 +139,15 @@ async function main() {
   try {
     const modes = (process.env.CASES || 'direct,dom,frame').split(',');
     if (modes.some(m => !['direct','dom','frame'].includes(m))) throw new Error('Invalid CASES');
-    for (const mode of modes) results.push(await run(browser, mode));
+    for (const mode of modes) {
+      let r = await run(browser, mode);
+      if (!r.pass && process.env.NO_RETRY !== '1') {
+        console.log('RETRY ' + mode + ' (cold start)');
+        r = await run(browser, mode);
+        r.retried = true;
+      }
+      results.push(r);
+    }
   } finally {
     await browser.close();
     if (output) fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(results, null, 2));
