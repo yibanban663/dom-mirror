@@ -58,7 +58,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 service_secret=$(openssl rand -hex 32)
 docker network create --internal "$run_id" >/dev/null
-docker run -d --name "$app" --network "$run_id" --network-alias business \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$app" --network "$run_id" --network-alias business \
   "${proxy_env[@]}" --memory 768m --cpus 1 \
   --tmpfs /db:rw,uid=1000,gid=1000,size=128m \
   --tmpfs /app/vikunja/files:rw,uid=1000,gid=1000,size=64m \
@@ -69,7 +69,7 @@ unset service_secret
 docker exec "$app" /app/vikunja/vikunja version > "$evidence/app-version.txt"
 docker image inspect "$image" --format '{{json .Id}}' > "$evidence/mirror-image.json"
 printf '%s\n' "$business_image" > "$evidence/app-image.txt"
-docker run -d --name "$server" --network "$run_id" --network-alias mirror \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" "${allocator_env[@]}" --memory 2g --cpus "${MIRROR_CPUS:-2}" -e PROD_PRESENTATION=1 \
   -e "PROFILE_FRAME_TICK_MS=${PROFILE_FRAME_TICK_MS:-16}" -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "PROFILE_CODEC=${PROFILE_CODEC:-production}" \
   -e "PROFILE_PATCH_MS=${PROFILE_PATCH_MS:-60}" -e "DEFAULT_MODE=${PROFILE_MODE:-dom}" "${server_mount[@]}" \
@@ -83,7 +83,7 @@ docker exec "$server" node -e '
     process.exit(1);
   })().catch(() => process.exit(1));
 '
-docker run --name "$client" --network "$run_id" --memory 2g -w "$client_root" \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --memory 2g -w "$client_root" \
   "${proxy_env[@]}" -e BUSINESS_URL=http://business:3456 -e MIRROR_URL=http://mirror:8088/ \
   -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e EVIDENCE_DIR=/tmp/business-evidence -e "CASES=${CASES:-direct,dom,frame}" \
   -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "DIAGNOSTIC_HOLD_MS=${DIAGNOSTIC_HOLD_MS:-0}" \

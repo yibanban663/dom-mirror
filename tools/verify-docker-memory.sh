@@ -10,6 +10,7 @@ server_timeout=$((client_timeout + 30))
 [[ "$group" == default || "$group" == gc || "$group" == cache-off || "$group" == gc-cache-off ]] || exit 2
 evidence=${EVIDENCE_DIR:-"$repo/artifacts/frame-memory/$group"}
 mkdir -p "$evidence"
+chmod a+rwx "$evidence" # 容器以 pptruser 写入证据
 evidence=$(cd -- "$evidence" && pwd)
 run_id="dom-mirror-memory-$(date +%s)-$$"
 server="$run_id-server"
@@ -35,11 +36,11 @@ diagnostic_env=(-e "MEMORY_CYCLES=$cycles" -e "MEMORY_NATIVE_PROBE=${MEMORY_NATI
 allocator_env=(-e "LD_PRELOAD=${MEMORY_LD_PRELOAD:-}" -e "MALLOC_CONF=${MEMORY_MALLOC_CONF:-}")
 docker image inspect "$image" --format '{{json .Id}}' > "$evidence/image.json"
 docker network create --internal "$run_id" >/dev/null
-docker run -d --name "$server" --network "$run_id" --network-alias mirror \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" "${diagnostic_env[@]}" "${allocator_env[@]}" --memory 2g --cpus 2 -v "$evidence:/evidence" \
   -e EVIDENCE_DIR=/evidence -e "MEMORY_GROUP=$group" \
   "$image" timeout --signal=TERM "$server_timeout" node --expose-gc tools/memory-host.cjs >/dev/null
-docker run --name "$client" --network "$run_id" --network-alias load \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --network-alias load \
   "${proxy_env[@]}" "${diagnostic_env[@]}" --memory 4g --cpus 4 -v "$evidence:/evidence" \
   -e EVIDENCE_DIR=/evidence -e "MEMORY_GROUP=$group" \
   "$image" timeout --signal=TERM "$client_timeout" node tools/memory-client.cjs

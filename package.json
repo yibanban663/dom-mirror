@@ -12,6 +12,7 @@
     "index.js",
     "index.d.ts",
     "demo/",
+    "docker/",
     "README.demo.md",
     "server.js",
     "client/",

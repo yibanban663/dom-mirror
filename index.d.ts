@@ -34,6 +34,8 @@ export interface MirrorOptions {
   obfuscate?: boolean;
   /** Mirror canvases with 2D contexts created after injection as draw-command streams (default true); others fall back to bitmap capture. */
   canvasStream?: boolean;
+  /** Keep Chromium's sandbox (default true). Disable only where user namespaces are unavailable; a compromised renderer then runs with the host's privileges. */
+  chromiumSandbox?: boolean;
   /** Input types whose mirrored values are replaced with up to 32 asterisks in snapshots/patches (default off). Interactivity is unaffected. */
   maskInputTypes?: string[];
   /** Remove these named attributes from mirrored elements, including html/body metadata. */

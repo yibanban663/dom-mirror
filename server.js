@@ -43,8 +43,9 @@ const DOWNLOAD_MAX = config.download.maxBytes;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
 const logger = config.logger;
 let sharp = null; try { sharp = require('sharp'); } catch (e) { logger.log('[sharp ] unavailable:', e.message); }
+// chromiumSandbox=false 仅用于无法提供 user namespace 的环境（渲染进程被攻破即拿到宿主进程权限）
 const CHROME_ARGS = [
-  '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+  ...(config.chromiumSandbox ? [] : ['--no-sandbox', '--disable-setuid-sandbox']), '--disable-dev-shm-usage',
   '--disable-gpu', '--hide-scrollbars', '--mute-audio',
   '--force-color-profile=srgb', '--font-render-hinting=none',
   '--disable-background-timer-throttling',

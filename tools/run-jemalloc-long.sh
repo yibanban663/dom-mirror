@@ -31,7 +31,7 @@ NODE
 [[ ! -e "$evidence/default" ]] || exit 2
 preload=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
 conf=narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000
-docker run --rm --network none --memory 512m --cpus 1 -e MEMORY_EXPECT_ALLOCATOR=jemalloc \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --rm --network none --memory 512m --cpus 1 -e MEMORY_EXPECT_ALLOCATOR=jemalloc \
   -e "LD_PRELOAD=$preload" -e "MALLOC_CONF=$conf" "$image" node tools/verify-allocator.cjs > "$evidence/preflight.json"
 IMAGE="$image" MEMORY_CYCLES=30 MEMORY_GROUP=default MEMORY_NATIVE_PROBE=1 MEMORY_FINAL_DIAGNOSTICS=1 \
   MEMORY_SKIP_TRIM=1 MEMORY_MAPS=1 MEMORY_LD_PRELOAD="$preload" MEMORY_MALLOC_CONF="$conf" \
