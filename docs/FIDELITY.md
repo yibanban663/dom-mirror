@@ -176,7 +176,26 @@
   v0.28 elbit 三处已移植到新结构（lib/page-helpers 谓词+标记、lib/canvas 候选+
   record elbit 节流、server.js watch fresh 旁路）。合并树全量回归绿（Vikunja 3/3，
   xframe-policy 过；package-business 需宿主 node，由 CI 覆盖）。
-- 周度 RUM 复评：见 v0.27 节流程（aggregate-rum.cjs）。首次生产聚合执行
+- 周度 RUM 复评：见 v0.27 节流程（aggregate-rum.cjs）。
+
+### v0.29 —— 低带宽三件套（真实业务验收驱动）
+- **验收场景**：SoulBind（:82，源站 10.1.1.180）admin 真实登录 → SOC 仪表盘
+  （1313 节点、17 画布）→ 侧边栏二次导航。真实指针输入（引擎点击走
+  pointerdown/up 管线，合成 .click() 不派发——验收探针必须用坐标级真实点击）。
+- **canvas 指令流字节预算**：每画布 10s 滚动窗口 100KB（config.canvasOpsBudget，
+  0=不限），超限 opaque('rate-budget') 停发指令流、位图捕获接管（帧差+退避封顶）。
+  定时器驱动（无 rAF）的重绘画布靠 hot 续期旁路 rAF 门——否则超预算后冻结
+  （新基准断言拦下）。客户端 canvas→img 原位替换通道对齐快照占位形态。
+- **attrs O(1) 补丁**：属性变更不再 outer 全量重发（图表动画 style 每 tick
+  153KB 居带宽主导）。快路径与 stripAttributes/sanitizeData 同语义：表单控件/
+  URL 承载属性回落 outer、on*/零明文载体剥离、style 经 cssUrlRewrite 改写——
+  data-boundary 回归曾拦下 password value 绕过剥离直上 wire 的泄漏。
+- **实测（RUM 30s，v0.28.1 → v0.29.0）**：canvas-ops 19.8MB 无上限 → ~0.8MB
+  冻结；dom-patches 9.3MB → ~3MB；总带宽 ~35MB → ~6MB（**5.7×**）；交互延迟
+  36-71ms。
+- **vlist 基准阈值校准的病理发现**：旧 outer 路径替换 spacer 引发滚动回声放大
+  （348px 滚出 first=228/updates=23，19×）；attrs 直发后回落 2×。updates 阈值
+  10→5，first 断言不变。首次生产聚合执行
   （2026-10-27，v0.28.1 部署后即时）：7 beacon / snaps 7 / patches 0 / 帧时
   p50 66.6ms、p95 66.8ms（空闲页 beacon 采样节奏，非交互负载）/ 交互延迟暂无
   样本（容器刚重建，仅探针流量）——通道与工具链端到端可用。
