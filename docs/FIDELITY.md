@@ -163,6 +163,12 @@
   script 后错位一格（#gap 标记落到 #outer-button，min-height:1200 撑坏布局）→
   移入 stamp 游走；②破坏式替换占位 img 会吞掉快照时空、后填充的 Vue 挂载点
   （Vikunja 整个登录表单消失）→ 非破坏式标记。
+  ③（0045b04，逃过本地回归、被 CI 冷 runner 拦下）开关注入未插值——
+  `const __xyElbitOn = config.elbit !== false` 在模板串中原样下发页面，无全局
+  config 的页面 helpers-1 evaluate 抛 ReferenceError、会话必死（snaps:0、客户端
+  20s 超时）；源站自带 window.config（Vue 站）恰好掩盖，故线上三症状与部分基准
+  绿、scroll fixture 必死。教训：page-helpers 模板串引用服务端变量一律 ${} 构建
+  期插值（canvasStream 开关同款），不得依赖源站全局名做巧合兜底。
 - 实证（gen-cshadow 六断言全绿）：parse 期/注入后 closed 内容渲染、交互视觉回路、
   声明式宿主占位标记、位图首拍（绿像素 43825）、CSS 动画翻转跟随。
 - **main 同步（144a9ec，11 提交重构）**：PAGE_HELPERS→lib/page-helpers.js、
