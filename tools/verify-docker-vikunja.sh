@@ -3,7 +3,7 @@ set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 image=${IMAGE:-dom-mirror:local}
 test_script=${BUSINESS_TEST_SCRIPT:-verify-vikunja.cjs}
-[[ "$test_script" == verify-vikunja.cjs || "$test_script" == verify-recovery.cjs || "$test_script" == profile-business.cjs ]] || exit 2
+[[ "$test_script" == verify-vikunja.cjs || "$test_script" == verify-recovery.cjs || "$test_script" == profile-business.cjs || "$test_script" == verify-recovery-race.cjs ]] || exit 2
 business_image=vikunja/vikunja@sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576
 evidence=${EVIDENCE_DIR:-"$repo/artifacts/vikunja"}
 run_id="dom-mirror-vikunja-$(date +%s)-$$"
@@ -86,6 +86,7 @@ docker exec "$server" node -e '
 docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --memory 2g -w "$client_root" \
   "${proxy_env[@]}" -e BUSINESS_URL=http://business:3456 -e MIRROR_URL=http://mirror:8088/ \
   -e "SESSION_GRACE_MS=${SESSION_GRACE_MS:-60000}" -e EVIDENCE_DIR=/tmp/business-evidence -e "CASES=${CASES:-direct,dom,frame}" \
+  -e "RACE_ROUNDS=${RACE_ROUNDS:-10}" \
   -e "PROFILE_PRESENTATION=${PROFILE_PRESENTATION:-0}" -e "DIAGNOSTIC_HOLD_MS=${DIAGNOSTIC_HOLD_MS:-0}" \
   -v "$repo/tools:$client_root/tools:ro" --entrypoint timeout \
   "$image" 270 node "tools/$test_script"
