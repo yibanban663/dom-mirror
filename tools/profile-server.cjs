@@ -24,9 +24,11 @@ function load(file, text) {
   return mod;
 }
 replace("const crypto = require('crypto');", "const crypto = require('crypto');\nconst __perf = require('./tools/profile-runtime.cjs');");
-// v0.30 实例池：浏览器获取有池化/独立两条路径，分别打点
-replace('      poolHandle = await browserPool.acquire();', "      poolHandle = await __perf.measure('browser.acquire', () => browserPool.acquire());");
-replace('      b = await launchSessionBrowser();', "      b = await __perf.measure('browser.launch', () => launchSessionBrowser());");
+// v0.30 实例池自愈版：获取走 takePooled 全链竞速（acquire 在内）；打点内移，
+// 独立启动两条回退路径（无池主路径 + 池获取失败回退）各出现一次
+replace('          const h = await browserPool.acquire();', "          const h = await __perf.measure('browser.acquire', () => browserPool.acquire());", 1);
+replace('        b = await launchSessionBrowser();', "        b = await __perf.measure('browser.launch', () => launchSessionBrowser());", 1);
+replace('    } else {\n      b = await launchSessionBrowser();\n    }', "    } else {\n      b = await __perf.measure('browser.launch', () => launchSessionBrowser());\n    }", 1);
 replace("await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });", "if (process.env.PROFILE_PRESENTATION === '1') { await page.exposeFunction('__profileTaskMarker', value => __perf.sourceMarker(value)); await page.evaluateOnNewDocument(require('./tools/profile-marker.cjs')); }\n    await __perf.measure('origin.goto', () => page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 }));");
 replaceHelpers('const clone = sanitizeClone(document.body);', 'const perfStart = performance.now();\n      const clone = sanitizeClone(document.body);\n      const perfCloneEnd = performance.now();');
 replaceHelpers("let docClass = '', docAttrs = '';", "const perfCssEnd = performance.now();\n      let docClass = '', docAttrs = '';");
