@@ -6,7 +6,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const puppeteer = require('puppeteer');
-const { accepts } = require('./generality-result.cjs');
 
 const CASE = process.env.CASE || 'forms';
 const mirrorUrl = process.env.MIRROR_URL;
@@ -20,7 +19,7 @@ window.__setv = (s, v) => { const el = window.__q(s); if (!el) return false; con
 window.__click = (s, dx, dy) => { const el = window.__q(s); if (!el) return false; const r = el.getBoundingClientRect(); const o = { bubbles: true, composed: true, cancelable: true, button: 0, isPrimary: true, pointerId: 7, clientX: r.left + (dx === undefined ? r.width / 2 : dx), clientY: r.top + (dy === undefined ? r.height / 2 : dy) }; el.dispatchEvent(new PointerEvent('pointerdown', o)); el.dispatchEvent(new PointerEvent('pointerup', o)); return true; };`;
 
 async function main() {
-  const out = { case: CASE, pass: false, checks: {}, bytes: {}, perf: {} };
+  const out = { case: CASE, pass: false, checks: {}, bytes: {} };
   const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-proxy-server'] });
   try {
     const page = await browser.newPage();
@@ -533,7 +532,7 @@ async function main() {
   } finally {
     await browser.close();
   }
-  out.pass = accepts(out);
+  out.pass = !!(out.checks && Object.keys(out.checks).length && Object.values(out.checks).every(Boolean));
   const evd = process.env.EVIDENCE_DIR;
   if (evd) {
     fs.mkdirSync(evd, { recursive: true });
