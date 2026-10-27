@@ -48,7 +48,8 @@ async function startDemo(createMirror = require('..').createMirror) {
       canvasStream: process.env.CANVAS_STREAM !== '0',
       elbit: process.env.XY_ELBIT !== '0',
       chromiumSandbox: process.env.CHROMIUM_SANDBOX !== '0',
-      browserPoolSize: Number(process.env.BROWSER_POOL ?? 2),
+      // v0.30：池随会话上限缩放（min 半数、至少 2）——burst 下排队窗口可控；测试环境 maxSessions 2-3 → 2 不变
+      browserPoolSize: process.env.BROWSER_POOL !== undefined ? Number(process.env.BROWSER_POOL) : Math.max(2, Math.ceil((Number(process.env.MAX_SESSIONS) || 3) / 2)),
       maskInputTypes: (process.env.MASK_INPUT_TYPES || '').split(',').map(v => v.trim()).filter(Boolean),
     });
     const server = http.createServer(mirror.handleRequest);

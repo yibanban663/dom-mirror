@@ -504,7 +504,7 @@ async function runSession(ws, req, lifecycle) {
   ws.on('error', () => {});
   // v0.30 会话活性探测：浏览器页销毁后 TCP 半开不触发 close（既有缺陷，
   // 一会话一浏览器时靠 MAX_SESSIONS 冗余掩盖；池化后会占死池位）。
-  // 3s 轮询：readyState≥2 直调 cleanup；协议 ping 探活，15s 无活性兜底。
+  // 1s 轮询：readyState≥2 直调 cleanup；协议 ping 探活，15s 无活性兜底。
   ws.on('pong', () => { lastAliveAt = Date.now(); });
   // 仅池化模式创建（空转 interval 会吊住"无句柄自然退出"的测试进程——CI
   // 语法 job 实测卡死；pool-off 路径与历史行为完全同构）
@@ -525,7 +525,7 @@ async function runSession(ws, req, lifecycle) {
       return;
     }
     try { ws.ping(); } catch (e) {}
-  }, 3000);
+  }, 1000);
 
   // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
   const sessionOrigin = req.rbiOrigin || ORIGIN_URL;
@@ -1529,10 +1529,38 @@ async function runSession(ws, req, lifecycle) {
     let poolHandle = null;
     let b;
     if (browserPool) {
-      poolHandle = await browserPool.acquire();
-      b = poolHandle.browser;
-      sessionExclusive = poolHandle.exclusive;
-      sessionRelease = poolHandle.release;
+      // v0.30 自愈：newPage 20s 竞速——宿主高压下实测池浏览器可能连接存活但
+      // newPage 永久悬挂；超时逐出该实例重取一次，仍败回退独立浏览器保证会话必达
+      const takePooled = () => Promise.race([
+        (async () => {
+          const h = await browserPool.acquire();
+          const page = await h.context.newPage();
+          return { h, page };
+        })(),
+        // 竞速覆盖 acquire+createBrowserContext+newPage 全链（实测悬挂点可在
+        // 任一环——宿主高压下 createBrowserContext 也曾永久挂起）
+        new Promise((_, rej) => setTimeout(() => rej(new Error('pool acquire timeout')), 20000)),
+      ]);
+      try {
+        ({ h: poolHandle, page } = await takePooled());
+      } catch (e) {
+        logger.log('[pool  ] acquire retry after:', e && e.message);
+        if (poolHandle) { const bad = poolHandle.browser; await poolHandle.release().catch(() => {}); browserPool.evict(bad); poolHandle = null; }
+        else browserPool.evictIdle();
+        try {
+          ({ h: poolHandle, page } = await takePooled());
+        } catch (e2) {
+          logger.log('[pool  ] fallback to standalone browser:', e2 && e2.message);
+          if (poolHandle) { await poolHandle.release().catch(() => {}); poolHandle = null; }
+        }
+      }
+      if (poolHandle) {
+        b = poolHandle.browser;
+        sessionExclusive = poolHandle.exclusive;
+        sessionRelease = poolHandle.release;
+      } else {
+        b = await launchSessionBrowser();
+      }
     } else {
       b = await launchSessionBrowser();
     }
@@ -1550,7 +1578,7 @@ async function runSession(ws, req, lifecycle) {
       sendJson({ type: 'error', code: 'SESSION_EXPIRED', terminal: true, msg: '服务端浏览器已关闭，请核对上次提交结果后重新开始' });
       ws.close(1011, 'browser closed');
     });
-    page = poolHandle ? await poolHandle.context.newPage() : await b.newPage();
+    if (!page) page = poolHandle ? await poolHandle.context.newPage() : await b.newPage();
     if (dead) { await page.close(); return; }
     // v0.27 closed shadow 捕获：attachShadow 补丁在页面任何脚本之前安装
     //（evaluateOnNewDocument），parse 期创建的 closed root 也进注册表——此前
