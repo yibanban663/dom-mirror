@@ -23,13 +23,6 @@ for (const name of ['tools/capacity-host.cjs', 'tools/capacity-client.cjs', 'too
 }
 
 // Compile the actual injected template after evaluating its server-side interpolation.
-const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-const start = server.indexOf('const PAGE_HELPERS = ');
-const end = server.indexOf('\n// ---------- 静态文件', start);
-if (start < 0 || end < 0) throw new Error('PAGE_HELPERS not found');
-const helpers = vm.runInNewContext(server.slice(start, end) + '\nPAGE_HELPERS;', {
-  ORIGIN_BASE: new URL('http://127.0.0.1:8077/'),
-  config: { redactAttributes: [], maskInputTypes: [], canvasStream: true },
-});
-new vm.Script(helpers, { filename: 'PAGE_HELPERS' });
+const { pageHelpers } = require('../lib/page-helpers');
+new vm.Script(pageHelpers({ redactAttributes: [], maskInputTypes: [], canvasStream: true }), { filename: 'PAGE_HELPERS' });
 console.log('Client, demo and injected scripts compile');

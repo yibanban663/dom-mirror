@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "start": "node demo/server.js",
-    "check": "node --check index.js && node --check server.js && node --check demo/server.js && node --check lib/options.js && node --check lib/static.js && node --check lib/timers.js && node --check lib/policy.js && node tools/check.js",
+    "check": "node --check index.js && node --check server.js && node --check demo/server.js && node --check lib/options.js && node --check lib/static.js && node --check lib/timers.js && node --check lib/policy.js && node --check lib/page-helpers.js && node tools/check.js",
     "test": "node --test",
     "demo": "node demo/server.js"
   },
