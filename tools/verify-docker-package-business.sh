@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-node "$repo/tools/prepare-package-business.cjs" "$context"
+docker run --rm --user root -v "$repo:/repo:ro" -v "$context:/ctx" --entrypoint node "${IMAGE:-dom-mirror:local}" /repo/tools/prepare-package-business.cjs /ctx
 cp "$context/expected.json" "$evidence/archive.json"
 timeout 480 docker build --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
   --build-arg http_proxy --build-arg https_proxy --build-arg NO_PROXY --build-arg no_proxy \
