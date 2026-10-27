@@ -38,13 +38,13 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist xiframe cshad
   # xiframe 需要第二源站（跨源嵌入目标）：origin-b 静态容器
   if [ "$c" = "xiframe" ]; then
     docker rm -f "$run_id-originb" >/dev/null 2>&1 || true
-    docker run -d --name "$run_id-originb" --network "$run_id" --network-alias origin-b \
+    docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$run_id-originb" --network "$run_id" --network-alias origin-b \
       "${proxy_env[@]}" \
       -v "$repo/test/fixtures/origin-b:/origin-b:ro" \
       --entrypoint timeout "$image" 240 node tools/origin-static.cjs /origin-b 8000 >/dev/null
     xframe_container="$run_id-originb"
   fi
-  docker run -d --name "$server" --network "$run_id" --network-alias mirror \
+  docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
     "${proxy_env[@]}" \
     --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=2 \
     -e XFRAME_ALLOWED_ORIGINS=http://origin-b:8000 -e XFRAME_REFRESH_MS="${XFRAME_REFRESH_MS:-15000}" \
@@ -69,7 +69,7 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist xiframe cshad
   else
     unset XFRAME_REFRESH_MS
   fi
-  if docker run --rm --name "$client" --network "$run_id" --memory 2g \
+  if docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --rm --name "$client" --network "$run_id" --memory 2g \
     "${proxy_env[@]}" \
     -e CASE="$c" -e MIRROR_URL=http://mirror:8088/ -e EVIDENCE_DIR=/tmp/ev \
     --entrypoint timeout "$image" 200 node tools/verify-generality.cjs > "$evidence/$c.json" 2> "$evidence/$c.err"; then

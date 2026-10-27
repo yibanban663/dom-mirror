@@ -29,3 +29,11 @@ test('identity hooks are opt-in functions and are not executed during configurat
     assert.throws(() => normalizeOptions({ originUrl: 'http://localhost/', getSessionIdentity: value }), TypeError);
   }
 });
+
+test('Chromium sandbox is on by default and only an explicit boolean disables it', () => {
+  assert.equal(normalizeOptions({ originUrl: 'http://localhost/' }).chromiumSandbox, true);
+  assert.equal(normalizeOptions({ originUrl: 'http://localhost/', chromiumSandbox: false }).chromiumSandbox, false);
+  for (const chromiumSandbox of [0, 'false', 'no']) {
+    assert.throws(() => normalizeOptions({ originUrl: 'http://localhost/', chromiumSandbox }), TypeError);
+  }
+});

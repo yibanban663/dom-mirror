@@ -25,7 +25,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 docker network create --internal "$run_id" >/dev/null
-docker run -d --name "$server" --network "$run_id" --network-alias mirror \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" \
   --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MASK_INPUT_TYPES=text \
   -e ORIGIN_URL=http://127.0.0.1:8077/enhance.html \
@@ -40,7 +40,7 @@ docker exec "$server" node -e '
     process.exit(1);
   })().catch(() => process.exit(1));
 '
-docker run --name "$client" --network "$run_id" --memory 2g \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" \
   -e MIRROR_URL=http://mirror:8088/ -e EVIDENCE_DIR=/tmp/enh-evidence \
   --entrypoint timeout "$image" 90 node tools/verify-enhance.cjs

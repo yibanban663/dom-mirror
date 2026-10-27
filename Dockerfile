@@ -30,4 +30,6 @@ RUN npm ci --omit=dev \
  && node -e "(async () => {const p=require('puppeteer');require('fs').accessSync(await p.executablePath());require('ws');const s=require('sharp');console.log('deps ok, sharp', s.versions.vips)})().catch(e => {console.error(e.message);process.exit(1)})"
 
 EXPOSE 8088
+# 以非 root 运行；Chromium sandbox 需要 user namespace，运行时挂 docker/seccomp-chromium.json
+USER pptruser
 CMD ["node", "demo/server.js"]

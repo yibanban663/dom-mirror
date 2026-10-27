@@ -11,6 +11,7 @@ The standalone Demo wraps the library; it is not a separate gateway product. It 
 ```bash
 docker build -t dom-mirror:local .
 docker run --rm --name dom-mirror-demo \
+  --security-opt seccomp=docker/seccomp-chromium.json \
   --memory 2g --cpus 2 \
   -p 127.0.0.1:18088:8088 dom-mirror:local
 ```
@@ -33,8 +34,9 @@ Initial DOM view and the keyboard interaction capture are in the [main README](R
 The capture script starts its own Demo and Chromium, performs real keyboard and button operations, asserts the results, captures the page, and closes both. The script never rewrites the page to fabricate results. Run it in a disposable container with no external network or published ports:
 
 ```bash
-mkdir -p docs/assets
+mkdir -p docs/assets && chmod a+rwx docs/assets
 docker run --rm --name dom-mirror-docs-capture --network none \
+  --security-opt seccomp=docker/seccomp-chromium.json \
   --memory 3g --cpus 2 \
   -v "$PWD/docs/assets:/captures" \
   -e SCREENSHOT_DIR=/captures \
@@ -76,6 +78,7 @@ These environment variables are read by the **Demo**. Library consumers pass [fa
 | `SESSION_GRACE_MS` | `60000` | Integer 0–300000 ms / 断线保留毫秒数，0 不保留 |
 | `VIEW_W` / `VIEW_H` | `1280` / `800` | Initial viewport, then adjusted by client / 初始视口 |
 | `OBFUSCATE` | enabled if pool exists | `0` disables / 无字体池时降级，`0` 关闭 |
+| `CHROMIUM_SANDBOX` | `1` | `0` disables the Chromium sandbox (unsafe) / `0` 关闭 Chromium sandbox（不安全） |
 | `PROD_PRESENTATION` | `0` | `1` hides Demo chrome; adds no security / 仅隐藏演示面板 |
 | `RBI_ALLOWED_ORIGINS` | empty / 空 | Allowed source origins for the trusted `x-rbi-origin` header; not WS Origin policy |
 | `PUPPETEER_EXECUTABLE_PATH` | Puppeteer-managed | Browser executable / 浏览器路径 |
@@ -84,6 +87,7 @@ To mirror your source with the Demo / 接入其他源站：
 
 ```bash
 docker run --rm -p 127.0.0.1:18088:8088 \
+  --security-opt seccomp=docker/seccomp-chromium.json \
   -e ORIGIN_URL=https://your-site.example/ \
   -e DEFAULT_MODE=dom dom-mirror:local
 ```

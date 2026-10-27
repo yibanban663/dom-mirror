@@ -26,6 +26,7 @@ const mirror = createMirror({
 | `allowedOrigins` | `[]` | 允许 `x-rbi-origin` 选取的源站列表；不是 WS Origin 校验 |
 | `crossOriginFrameOrigins` | `[]` | 允许 Node 侧抓取的跨源 iframe 源列表；默认仅占位，不允许 URL 凭据；独立于 `allowedOrigins` |
 | `canvasStream` | `true` | 可序列化 2D canvas 指令流，其他画布回退位图 |
+| `chromiumSandbox` | `true` | 保留 Chromium sandbox；宿主须以非 root 运行并提供 user namespace（容器见 `docker/seccomp-chromium.json`）。`false` 仅用于无法满足的环境，渲染进程被攻破即获得宿主进程权限 |
 | `maskInputTypes` | `[]` | 指定输入类型的下发值改为最多 32 个星号；textarea 使用 `textarea`，不处理像素或上行数据 |
 | `upload` | 见下文 | 文件扩展名、单文件/会话总量、并发与过期限制 |
 | `download.maxBytes` | `33554432` | 下载单文件上限；进度超限请求取消，完整读入内存前复核大小 |

@@ -65,7 +65,7 @@ jobs:
         run: docker build -t dom-mirror:ci .
       - name: 冒烟启动（内置演示源站 + HTTP 探活）
         run: |
-          docker run -d --name ci-run -p 18088:8088 dom-mirror:ci
+          docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" -d --name ci-run -p 18088:8088 dom-mirror:ci
           for _ in $(seq 1 20); do
             code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/ || true)
             [ "$code" = "200" ] && echo "HTTP 200 OK" && exit 0
@@ -73,6 +73,8 @@ jobs:
           done
           docker logs ci-run
           exit 1
+      - name: Chromium 非 root 与 sandbox 生效
+        run: docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 1g dom-mirror:ci timeout 60 node tools/verify-chromium-sandbox.cjs
       - name: 真实浏览器滚动与首次点击回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-scroll.sh
       - name: 节点 ID 重排回归
@@ -81,8 +83,8 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-longtail-p0.sh
       - name: 跨源 iframe 默认拒绝与字段过滤回归
         run: |
-          mkdir -p artifacts/xframe-policy
-          docker run --rm --network none --memory 3g --cpus 2 -v "$PWD/artifacts/xframe-policy:/evidence" -e EVIDENCE_DIR=/evidence dom-mirror:ci timeout 120 node tools/verify-xframe-policy.cjs
+          mkdir -p artifacts/xframe-policy && chmod a+rwx artifacts/xframe-policy
+          docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 3g --cpus 2 -v "$PWD/artifacts/xframe-policy:/evidence" -e EVIDENCE_DIR=/evidence dom-mirror:ci timeout 120 node tools/verify-xframe-policy.cjs
       - name: Shadow DOM 回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-shadow.sh
       - name: 同源 iframe 回归
@@ -96,7 +98,7 @@ jobs:
       - name: 通用性基准（六类业务形态等价断言）
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-generality.sh
       - name: 下拉框节点替换回归
-        run: docker run --rm --network none --memory 1g --cpus 2 dom-mirror:ci timeout 30 node tools/verify-select.cjs
+        run: docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 1g --cpus 2 dom-mirror:ci timeout 30 node tools/verify-select.cjs
       - name: Vikunja 三通道业务回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh
       - name: Vikunja 短时断线恢复回归

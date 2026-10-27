@@ -8,6 +8,7 @@ count=${CAPACITY_SESSIONS:-1}
 [[ "$count" == 1 || "$count" == 3 || "$count" == 6 ]] || exit 2
 evidence=${EVIDENCE_DIR:-"$repo/artifacts/capacity/$mode-$count"}
 mkdir -p "$evidence"
+chmod a+rwx "$evidence" # 容器以 pptruser 写入证据
 evidence=$(cd -- "$evidence" && pwd)
 run_id="dom-mirror-capacity-$(date +%s)-$$"
 server="$run_id-server"
@@ -29,12 +30,12 @@ trap 'exit 143' TERM
 proxy_env=(-e HTTP_PROXY= -e HTTPS_PROXY= -e http_proxy= -e https_proxy= -e ALL_PROXY= -e all_proxy=)
 docker image inspect "$image" --format '{{json .Id}}' > "$evidence/image.json"
 docker network create --internal "$run_id" >/dev/null
-docker run -d --name "$server" --network "$run_id" --network-alias mirror \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" --memory 2g --cpus 2 \
   -v "$evidence:/evidence" -e EVIDENCE_DIR=/evidence \
   -e "CAPACITY_MODE=$mode" -e "CAPACITY_SESSIONS=$count" \
   "$image" timeout --signal=TERM 180 node tools/capacity-host.cjs >/dev/null
-docker run --name "$client" --network "$run_id" --network-alias load \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --network-alias load \
   "${proxy_env[@]}" --memory 4g --cpus 4 \
   -v "$evidence:/evidence" -e EVIDENCE_DIR=/evidence \
   -e "CAPACITY_MODE=$mode" -e "CAPACITY_SESSIONS=$count" \

@@ -9,4 +9,6 @@ COPY package.tgz expected.json host.cjs ./
 RUN printf '{"private":true}' > package.json \
  && npm install --ignore-scripts --omit=dev --no-audit --no-fund --fetch-timeout=30000 --fetch-retries=1 ./package.tgz \
  && npm ls --omit=dev --json > installed-tree.json
+# 以非 root 运行；Chromium sandbox 需要 user namespace，运行时挂 docker/seccomp-chromium.json
+USER pptruser
 CMD ["node", "/consumer/host.cjs"]
