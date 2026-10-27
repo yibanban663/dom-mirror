@@ -501,8 +501,10 @@ async function runSession(ws, req, lifecycle) {
   // 一会话一浏览器时靠 MAX_SESSIONS 冗余掩盖；池化后会占死池位）。
   // 3s 轮询：readyState≥2 直调 cleanup；协议 ping 探活，15s 无活性兜底。
   ws.on('pong', () => { lastAliveAt = Date.now(); });
-  timers.setInterval(() => {
-    if (dead || !browserPool) return;
+  // 仅池化模式创建（空转 interval 会吊住"无句柄自然退出"的测试进程——CI
+  // 语法 job 实测卡死；pool-off 路径与历史行为完全同构）
+  if (browserPool) timers.setInterval(() => {
+    if (dead) return;
     // 实测：浏览器页销毁后 ws 内部转为 CLOSED 但 close 事件不发出（terminate
     // 对已关 socket 为空操作）——轮询 readyState，≥CLOSING 即直接 cleanup（幂等）
     if (ws.readyState >= 2) {
