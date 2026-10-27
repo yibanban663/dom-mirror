@@ -13,6 +13,7 @@
 <!-- 先于镜像注入创建：位图兜底通道 -->
 <canvas id="legacy" width="220" height="40"></canvas>
 <button id="mk">create live canvas</button>
+<button id="mkheavy">create heavy canvas</button>
 <div id="state">ready</div>
 <script>
   // legacy canvas（页面加载即绘制）
@@ -24,6 +25,31 @@
     c.font = 'bold 13px Arial';
     c.fillText('legacy-bitmap', 52, 25);
   }
+  // v0.29 预算画布：持续 putImageData 大块数据（单批 >> 100KB/10s 预算）——
+  // 引擎应在超预算后停发指令流转位图（镜像 canvas→img）
+  document.getElementById('mkheavy').addEventListener('click', () => {
+    if (document.getElementById('heavy')) return;
+    const el = document.createElement('canvas');
+    el.id = 'heavy';
+    el.width = 240;
+    el.height = 160;
+    document.body.insertBefore(el, document.getElementById('state'));
+    const c = el.getContext('2d');
+    c.fillStyle = '#264653';
+    c.fillRect(0, 0, 240, 160);
+    let n = 0;
+    const iv = setInterval(() => {
+      if (n++ > 40) { clearInterval(iv); return; }
+      const img = c.createImageData(240, 160);
+      for (let i = 0; i < img.data.length; i += 4) {
+        img.data[i] = (i / 997 + n * 13) % 256;
+        img.data[i + 1] = (i / 701 + n * 29) % 256;
+        img.data[i + 2] = (i / 541 + n * 7) % 256;
+        img.data[i + 3] = 255;
+      }
+      c.putImageData(img, 0, 0);
+    }, 30);
+  });
   // 流 canvas：用户点击创建（此刻镜像注入已完成，getContext 走指令流 patch），
   // 动画柱状 + 渐变 + 文本
   document.getElementById('mk').addEventListener('click', () => {

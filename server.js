@@ -755,6 +755,9 @@ async function runSession(ws, req, lifecycle) {
     // 防抖：SPA 登录/路由切换会连发全量触发（head 注入样式 noPath:HEAD、
     // +600/+1500ms 导航重试、补丁 miss 客户端重同步），实测 4 秒内 6 次全量
     // 快照——重建窗口互相吞点击、镜像反复闪旧页。700ms 窗口内合并为一次。
+    // v0.29：重应用（SOC 大屏）head 持续变更（childList:noPath:HEAD 样式注入）
+    // 会周期性触发全量重同步——1.4MB 级快照连发。防抖窗口 700→2000ms：内容
+    // 增量仍走补丁通道实时下发，全量重发只作低频兜底（尾部触发保证终态一致）。
     const since = Date.now() - lastFullDoneAt;
     if (since < 700) {
       if (!fullDebounceT) {
@@ -797,7 +800,7 @@ async function runSession(ws, req, lifecycle) {
           if (propPatches.length && domActive && ws.readyState === 1) {
             sendJson({ type: 'dom-props', props: propPatches.map(p => p.__xyProp) });
           }
-          rest = rest.filter(p => p.__xyProp === undefined && p.__xySel === undefined && p.text === undefined && p.append === undefined);
+          rest = rest.filter(p => p.__xyProp === undefined && p.__xySel === undefined && p.text === undefined && p.append === undefined && p.attrs === undefined);
           // v0.17：选区补丁单独下发
           const selPatch = patches.find(p => p && p.__xySel);
           if (selPatch && domActive && ws.readyState === 1) sendJson({ type: 'dom-sel', ...selPatch.__xySel });
@@ -811,6 +814,11 @@ async function runSession(ws, req, lifecycle) {
           const textPatches = patches.filter(p => p && p.text !== undefined);
           if ((appendPatches.length || textPatches.length) && domActive && ws.readyState === 1) {
             sendJson({ type: 'dom-patches', patches: appendPatches.concat(textPatches) });
+          }
+          // v0.29：属性补丁 O(1) 直发（不进瓦片批——无 DOM 重读，几十字节）
+          const attrsPatches = patches.filter(p => p && p.attrs !== undefined);
+          if (attrsPatches.length && domActive && ws.readyState === 1) {
+            sendJson({ type: 'dom-patches', patches: attrsPatches });
           }
           if (!rest.length) return;
             if (rest.some(p => p && p.full)) {
@@ -830,6 +838,9 @@ async function runSession(ws, req, lifecycle) {
               if (kind2 === 'inner' && structBuf.get(key) === 'outer') continue;
               structBuf.set(key, kind2);
             }
+            // v0.29：合并窗 60→150ms——持续变更型仪表盘（SOC 大屏）瓦片批
+            // 16/s（每批整页截图+PNG 切块）是带宽与 CPU 双大头；150ms（≈6.7fps）
+            // 对背景构件视觉足够，文本/值通道不受此窗影响
             if (structTimer) return;
             structTimer = setTimeout(async () => {
               structTimer = null;
@@ -839,7 +850,7 @@ async function runSession(ws, req, lifecycle) {
               // 异步兜底：截图超时/导航销毁上下文一旦以 unhandled rejection
               // 冒泡会击穿整个网关进程（Node>=15 默认退出）
               try { await tilesPatches(batch); } catch (e) { logger.log('[patch] batch err:', e && e.message); }
-            }, 60);
+            }, 150);
           } catch (e) {}
         });
       });
@@ -1268,7 +1279,7 @@ async function runSession(ws, req, lifecycle) {
         // CPU 大头：实测 34-47%）
         const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
         if (rafN === null) return;
-        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh)) return; }
+        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.hot)) return; }
         else rafLast = { n: rafN, at: Date.now() };
         const nowMs = Date.now();
         while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
