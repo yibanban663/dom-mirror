@@ -24,7 +24,11 @@ jobs:
           node -e "require('puppeteer');require('ws');require('sharp')"
           npm audit --omit=dev
       - name: 语法与策略回归检查
-        run: npm run check && npm test
+        run: |
+          timeout 120 npm run check > check.log 2>&1 || { echo "::error::CHECK failed: $(tail -c 500 check.log | tr '\n' '|')"; exit 1; }
+          echo CHECK_OK
+          timeout 300 npm test > npmtest.log 2>&1 || { echo "::error::TEST failed: $(tail -c 500 npmtest.log | tr '\n' '|')"; exit 1; }
+          echo TEST_OK
       - name: 打包后独立宿主集成检查
         run: node tools/verify-package.cjs
       - name: 性能调查插桩锚点检查
