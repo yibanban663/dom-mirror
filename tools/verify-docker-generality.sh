@@ -76,7 +76,13 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist xiframe cshad
     echo "gen_${c}_OK"
     # v0.21 RUM 通道断言：forms 会话必须产生 [rum] 心跳或 [rum-beacon] 尾包日志
     if [ "$c" = "forms" ]; then
-      if docker logs "$server" 2>&1 | grep -qE '\[rum(-beacon)?\]'; then
+      # 尾包在客户端浏览器关闭（pagehide）时才发出，可能晚于客户端容器退出：轮询等待
+      rum_seen=0
+      for _ in $(seq 1 25); do
+        if docker logs "$server" 2>&1 | grep -qE '\[rum(-beacon)?\]'; then rum_seen=1; break; fi
+        sleep 0.2
+      done
+      if [ "$rum_seen" = 1 ]; then
         echo "gen_rum_OK"
       else
         echo "gen_rum_FAIL"
