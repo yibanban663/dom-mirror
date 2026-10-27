@@ -27,6 +27,8 @@ const { createStaticFiles } = require('./lib/static');
 const { createTimers } = require('./lib/timers');
 const { pageHelpers } = require('./lib/page-helpers');
 const input = require('./lib/input');
+const xframe = require('./lib/xframe');
+const { listCanvases: canvasList, createCanvasSigs } = require('./lib/canvas');
 
 function createMirror(options) {
 const config = normalizeOptions(options);
@@ -978,21 +980,7 @@ async function runSession(ws, req, lifecycle) {
       xframeBusy = true;
       let xframeChanged = [];
       try {
-        const xfCand = await page.evaluate((force) => {
-          try {
-            if (!window.__xyXframe) window.__xyXframe = new Map();
-            const out = [];
-            for (const f of document.body.querySelectorAll('iframe')) {
-              const s = f.src || '';
-              if (!/^https?:/i.test(s)) continue;
-              let same = false;
-              try { same = new URL(s).origin === location.origin; } catch (e) {}
-              if (same || (!force && window.__xyXframe.has(s)) || window.__xyXframe.size >= 16) continue;
-              out.push(s);
-            }
-            return out.slice(0, 16);
-          } catch (e) { return []; }
-        }, !!force);
+        const xfCand = await page.evaluate(xframe.listCandidates, !!force);
         if (dead) return [];
         if (xfCand.length) {
           if (!xframeSecret) {
@@ -1006,63 +994,12 @@ async function runSession(ws, req, lifecycle) {
               const url = new URL(raw, sessionOrigin);
               if (dead || url.username || url.password || !config.crossOriginFrameOrigins.includes(url.origin)) continue;
               const abs = url.href;
-              const mod = abs.startsWith('https:') ? httpBoth.https : httpBoth.http;
-              const html = await new Promise((resolve) => {
-                const req = trackRequest(mod.get(abs, { timeout: 6000, headers: { 'user-agent': 'rbi-mirror-xframe', accept: 'text/html' } }, (r) => {
-                  const ct = (r.headers['content-type'] || '').toLowerCase();
-                  if ((r.statusCode || 502) < 200 || (r.statusCode || 502) >= 300 || !/text\/html/.test(ct)) { r.resume(); resolve(null); return; }
-                  let len = 0;
-                  const chunks = [];
-                  r.on('data', (c) => { len += c.length; if (len > 512 * 1024) { r.destroy(); resolve(null); } else chunks.push(c); });
-                  r.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-                  r.on('error', () => resolve(null));
-                }));
-                req.on('error', () => resolve(null));
-                req.on('timeout', () => { req.destroy(); resolve(null); });
-              });
+              const html = await xframe.fetchHtml(abs, trackRequest);
               if (html && !dead) { origins.add(new URL(abs).origin); htmls.push({ url: abs, html }); }
             } catch (e) {}
           }
           if (htmls.length) {
-            await page.evaluate((list, secret) => {
-              const changed = [];
-              const XP = '/m/x/' + secret + '/';
-              const b64 = (s2) => btoa(s2).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-              for (const item of list) {
-                try {
-                  const doc = new DOMParser().parseFromString(item.html, 'text/html');
-                  doc.querySelectorAll('script,noscript,template,link[rel="preload"],link[rel="prefetch"]').forEach((n2) => n2.remove());
-                  const ifrOrigin = new URL(item.url).origin;
-                  const toProxy = (v) => {
-                    if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v) || /^\/\//.test('' + v)) return v;
-                    try {
-                      const abs = new URL(v, item.url);
-                      if (abs.origin === ifrOrigin) return XP + b64(ifrOrigin) + abs.pathname + abs.search;
-                      return v;
-                    } catch (e) { return v; }
-                  };
-                  for (const el of doc.querySelectorAll('*')) {
-                    for (const a of [...el.attributes]) {
-                      if (/^on/i.test(a.name) || a.name === 'srcdoc' || a.name === 'formaction' || a.name === 'integrity') { el.removeAttribute(a.name); continue; }
-                      if (a.name === 'src' || a.name === 'href' || a.name === 'poster') {
-                        try { el.setAttribute(a.name, toProxy(a.value)); } catch (e) {}
-                      } else if (a.name === 'srcset') {
-                        try { el.setAttribute('srcset', a.value.split(',').map((p2) => { const t2 = p2.trim(); const sp = t2.search(/\s/); const u2 = sp < 0 ? t2 : t2.slice(0, sp); return toProxy(u2) + (sp < 0 ? '' : t2.slice(sp)); }).join(', ')); } catch (e) {}
-                      } else if (a.name === 'style') {
-                        try { el.setAttribute('style', a.value.replace(/url\((['"]?)([^'")]+)\1\)/g, (w2, q2, u3) => { const p3 = toProxy(u3); return p3 === u3 ? w2 : 'url(' + q2 + p3 + q2 + ')'; })); } catch (e) {}
-                      }
-                    }
-                  }
-                  window.__xy.sanitizeData(doc.body);
-                  const styles = [...doc.querySelectorAll('style')].map((s3) => s3.textContent).join('\\n');
-                  const sd = '<!doctype html><html><head><style>' + styles + '</style></head>' + doc.body.innerHTML + '</html>';
-                  const prevSd = window.__xyXframe.get(item.url);
-                  window.__xyXframe.set(item.url, sd);
-                  if (prevSd !== undefined && prevSd !== sd) changed.push(item.url);
-                } catch (e) {}
-              }
-              return changed;
-            }, htmls, xframeSecret).then((ch) => { xframeChanged = ch || []; }).catch(() => {});
+            await page.evaluate(xframe.storeSanitized, htmls, xframeSecret).then((ch) => { xframeChanged = ch || []; }).catch(() => {});
           }
         }
       } catch (e) {}
@@ -1305,8 +1242,8 @@ async function runSession(ws, req, lifecycle) {
   // 阻塞），捕获列表 600ms 缓存，每秒捕获总数预算 12 封顶 CPU
   function startCanvasWatch() {
     if (canvasTimer) return;
-    const lastSigs = new Map();
-    canvasSigsReset = () => { lastSigs.clear(); };
+    const sigs = createCanvasSigs();
+    canvasSigsReset = sigs.clear;
     let canvasBusy = false;
     let rafLast = { n: -1, at: 0 };
     let listCache = { at: 0, list: null };
@@ -1319,30 +1256,12 @@ async function runSession(ws, req, lifecycle) {
         const now = Date.now();
         // 捕获列表 600ms 缓存（坐标为页面绝对值，滚动安全；可见性过滤随之）
         if (!listCache.list || now - listCache.at > 600) {
-          const fresh = await withTimeout(page.evaluate(() => {
-            const out = [];
-            try {
-              // v0.14：穿透 open shadow root 收集画布（影子内组件图表同捕获）
-              const canvases = (window.__xy && window.__xy.allDeep) ? window.__xy.allDeep(document.body, 'canvas') : [...document.body.querySelectorAll('canvas')];
-              for (const c of canvases) {
-                // v0.14：指令流画布（注入后 2d 上下文且可序列化）走 canvas-ops 重放，
-                // 不进位图捕获通道
-                if (c.__xyStream2d && !c.__xyOpaque2d) continue;
-                const r = c.getBoundingClientRect();
-                if (r.width < 8 || r.height < 8) continue;
-                if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
-                const path = window.__xy.pathOf(c);
-                out.push({ id: window.__xy.idOf(c), path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
-                if (out.length >= 3) break;
-              }
-            } catch (e) {}
-            return out;
-          }), 1500, 'canvasList').catch(() => null);
+          const fresh = await withTimeout(page.evaluate(canvasList), 1500, 'canvasList').catch(() => null);
           if (fresh === null) return;
           listCache = { at: now, list: fresh };
         }
         const list = listCache.list;
-        if (!list.length) { if (lastSigs.size) lastSigs.clear(); return; }
+        if (!list.length) { if (sigs.size) sigs.clear(); return; }
         // rAF 活动门（轻量差分版）：相邻 tick 采样 __xyRafCount，300ms 无增量
         // = 动画循环停转 → canvas 必然静止零捕获（静止 canvas 的持续捕获曾是
         // CPU 大头：实测 34-47%）
@@ -1356,8 +1275,7 @@ async function runSession(ws, req, lifecycle) {
           // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
           // （v0.14：键改为节点 id——影子内画布 path 可为 null）
           const sigKey = it.id !== undefined ? it.id : it.path;
-          const st0 = lastSigs.get(sigKey);
-          if (st0 && st0.nextAt && nowMs < st0.nextAt) continue;
+          if (!sigs.due(sigKey, nowMs)) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
           const shot = await withTimeout(cdp.send('Page.captureScreenshot', {
@@ -1367,28 +1285,14 @@ async function runSession(ws, req, lifecycle) {
           }), 3000, 'canvasShot').catch(() => null);
           if (!shot) continue;
           captureTimes.push(Date.now());
-          let changed = true;
+          let sig = null;
           try {
             if (sharp) {
               const { info, data } = await sharp(Buffer.from(shot.data, 'base64')).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-              const prev = lastSigs.get(sigKey);
-              if (prev && prev.w === info.width && prev.h === info.height && prev.data && prev.data.equals(data)) changed = false;
-              else if (prev) { prev.w = info.width; prev.h = info.height; prev.data = data; }
-              else lastSigs.set(sigKey, { w: info.width, h: info.height, data, unchanged: 0, nextAt: 0 });
-            } else {
-              const prev = lastSigs.get(sigKey);
-              if (prev && prev.b64 === shot.data) changed = false;
-              else if (prev) prev.b64 = shot.data;
-              else lastSigs.set(sigKey, { b64: shot.data, unchanged: 0, nextAt: 0 });
-            }
+              sig = { w: info.width, h: info.height, data };
+            } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
           } catch (e) {}
-          if (!changed) {
-            const st = lastSigs.get(sigKey);
-            if (st) { st.unchanged = (st.unchanged || 0) + 1; st.nextAt = Date.now() + Math.min(3600, 450 * Math.pow(2, st.unchanged)); }
-            continue;
-          }
-          const st2 = lastSigs.get(sigKey);
-          if (st2) { st2.unchanged = 0; st2.nextAt = 0; }
+          if (!sigs.record(sigKey, sig, Date.now())) continue;
           if (ws.readyState === 1) {
             const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, url: 'data:image/png;base64,' + shot.data });
             ws.send(pl);
