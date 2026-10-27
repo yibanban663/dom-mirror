@@ -432,7 +432,8 @@
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
       const fid = idOfMirror(ae);
       const fp = fid !== null ? null : pathOfMirror(ae);
-      if (fid !== null || fp !== null) keepFocus = { id: fid, path: fp, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
+      // 本地值同样保留：快照可能早于服务端处理完最后几个按键（与 dom-props 跳过焦点元素同一策略）
+      if (fid !== null || fp !== null) keepFocus = { id: fid, path: fp, val: ae.isContentEditable ? null : ae.value, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
     }
     const mirrorHtml = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     // v0.14：innerHTML 已不解析声明式 Shadow DOM（Chrome 提示需 setHTMLUnsafe）；
@@ -931,6 +932,7 @@
         const el = mirrorFind(keepFocus.id !== null ? keepFocus.id : keepFocus.path);
         if (el && el.focus) {
           el.focus();
+          if (keepFocus.val !== null && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value !== keepFocus.val) el.value = keepFocus.val;
           if (keepFocus.sel && el.setSelectionRange && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value.length) {
             el.setSelectionRange(Math.min(keepFocus.sel[0], el.value.length), Math.min(keepFocus.sel[1], el.value.length));
           }
