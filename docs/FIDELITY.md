@@ -176,7 +176,10 @@
   v0.28 elbit 三处已移植到新结构（lib/page-helpers 谓词+标记、lib/canvas 候选+
   record elbit 节流、server.js watch fresh 旁路）。合并树全量回归绿（Vikunja 3/3，
   xframe-policy 过；package-business 需宿主 node，由 CI 覆盖）。
-- 周度 RUM 复评：见 v0.27 节流程（aggregate-rum.cjs）。
+- 周度 RUM 复评：见 v0.27 节流程（aggregate-rum.cjs）。首次生产聚合执行
+  （2026-10-27，v0.28.1 部署后即时）：7 beacon / snaps 7 / patches 0 / 帧时
+  p50 66.6ms、p95 66.8ms（空闲页 beacon 采样节奏，非交互负载）/ 交互延迟暂无
+  样本（容器刚重建，仅探针流量）——通道与工具链端到端可用。
 
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
