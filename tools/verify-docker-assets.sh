@@ -27,7 +27,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 docker network create --internal "$run_id" >/dev/null
-docker run -d --name "$server" --network "$run_id" --network-alias mirror \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" \
   --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=8 \
   -e ORIGIN_URL=http://127.0.0.1:8077/assets.html \
@@ -37,7 +37,7 @@ for f in assets.html assets.css font.woff2 img.png; do
   docker cp "$repo/test/fixtures/$f" "$server:/app/protected/$f"
 done
 
-docker run -d --name "$originb" --network "$run_id" --network-alias origin-b \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$originb" --network "$run_id" --network-alias origin-b \
   "${proxy_env[@]}" \
   -v "$repo/test/fixtures/origin-b:/origin-b:ro" \
   --entrypoint timeout "$image" 180 node tools/origin-static.cjs /origin-b 8000 >/dev/null
@@ -58,7 +58,7 @@ docker exec "$originb" node -e '
   })().catch(() => process.exit(1));
 '
 
-docker run --name "$client" --network "$run_id" --memory 2g \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" \
   -e MIRROR_URL=http://mirror:8088/ -e ORIGIN_B=http://origin-b:8000 -e EVIDENCE_DIR=/tmp/assets-evidence \
   --entrypoint timeout "$image" 170 node tools/verify-assets.cjs

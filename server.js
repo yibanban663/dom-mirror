@@ -17,7 +17,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer').default;
-const { assetUrl, selectOrigin } = require('./lib/policy');
+const { assetUrl, selectOrigin, requestAllowed } = require('./lib/policy');
 const { SessionStore } = require('./lib/sessions');
 const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
@@ -43,8 +43,9 @@ const DOWNLOAD_MAX = config.download.maxBytes;
 const ORIGIN_BASE = new URL(ORIGIN_URL);
 const logger = config.logger;
 let sharp = null; try { sharp = require('sharp'); } catch (e) { logger.log('[sharp ] unavailable:', e.message); }
+// chromiumSandbox=false 仅用于无法提供 user namespace 的环境（渲染进程被攻破即拿到宿主进程权限）
 const CHROME_ARGS = [
-  '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+  ...(config.chromiumSandbox ? [] : ['--no-sandbox', '--disable-setuid-sandbox']), '--disable-dev-shm-usage',
   '--disable-gpu', '--hide-scrollbars', '--mute-audio',
   '--force-color-profile=srgb', '--font-render-hinting=none',
   '--disable-background-timer-throttling',
@@ -1442,6 +1443,11 @@ async function runSession(ws, req, lifecycle) {
     const b = await launchSessionBrowser();
     if (dead) { await b.close(); return; }
     sessionBrowser = b;
+    // 弹窗不镜像且不受页面拦截约束：除会话页面外新建的页面一律关闭
+    b.on('targetcreated', (t) => {
+      if (!page || t.type() !== 'page' || t === page.target()) return;
+      t.page().then((p) => p && p.close()).catch(() => {});
+    });
     b.on('disconnected', () => {
       if (dead) return;
       sendJson({ type: 'error', code: 'SESSION_EXPIRED', terminal: true, msg: '服务端浏览器已关闭，请核对上次提交结果后重新开始' });
@@ -1477,6 +1483,32 @@ async function runSession(ws, req, lifecycle) {
     });
     cdp = await page.createCDPSession();
     if (dead) return;
+    // 请求白名单（默认拒绝）：服务端浏览器只访问会话源站与显式允许的源，访客无法
+    // 借源站链接/跳转/表单把它当作内网跳板。puppeteer 拦截同时覆盖跨站 iframe（OOPIF）
+    const requestOrigins = new Set([new URL(sessionOrigin).origin, ...config.crossOriginFrameOrigins, ...config.requestOrigins]);
+    if (typeof page.setRequestInterception === 'function') {
+      await page.setRequestInterception(true);
+      // 弹窗的首个请求发生在新页面上、不经过本页拦截：在页面脚本之前禁用新窗口
+      if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(() => {
+        window.open = () => null;
+        const newWindow = (t) => t && !/^_(self|parent|top)$/i.test(t);
+        for (const type of ['click', 'submit']) {
+          window.addEventListener(type, (e) => {
+            const el = e.target && e.target.closest && e.target.closest(type === 'click' ? 'a[target],area[target]' : 'form[target]');
+            if (el && newWindow(el.getAttribute('target'))) e.preventDefault();
+          }, true);
+        }
+      });
+      page.on('request', (r) => {
+        if (requestAllowed(r.url(), requestOrigins)) { r.continue().catch(() => {}); return; }
+        logger.log('[policy] blocked', r.resourceType(), r.url().slice(0, 90));
+        // 主框架导航用 aborted：取消而不提交错误页，页面停留原处；子框架与子资源用
+        // blockedbyclient（iframe 落到跨源错误页，镜像按跨源占位处理）
+        const mainNav = r.isNavigationRequest() && r.frame() === page.mainFrame();
+        r.abort(mainNav ? 'aborted' : 'blockedbyclient').catch(() => {});
+        if (mainNav) sendJson({ type: 'error', code: 'NAVIGATION_BLOCKED', msg: '目标地址不在允许范围内' });
+      });
+    }
     // 临时诊断：会话页面的 API 请求状态（定位登录后数据不加载问题）
     page.on('response', (r) => {
       try {

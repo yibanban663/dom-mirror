@@ -42,7 +42,7 @@ wait_http() {
   '
 }
 run_server() {
-  docker run -d --name "$1" --network "$run_id" --network-alias "$2" \
+  docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$1" --network "$run_id" --network-alias "$2" \
     "${proxy_env[@]}" --memory 2g --cpus 2 -e PROD_PRESENTATION=1 \
     -e ORIGIN_URL=http://127.0.0.1:8077/canvas2d.html ${3:-} \
     "$image" timeout 150 node demo/server.js >/dev/null
@@ -53,15 +53,15 @@ run_server() {
 run_server "$server" mirror ""
 run_server "$server_b" mirror-b "-e CANVAS_STREAM=0"
 
-docker run --name "$client" --network "$run_id" --memory 2g \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" -e MIRROR_URL=http://mirror:8088/ -e EVIDENCE_DIR=/tmp/c2d-evidence \
   --entrypoint timeout "$image" 100 node tools/verify-canvas2d.cjs
-docker run --name "$client_b" --network "$run_id" --memory 2g \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client_b" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" -e MIRROR_URL=http://mirror-b:8088/ -e EVIDENCE_DIR=/tmp/c2d-evidence -e EXPECT_STREAM=0 \
   --entrypoint timeout "$image" 100 node tools/verify-canvas2d.cjs
 
 # 带宽对比报告（同 fixture 双模式下行字节；容器内 node 生成）
-docker run --rm -v "$evidence:/a:ro" -v "$evidence/bitmap:/b:ro" -v "$evidence:/out" \
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --rm -v "$evidence:/a:ro" -v "$evidence/bitmap:/b:ro" -v "$evidence:/out" \
   "${proxy_env[@]}" --entrypoint node "$image" - '/a/result.json' '/b/result.json' <<'EOF'
 const fs = require('fs');
 const a = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));

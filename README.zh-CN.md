@@ -89,6 +89,7 @@ server.listen(8088, '127.0.0.1');
 ```bash
 docker build -t dom-mirror:local .
 docker run --rm --name dom-mirror-demo \
+  --security-opt seccomp=docker/seccomp-chromium.json \
   --memory 2g --cpus 2 \
   -p 127.0.0.1:18088:8088 dom-mirror:local
 ```

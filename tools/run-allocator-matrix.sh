@@ -29,7 +29,7 @@ NODE
     preload=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
     conf=narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000
   fi
-  docker run --rm --network none --memory 512m --cpus 1 -e "MEMORY_EXPECT_ALLOCATOR=$profile" \
+  docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --rm --network none --memory 512m --cpus 1 -e "MEMORY_EXPECT_ALLOCATOR=$profile" \
     -e "LD_PRELOAD=$preload" -e "MALLOC_CONF=$conf" "${IMAGE:-dom-mirror:allocator}" \
     node tools/verify-allocator.cjs > "$evidence/$profile/preflight.json"
   IMAGE=${IMAGE:-dom-mirror:allocator} MEMORY_CYCLES=10 MEMORY_GROUP=default MEMORY_NATIVE_PROBE=1 \

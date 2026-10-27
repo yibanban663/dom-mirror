@@ -13,8 +13,8 @@ docker image inspect "$image" --format '{{json .Id}}' > "$evidence/image.json"
 for policy in default redacted; do
   redact=0
   [[ "$policy" != redacted ]] || redact=1
-  mkdir -p "$evidence/$policy"
-  docker run --rm --name "$run_id-$policy" --network none --memory 3g --cpus 2 \
+  mkdir -p "$evidence/$policy" && chmod a+rwx "$evidence/$policy"
+  docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --rm --name "$run_id-$policy" --network none --memory 3g --cpus 2 \
     -v "$evidence/$policy:/evidence" -e EVIDENCE_DIR=/evidence \
     -e BOUNDARY_ENFORCE=1 -e "BOUNDARY_REDACT=$redact" \
     "$image" timeout 180 node tools/verify-data-boundary.cjs > "$evidence/$policy.log" 2>&1

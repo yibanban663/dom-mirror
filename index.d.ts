@@ -28,12 +28,16 @@ export interface MirrorOptions {
   allowedOrigins?: string[];
   /** Explicit origins eligible for Node-side cross-origin iframe fetching; default none. Hosts must also isolate outbound network access. */
   crossOriginFrameOrigins?: string[];
+  /** Extra origins the server-side browser may request (CDNs, APIs). Everything outside the session origin, crossOriginFrameOrigins and this list is blocked, including navigations and popups. */
+  requestOrigins?: string[];
   defaultMode?: 'dom' | 'frame';
   /** Defaults to embedded; demo keeps the mode controls and statistics. */
   presentation?: 'embedded' | 'demo';
   obfuscate?: boolean;
   /** Mirror canvases with 2D contexts created after injection as draw-command streams (default true); others fall back to bitmap capture. */
   canvasStream?: boolean;
+  /** Keep Chromium's sandbox (default true). Disable only where user namespaces are unavailable; a compromised renderer then runs with the host's privileges. */
+  chromiumSandbox?: boolean;
   /** Input types whose mirrored values are replaced with up to 32 asterisks in snapshots/patches (default off). Interactivity is unaffected. */
   maskInputTypes?: string[];
   /** Remove these named attributes from mirrored elements, including html/body metadata. */

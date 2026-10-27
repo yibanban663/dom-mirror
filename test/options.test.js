@@ -29,3 +29,19 @@ test('identity hooks are opt-in functions and are not executed during configurat
     assert.throws(() => normalizeOptions({ originUrl: 'http://localhost/', getSessionIdentity: value }), TypeError);
   }
 });
+
+test('Chromium sandbox is on by default and only an explicit boolean disables it', () => {
+  assert.equal(normalizeOptions({ originUrl: 'http://localhost/' }).chromiumSandbox, true);
+  assert.equal(normalizeOptions({ originUrl: 'http://localhost/', chromiumSandbox: false }).chromiumSandbox, false);
+  for (const chromiumSandbox of [0, 'false', 'no']) {
+    assert.throws(() => normalizeOptions({ originUrl: 'http://localhost/', chromiumSandbox }), TypeError);
+  }
+});
+
+test('request origins default to none and reject credentials or non-HTTP schemes', () => {
+  assert.deepEqual(normalizeOptions({ originUrl: 'http://localhost/' }).requestOrigins, []);
+  assert.deepEqual(normalizeOptions({ originUrl: 'http://localhost/', requestOrigins: ['https://cdn.example/path'] }).requestOrigins, ['https://cdn.example']);
+  for (const requestOrigins of ['https://cdn.example', ['ftp://cdn.example'], ['https://u:p@cdn.example']]) {
+    assert.throws(() => normalizeOptions({ originUrl: 'http://localhost/', requestOrigins }), TypeError);
+  }
+});

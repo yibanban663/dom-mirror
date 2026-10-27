@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assetUrl, selectOrigin } = require('../lib/policy');
+const { assetUrl, selectOrigin, requestAllowed } = require('../lib/policy');
 const base = new URL('https://origin.example/app/');
 
 test('asset proxy accepts same-origin presentation resources with query strings', () => {
@@ -23,5 +23,16 @@ test('source header requires an explicit origin allowlist', () => {
   assert.equal(selectOrigin(base.origin + '/path?q=1', base.href, [base.origin]), base.origin + '/');
   for (const value of ['https://origin.example.attacker.test', 'https://u:p@origin.example', 'file:///etc/passwd', 'invalid']) {
     assert.throws(() => selectOrigin(value, base.href, [base.origin]), value);
+  }
+});
+
+test('server browser requests are limited to listed origins and in-page schemes', () => {
+  const origins = new Set(['https://origin.example', 'https://cdn.example']);
+  for (const value of ['https://origin.example/app', 'https://cdn.example/a.js?x=1', 'data:image/png,x', 'blob:https://origin.example/id', 'about:blank']) {
+    assert.equal(requestAllowed(value, origins), true, value);
+  }
+  for (const value of ['http://origin.example/', 'https://origin.example:8443/', 'https://u:p@origin.example/',
+    'http://169.254.169.254/latest', 'file:///etc/passwd', 'chrome://version', 'ftp://origin.example/', 'not a url']) {
+    assert.equal(requestAllowed(value, origins), false, value);
   }
 });
