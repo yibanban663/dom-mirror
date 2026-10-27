@@ -478,9 +478,14 @@ async function runSession(ws, req, lifecycle) {
       if (xframeSecret) xframeOrigins.delete(xframeSecret);
       if (xframeTimer) { clearInterval(xframeTimer); xframeTimer = null; }
       domActive = false;
-      await Promise.allSettled([page?.close()]);
-      if (sessionRelease) await sessionRelease();
-      else await sessionBrowser?.close();
+      // pool-off 保持历史形态（page 与 browser 关闭并行发起——mock 编排按此时序
+      // 编写，实测串行拆分会悬挂 close 等待链）；池化时只关上下文不关浏览器
+      if (sessionRelease) {
+        await Promise.allSettled([page?.close()]);
+        await sessionRelease();
+      } else {
+        await Promise.allSettled([page?.close(), sessionBrowser?.close()]);
+      }
       sessionUploads.clear();
       sessionDownloads.clear();
       if (browserCdpDetached) browserCdpDetached();
