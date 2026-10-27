@@ -7,7 +7,7 @@
 
 A **Node.js library** for embedding remote browser mirroring into your own application. Each session runs an independent Chromium; the client receives DOM/CSS snapshots and incremental updates, renders them locally, and sends interactions back. A standalone Demo is included for exploration and regression testing.
 
-**Source version: 0.11.0 · Node.js ≥ 22.12 · Apache-2.0**
+**Source version: 0.27.0 · Node.js ≥ 22.12 · Apache-2.0**
 
 The source version does not imply an npm release. This is an experimental library, with the compatibility and security boundaries described below.
 
@@ -48,7 +48,7 @@ npm pack
 Install the generated file in your host project:
 
 ```bash
-npm install /path/to/lizhen-xxaq-dom-mirror-0.11.0.tgz
+npm install /path/to/lizhen-xxaq-dom-mirror-0.27.0.tgz
 ```
 
 Chromium and its system libraries must be available in the host environment. If your environment manages Chromium separately, use `PUPPETEER_SKIP_DOWNLOAD=true` during installation and pass its path through `launchOptions.executablePath`.
@@ -77,6 +77,8 @@ server.listen(8088, '127.0.0.1');
 The built-in client currently requires **the root path of a dedicated origin**, with `/ws`, `/m/*` and `/f/*`. Arbitrary subpath mounting is not supported. Authentication, TLS and WebSocket Origin checks belong in the host, before these handlers are called.
 
 See the [complete host example](examples/host.cjs), [API reference and migration notes — Chinese](docs/API.md), and [WebSocket protocol — Chinese](docs/PROTOCOL.md).
+
+New in 0.27: stable node IDs, IME, uploads/downloads, Shadow DOM/iframe handling and canvas fidelity regressions. Uploads use 32 KiB raw chunks with per-session byte, concurrency and expiry budgets. Node-side cross-origin iframe fetching is disabled unless the host explicitly sets `crossOriginFrameOrigins`; it shares the field-redaction policy. Hosts still control outbound network access. See the [API limits](docs/API.md).
 
 ## Run the Demo
 
@@ -156,6 +158,7 @@ npm test
 node tools/verify-package.cjs
 
 # After building the current Docker image:
+IMAGE=dom-mirror:local bash tools/verify-docker-package-business.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-data-boundary.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-session-identity.sh
@@ -166,7 +169,7 @@ IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
   bash tools/verify-docker-vikunja.sh
 ```
 
-The tarball check installs the actual package in a separate temporary host; it does not launch Chromium. Browser regressions use isolated Docker environments. Vikunja tests cover login, task creation, priority changes and completion, with separate persistence assertions. CI is configured to run these checks and retain browser evidence; use the result for the relevant commit.
+The fast tarball check installs the package without launching Chromium. `verify-docker-package-business.sh` additionally installs a fresh tarball in an independent consumer, removes the source runtime, disables `NODE_PATH` fallback and verifies installed file hashes. It runs real Vikunja login, task creation, priority changes and completion with independent persistence assertions, then tests recovery, expiry and browser cleanup. Closing the mirror must preserve the host HTTP service. Browser tests use isolated Docker networks; CI retains the archive identity, consumer dependency lock, results and screenshots. See the [packaged business acceptance record](docs/acceptance/package-business-2026-10-26.md); use the CI result for the relevant commit.
 
 The frame codec reuses decoded pixels for ordinary RGB/RGBA PNG crops and falls back for other encodings. Measurements show a **local encoding benefit**, not a demonstrated stable end-to-end speedup. [Synthetic concurrency tests](docs/performance/2026-10-26-capacity.md) cover 1/3/6 sessions in DOM and frame: DOM meets this experiment's budgets; frame does not consistently meet the post-cleanup anonymous-memory budget (one single-session run and both 3/6-session runs exceed it). A [ten-cycle memory investigation](docs/performance/2026-10-26-frame-memory.md) finds that forced GC and disabling sharp cache do not resolve the retained anonymous memory; allocator controls are a host-level diagnostic, not a package default. Real-application capacity and sustained operation remain to be validated.
 

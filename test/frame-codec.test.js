@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const sharp = require('sharp');
-const { frameCropInput } = require('../lib/frame-codec');
+const { frameCropInput, scanDirtyRows, dirtyRects } = require('../lib/frame-codec');
 
 // Remove encoder density metadata to match the plain PNGs returned by CDP.
 function plainPng(png) {
@@ -72,4 +72,22 @@ test('colour metadata, grayscale and palette PNGs preserve the original decoding
     const decoded = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     await compare(png, { ...decoded, data: Buffer.alloc(decoded.data.length) });
   }
+});
+
+test('dirty row scan ignores alpha-only and sub-threshold changes', () => {
+  const W = 3, H = 4, prev = Buffer.alloc(W * H * 4, 100);
+  const next = Buffer.from(prev);
+  next[3] = 0; // row 0: alpha only
+  next[W * 4 + 1] = 102; // row 1: within threshold 2
+  next[2 * W * 4 + 8] = 103; // row 2: last pixel over threshold
+  const { dirtyRows, any } = scanDirtyRows(next, prev, W, H, 4);
+  assert.deepEqual([...dirtyRows], [0, 0, 1, 0]);
+  assert.equal(any, true);
+  assert.equal(scanDirtyRows(prev, Buffer.from(prev), W, H, 4).any, false);
+});
+
+test('dirty rows merge into full-width runs and collapse past eight runs', () => {
+  assert.deepEqual(dirtyRects(Uint8Array.from([1, 1, 0, 1]), 5, 4), [[0, 0, 5, 2], [0, 3, 5, 1]]);
+  const striped = Uint8Array.from({ length: 18 }, (_, y) => y % 2);
+  assert.deepEqual(dirtyRects(striped, 5, 18), [[0, 0, 5, 18]]);
 });

@@ -10,6 +10,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const puppeteer = require('puppeteer');
 
 const UP_NAME = 'up-p0.txt';
@@ -67,33 +68,27 @@ async function main() {
       results.ime.pass = results.ime.commit === 'echo:你好';
     } catch (error) { results.ime.error = error.message; }
 
-    // ---- Upload ----
+    // ---- Upload: multiple chunks and the exact default 8 MiB file limit ----
     try {
-      await page.evaluate(async (name, text) => {
-        const dt = new DataTransfer();
-        dt.items.add(new File([text], name, { type: 'text/plain' }));
-        const f = document.querySelector('#mirrorHost').shadowRoot.querySelector('#f');
-        f.files = dt.files;
-        f.dispatchEvent(new Event('change', { bubbles: true }));
-      }, UP_NAME, UP_TEXT);
-      await page.waitForFunction((name, text) => {
-        const up = document.querySelector('#mirrorHost').shadowRoot.querySelector('#up-status');
-        return up && up.textContent.startsWith('GOT ' + name) && up.textContent.includes(text.slice(0, 8));
-      }, { timeout: 10000 }, UP_NAME, UP_TEXT);
-      results.upload.status = await page.evaluate(() => document.querySelector('#mirrorHost').shadowRoot.querySelector('#up-status').textContent);
-      results.upload.clientRecords = await page.evaluate(() => window.__xyUploads);
-      results.upload.pass = results.upload.status.startsWith('GOT ' + UP_NAME);
-    } catch (error) {
-      results.upload.error = error.message;
-      try {
-        results.upload.status = await page.evaluate(() => document.querySelector('#mirrorHost').shadowRoot.querySelector('#up-status').textContent);
-        results.upload.clientRecords = await page.evaluate(() => window.__xyUploads);
-        results.upload.mirrorFiles = await page.evaluate(() => {
+      results.upload.files = [];
+      for (const size of [65553, 8 * 1024 * 1024]) {
+        const text = UP_TEXT + 'x'.repeat(size - UP_TEXT.length);
+        const digest = crypto.createHash('sha256').update(text).digest('hex');
+        await page.evaluate((name, text) => {
+          const dt = new DataTransfer();
+          dt.items.add(new File([text], name, { type: 'text/plain' }));
           const f = document.querySelector('#mirrorHost').shadowRoot.querySelector('#f');
-          return f && f.files ? f.files.length : -1;
-        });
-      } catch {}
-    }
+          f.files = dt.files;
+          f.dispatchEvent(new Event('change', { bubbles: true }));
+        }, UP_NAME, text);
+        await page.waitForFunction((name, size, digest) => {
+          const up = document.querySelector('#mirrorHost').shadowRoot.querySelector('#up-status');
+          return up && up.textContent.startsWith('GOT ' + name + ' ' + size + 'B:') && up.textContent.includes(digest);
+        }, { timeout: 30000 }, UP_NAME, size, digest);
+        results.upload.files.push({ size, sha256: digest, pass: true });
+      }
+      results.upload.pass = true;
+    } catch (error) { results.upload.error = error.message; }
 
     // ---- Download ----
     try {

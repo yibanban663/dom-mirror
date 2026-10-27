@@ -21,7 +21,7 @@
 | `composition` | `id,text,s,e` | IME 组合过程镜像（compositionstart/update），服务端 CDP imeSetComposition 写入源站焦点字段 |
 | `composition-commit` | `id,text` | IME 上屏（compositionend），服务端 CDP insertText 键入最终文本 |
 | `upload-begin` | `tid,name,size,fid` | 镜像 file input 选择本地文件后发起上传；tid 为客户端生成传输号，fid 为字段节点 id |
-| `upload-chunk` | `tid,b64` | 上传分块（≤48KiB base64）；服务端校验累计大小 |
+| `upload-chunk` | `tid,b64` | 上传分块（原始字节 ≤32KiB，base64 后连同 JSON 保持在 64KiB 消息上限内）；服务端校验分块数量与累计大小 |
 | `upload-end` | `tid` | 分块结束；服务端落会话临时目录并 CDP setFileInputFiles 到远端字段 |
 | `ping` | `t,fp?,rum?` | RTT 探测；fp=镜像元素指纹（剔除引擎自建层），服务端与源站比对做分歧自愈；rum=真实会话性能数据（首拍即报、此后 10s 一拍：帧时间 p50/p95、交互到视觉延迟 p50/p95、快照/补丁计数、按消息类型字节），服务端落 [rum] 日志聚合 |
 | `dnd` | `kind,x,y,id?,text?` | v0.19：HTML5 拖拽转发——镜像上 dragstart/over/drop/end 合成到源站（DataTransfer 带 text/plain 载荷；over/drop 目标按坐标命中） |
@@ -49,7 +49,7 @@
 | `upload-accept` | `tid,ok,error?,maxChunk?` | 上传握手应答：扩展名白名单与大小上限校验结果 |
 | `upload-end` | `tid,ok,name?,size?,error?` | 上传完成通知（远端字段已取得文件）或失败原因 |
 | `download-begin` | `id,name,size?` | 源站下载开始（size 在文件就绪重发时给出）；id 为下载 guid |
-| `download-chunk` | `id,b64` | 下载内容分块（≤48KiB base64） |
+| `download-chunk` | `id,b64` | 下载内容分块（原始字节 ≤48KiB，再 base64 编码；该限制用于服务端下行） |
 | `download-end` | `id,ok,name?,size?,error?` | 下载完成（客户端 Blob + a[download] 保存）或失败/取消 |
 | `canvas-ops` | `batches` | 2D 指令流（0.14.0）：batches 为 `[{id,reset?,ops}]`；ops 为 `[方法,...参数]` / `['$属性',值]` / `['__ac',渐变idx,offset,color]`；渐变引用 `'@g<idx>'`，图像 `{__img:src}`，ImageData `{__imgd:{w,h,b64}}`。客户端在镜像 canvas 上同序重放 |
 | `pong` | `t` | 回显 ping 时间戳 |
@@ -89,7 +89,7 @@ DOM 客户端在 pointerdown 之前发送 `scroll`，包括页面位置和目标
 
 `POST /rum`（v0.21）：RUM 尾包通道——客户端 pagehide 时 sendBeacon 上报同 ping.rum 结构的会话数据（≤8KB 收口，落 [rum-beacon] 日志，204 应答；同源免预检）。
 
-`/m/x/<secret>/<base64url(origin)>/path`（v0.25）：跨源 iframe 同源化的会话作用域资产代理——secret 每会话随机，origin 注册表只收本会话源站实际嵌入过的源（防开放代理）；扩展名/响应类型限制与 /m 一致。
+`/m/x/<secret>/<base64url(origin)>/path`（v0.25）：跨源 iframe 同源化的会话作用域资产代理——secret 每会话随机，origin 必须先列入宿主 `crossOriginFrameOrigins`，且注册表只收本会话实际抓取成功的嵌入源；默认不进行 Node 侧跨源抓取；扩展名/响应类型限制与 /m 一致。
 
 ## 资源和边界
 
@@ -101,17 +101,17 @@ HTML/CSS/属性和值可能携带业务数据。frame 并非纯像素保密协�
 
 ## 文件传输（0.13.0）
 
-- 上传：客户端本地 File 经 WS 分块（≤48KiB/条）上行，服务端按宿主配置校验扩展名白名单（`upload.extensions`，默认文本/图片/办公文档/zip）与大小上限（`upload.maxBytes`，默认 8MiB），落**会话私有临时目录**（文件名 basename 收口）后经 CDP `DOM.setFileInputFiles` 交给源站页面并派发 change；会话结束临时目录整体删除，不落盘留存。上传内容对源站表现为普通用户文件，源站自身的病毒扫描/配额策略照常生效。
-- 下载：源站下载事件（`Page.downloadWillBegin/Progress`）落地同一会话临时目录，完成后按 ≤48KiB 分块下行并**立即删除**服务端副本；大小上限 `download.maxBytes`（默认 32MiB），超限/取消以下行 error 通知。文件名 basename + 目录包含校验防路径逃逸；客户端以 Blob + `a[download]` 保存，不执行内容。
+- 上传：客户端本地 File 经 WS 分块（原始字节 ≤32KiB/条）上行，服务端按宿主配置校验扩展名白名单（`upload.extensions`，默认文本/图片/办公文档/zip）与大小上限（`upload.maxBytes`，默认 8MiB），并限制会话总上传字节（`upload.maxTotalBytes`，默认两倍单文件上限，已完成文件也计入）、并发数（`upload.maxConcurrent`，默认 2）、空闲超时（`upload.idleTimeoutMs`，默认 30 秒）和每会话 64 个已完成/待传文件，落**会话私有临时目录**（文件名 basename 收口）后经 CDP `DOM.setFileInputFiles` 交给源站页面并派发 change；会话结束临时目录整体删除，不落盘留存。上传内容对源站表现为普通用户文件，源站自身的病毒扫描/配额策略照常生效。
+- 下载：源站下载事件（`Page.downloadWillBegin/Progress`）落地同一会话临时目录，完成后按 ≤48KiB 分块下行并**立即删除**服务端副本；大小上限 `download.maxBytes`（默认 32MiB），进度超限请求取消，读取完整文件前检查磁盘大小，超限/取消以下行 error 通知。文件名 basename + 目录包含校验防路径逃逸；客户端以 Blob + `a[download]` 保存，不执行内容。
 - 病毒扫描钩子不在协议范围内：宿主可在 `close` 之外对会话临时目录策略另行约束（目录生命周期即会话生命周期）。
 
 ## Shadow DOM、iframe 与 canvas（0.14.0）
 
-- **Shadow DOM**：源站元素的 open shadowRoot 以声明式 `<template shadowrootmode="open">` 内联进镜像 HTML；客户端以 `setHTMLUnsafe` 解析重建影子树（`innerHTML` 不再解析声明式影子 DOM）。影子内变化上溯最外层 light 宿主重发 outer（整体替换重建影子树——影子内焦点会在重发时丢失，已知限制）。closed 影子根不序列化。影子内元素的输入/组合事件经 composedPath 取真实目标后按 id 转发；影子内 canvas 与滚动容器参与捕获与上报。attachShadow 被补丁，注入之后新建的组件影子根同样被观察。
-- **同源 iframe**：内容序列化进 `srcdoc`（与主文档同一 sanitize：剥 script/事件属性、资源 URL 改写 /m 代理）；镜像 iframe 是独立浏览上下文，客户端在其文档上挂同一套转发监听（指针/输入/组合/功能键），元素 id 与主文档同一空间；iframe 内指针坐标按 frameElement 链换算到主视口。**跨域 iframe 不转发**：显示等尺寸占位块并记日志。iframe 内部滚动的懒加载跟随为已知限制。
+- **Shadow DOM**：源站元素的 open shadowRoot 以声明式 `<template shadowrootmode="open">` 内联进镜像 HTML；客户端以 `setHTMLUnsafe` 解析重建影子树（`innerHTML` 不再解析声明式影子 DOM）。影子内变化上溯最外层 light 宿主重发 outer（整体替换重建影子树——影子内焦点会在重发时丢失，已知限制）。通过前置 attachShadow 包装器捕获的 closed 影子根也可序列化；解析器直接挂载且没有回调的声明式 closed 根仍是已知限制。影子内元素的输入/组合事件经 composedPath 取真实目标后按 id 转发；影子内 canvas 与滚动容器参与捕获与上报。attachShadow 被补丁，注入之后新建的组件影子根同样被观察。
+- **同源 iframe**：内容序列化进 `srcdoc`（与主文档同一 sanitize：剥 script/事件属性、资源 URL 改写 /m 代理）；镜像 iframe 是独立浏览上下文，客户端在其文档上挂同一套转发监听（指针/输入/组合/功能键），元素 id 与主文档同一空间；iframe 内指针坐标按 frameElement 链换算到主视口。**跨域 iframe 默认不转发**：显示等尺寸占位块。宿主显式配置 `crossOriginFrameOrigins` 后，可由 Node 抓取该源 HTML、剥离脚本并复用字段过滤策略后放入 srcdoc；跨源内容不继承原站登录凭据。宿主仍须隔离 Chromium 和 Node 的出站网络，URL 白名单不能替代网络隔离。iframe 内部滚动的懒加载跟随为已知限制。
 - **canvas 2D 指令流**：注入之后创建的 2D 上下文记录绘制指令（方法调用与样式属性赋值，渐变定义+色标、图像源、ImageData 均序列化），60ms 合并以 `canvas-ops` 下发，客户端在镜像 canvas 同序重放（图像异步加载完成后整环重放）。不可序列化参数（跨域图源/Pattern/滤镜/未知对象）的画布、注入前已创建的上下文与 WebGL 一律回退位图捕获。指令环上限 1024 条（超限截断，clearRect 循环类图表天然幂等）。宿主可用 `canvasStream:false` 关闭整条指令流（全部走位图）。
 
 ## 构造样式表与输入掩码（0.15.0）
 
 - **adoptedStyleSheets**：`new CSSStyleSheet()` 构造并 adopted 的样式表对 style/link 观察器不可见——快照直接并入其规则文本（cssRules.cssText），1Hz CSS 指纹包含逐规则内容哈希，`replace/replaceSync` 改动内容（规则数不变也）触发全量重同步。影子根与 iframe 文档内的 adopted 样式表本版不追踪。
-- **maskInputTypes**：宿主配置的输入类型（如 `['text','search']`）在快照/补丁中以等长 `*` 掩码下发（默认关闭；`hidden/password/file` 的整体剔除语义不变，优先于掩码）。交互不受影响：客户端本地输入为真实值并明文回传源站，掩码只作用于服务端下发侧；textarea 以 `text` 类型配置时一并掩码。掩码不是加密——长度与输入行为仍可观测。
+- **maskInputTypes**：宿主配置的输入类型（如 `['text','search']`）在快照/补丁中以最多 32 个 `*` 掩码下发（默认关闭；`hidden/password/file` 的整体剔除语义不变，优先于掩码）。交互不受影响：客户端本地输入为真实值并明文回传源站，掩码只作用于服务端下发侧；textarea 通过 `textarea` 类型单独配置。掩码不是加密——长度与输入行为仍可观测。

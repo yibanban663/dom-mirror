@@ -15,6 +15,8 @@
 
 # v0.27.0
 
+- 合并准入修复：上传原始分块降至 32KiB，增加会话总量/并发/空闲超时及文件数预算；跨源 iframe Node 抓取改为显式宿主白名单并复用字段过滤；移除业务模式重试与浏览器预热，保留首次失败；补 64KiB 以上与 8MiB 上传 SHA-256、默认拒绝及字段过滤回归，同步消费端锁文件版本。
+
 - closed shadow root 定案（可观测范围扩到规范极限）：attachShadow 补丁经
   evaluateOnNewDocument 在页面脚本前安装（parse 期创建的 closed root 也进
   注册表）；序列化以声明式 shadowrootmode=closed 内联；客户端统一
@@ -249,6 +251,7 @@
 
 # v0.11.0
 
+- 增加实际 npm tarball 独立消费端的真实 Chromium 业务、恢复及关闭验收：移除源码运行目录并禁用 NODE_PATH 回退，核验包与安装文件哈希，保留消费端锁文件；异常产物负对照、活动会话关闭、浏览器回收和宿主 HTTP 存活检查接入 CI，不修改公共 API 或库默认配置。
 - 完成两轮反序 memory/disk 各三十轮对照，保留四组预算失败结果；补 V8 页池/帧长度独立诊断及关闭额外诊断的 semi-space 参数对照，宿主显式 semi-space=4 通过 30/30 原内存预算和 Vikunja 核心/恢复验收，不修改库默认 allocator、GC/cache 或公共 API。
 - 增加 frame 内存增长的离线分析、可选 sample/GC/checkpoint 落盘与指定轮次映射快照；校验落盘完整性及冻结观测参数，保留原预算和默认探针模式，尚未运行新模式长测或证明内存改善。
 - 修正真实业务回归的 select 旧句柄竞态：在一次浏览器任务中重新定位并派发选择事件；保留离线节点负对照，不重试业务或放宽持久化断言，document/Shadow DOM 回归接入 CI。

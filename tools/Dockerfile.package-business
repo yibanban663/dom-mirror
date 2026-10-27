@@ -1,0 +1,12 @@
+ARG BASE_IMAGE=dom-mirror:local
+FROM ${BASE_IMAGE}
+USER root
+# The consumer must not be able to import the source checkout or NODE_PATH modules.
+RUN rm -rf /app
+ENV NODE_PATH="" NODE_OPTIONS="" LD_PRELOAD="" MALLOC_CONF=""
+WORKDIR /consumer
+COPY package.tgz expected.json host.cjs ./
+RUN printf '{"private":true}' > package.json \
+ && npm install --ignore-scripts --omit=dev --no-audit --no-fund --fetch-timeout=30000 --fetch-retries=1 ./package.tgz \
+ && npm ls --omit=dev --json > installed-tree.json
+CMD ["node", "/consumer/host.cjs"]

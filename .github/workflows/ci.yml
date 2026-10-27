@@ -79,6 +79,10 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-node-id.sh
       - name: IME/上传/下载 P0 回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-longtail-p0.sh
+      - name: 跨源 iframe 默认拒绝与字段过滤回归
+        run: |
+          mkdir -p artifacts/xframe-policy
+          docker run --rm --network none --memory 3g --cpus 2 -v "$PWD/artifacts/xframe-policy:/evidence" -e EVIDENCE_DIR=/evidence dom-mirror:ci timeout 120 node tools/verify-xframe-policy.cjs
       - name: Shadow DOM 回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-shadow.sh
       - name: 同源 iframe 回归
@@ -97,6 +101,8 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh
       - name: Vikunja 短时断线恢复回归
         run: IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh
+      - name: tarball 独立宿主真实业务、恢复与关闭回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-package-business.sh
       - name: 数据下发边界回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-data-boundary.sh
       - name: 宿主身份与会话恢复边界回归
@@ -154,6 +160,13 @@ jobs:
           name: longtail-p0-regression
           path: artifacts/longtail-p0/
           if-no-files-found: warn
+      - name: 保存跨源 iframe 策略证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xframe-policy-regression
+          path: artifacts/xframe-policy/
+          if-no-files-found: warn
       - name: 保存 Shadow DOM 回归证据
         if: always()
         uses: actions/upload-artifact@v4
@@ -195,6 +208,13 @@ jobs:
         with:
           name: recovery-regression
           path: artifacts/recovery/
+          if-no-files-found: warn
+      - name: 保存 tarball 独立宿主证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-business-regression
+          path: artifacts/package-business/
           if-no-files-found: warn
       - name: 清理冒烟容器
         if: always()

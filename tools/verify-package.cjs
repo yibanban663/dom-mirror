@@ -13,7 +13,7 @@ try {
     cwd: root, env, timeout: 30000, encoding: 'utf8',
   }))[0];
   for (const file of ['index.js', 'index.d.ts', 'server.js', 'demo/server.js', 'lib/options.js',
-    'lib/static.js', 'lib/timers.js', 'lib/frame-codec.js', 'client/index.html', 'protected/index.html']) {
+    'lib/static.js', 'lib/timers.js', 'lib/page-helpers.js', 'lib/input.js', 'lib/xframe.js', 'lib/canvas.js', 'lib/frame-codec.js', 'client/index.html', 'protected/index.html']) {
     if (!packed.files.some(entry => entry.path === file)) throw new Error('Missing package file: ' + file);
   }
   fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify({ private: true }));

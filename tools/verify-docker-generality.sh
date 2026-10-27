@@ -27,12 +27,13 @@ docker network create --internal "$run_id" >/dev/null
 
 overall=0
 xframe_container=""
-for c in forms editor media layout style canvas dnd vlist xiframe cshadow audio; do
+for c in ${CASES:-forms editor media layout style canvas dnd vlist xiframe cshadow audio}; do
   docker rm -f "$server" >/dev/null 2>&1 || true
   case "$c" in
     forms) page=gen-forms.html ;; editor) page=gen-editor.html ;; media) page=gen-media-pix.html ;;
     layout) page=gen-layout.html ;; style) page=gen-style.html ;; canvas) page=gen-canvas-key.html ;;
     dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; xiframe) page=gen-xiframe.html ;; cshadow) page=gen-cshadow.html ;; audio) page=gen-media-audio.html ;;
+    *) exit 2 ;;
   esac
   # xiframe 需要第二源站（跨源嵌入目标）：origin-b 静态容器
   if [ "$c" = "xiframe" ]; then
@@ -46,7 +47,7 @@ for c in forms editor media layout style canvas dnd vlist xiframe cshadow audio;
   docker run -d --name "$server" --network "$run_id" --network-alias mirror \
     "${proxy_env[@]}" \
     --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=2 \
-    -e XFRAME_REFRESH_MS="${XFRAME_REFRESH_MS:-15000}" \
+    -e XFRAME_ALLOWED_ORIGINS=http://origin-b:8000 -e XFRAME_REFRESH_MS="${XFRAME_REFRESH_MS:-15000}" \
     -e ORIGIN_URL="http://127.0.0.1:8077/$page" \
     "$image" timeout 240 node demo/server.js >/dev/null
   for f in gen-forms.html gen-editor.html gen-media-pix.html gen-layout.html gen-style.html \

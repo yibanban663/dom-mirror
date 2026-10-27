@@ -7,7 +7,7 @@
 
 供宿主应用嵌入的 **Node.js 远程浏览器 DOM 镜像包**。每个会话运行独立 Chromium；客户端接收 DOM/CSS 快照和增量更新，在本地渲染并回传交互。仓库附带独立 Demo，用于体验与回归验证。
 
-**源码版本：0.11.0 · Node.js ≥ 22.12 · Apache-2.0**
+**源码版本：0.27.0 · Node.js ≥ 22.12 · Apache-2.0**
 
 源码版本不代表已发布 npm。当前为实验阶段的依赖包，兼容性与安全边界见下文。
 
@@ -48,7 +48,7 @@ npm pack
 在宿主项目安装生成的文件：
 
 ```bash
-npm install /path/to/lizhen-xxaq-dom-mirror-0.11.0.tgz
+npm install /path/to/lizhen-xxaq-dom-mirror-0.27.0.tgz
 ```
 
 宿主环境需要 Chromium 及其系统库。若由环境单独管理 Chromium，可在安装时设置 `PUPPETEER_SKIP_DOWNLOAD=true`，并通过 `launchOptions.executablePath` 传入浏览器路径。
@@ -77,6 +77,8 @@ server.listen(8088, '127.0.0.1');
 当前内置客户端要求挂载在**独立 origin 的根路径**，使用 `/ws`、`/m/*` 和 `/f/*`，尚不支持任意子路径挂载。宿主应在调用处理器之前完成鉴权、TLS 与 WebSocket Origin 校验。
 
 详见[完整宿主示例](examples/host.cjs)、[API 与迁移说明](docs/API.md)和 [WebSocket 协议](docs/PROTOCOL.md)。
+
+0.27 新增稳定节点 ID、IME、上传下载、Shadow DOM/iframe 和 canvas 兼容回归。上传使用 32KiB 原始分块，并限制会话总量、并发与过期；Node 侧跨源 iframe 抓取默认关闭，需宿主显式配置 `crossOriginFrameOrigins`，下发内容复用字段过滤策略。宿主仍须限制出站网络。具体限制见 [API 文档](docs/API.md)。
 
 ## 运行 Demo
 
@@ -156,6 +158,7 @@ npm test
 node tools/verify-package.cjs
 
 # 从当前源码构建 Docker 镜像后：
+IMAGE=dom-mirror:local bash tools/verify-docker-package-business.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-scroll.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-data-boundary.sh
 IMAGE=dom-mirror:local bash tools/verify-docker-session-identity.sh
@@ -166,7 +169,7 @@ IMAGE=dom-mirror:local SESSION_GRACE_MS=2000 \
   bash tools/verify-docker-vikunja.sh
 ```
 
-tarball 检查会把实际 npm 包安装到独立临时宿主，不启动 Chromium。浏览器回归使用隔离 Docker 环境；Vikunja 流程覆盖登录、创建任务、修改优先级和完成，并独立检查持久化。CI 已配置这些检查及浏览器证据保存，是否通过以对应提交结果为准。
+快速 tarball 检查不启动 Chromium；`verify-docker-package-business.sh` 则将新打包产物安装到独立宿主，移除源码运行目录、禁用 `NODE_PATH` 回退并校验安装文件哈希。随后通过真实浏览器验证 Vikunja 登录、创建、优先级和完成，独立检查持久化，再检查恢复、过期及浏览器回收；关闭镜像实例后宿主 HTTP 仍须存活。浏览器测试使用隔离 Docker 网络，CI 保存包身份、消费端依赖锁、结果和截图。具体结果见[打包产物验收](docs/acceptance/package-business-2026-10-26.md)，远端是否通过以对应提交结果为准。
 
 frame 编码会复用普通 RGB/RGBA PNG 的解码像素，对其他编码保守回退。测量证明了**局部编码收益**，尚未证明稳定的端到端提速。[合成并发测试](docs/performance/2026-10-26-capacity.md)已覆盖 DOM/frame 的 1/3/6 会话：DOM 满足本轮预算，frame 回收后匿名内存预算未稳定通过（单会话一轮略超，3/6 会话均超）。[十轮内存调查](docs/performance/2026-10-26-frame-memory.md)确认强制 GC 和关闭 sharp cache 均未解决匿名内存驻留；分配器参数属于宿主诊断选项，不设为包的默认行为。真实业务容量与长期运行仍待验收。
 
