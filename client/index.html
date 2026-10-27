@@ -411,7 +411,19 @@
     for (const i of String(ref).split('/')) { n = n.children[+i]; if (!n) return null; }
     return n;
   }
-  function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
+    // v0.27 统一 HTML 片段解析：<template>.content 属惰性文档片段——其中的声明式
+  // shadow 模板（closed 组件补丁）在节点插入文档时不会被处理（快照路径经
+  // mirrorRoot.setHTMLUnsafe 可处理，实测补丁路径闭盒丢失）。div.setHTMLUnsafe
+  // 在解析期即挂影子根，随节点移动保留
+  const parseHtml = (str) => {
+    const d = document.createElement('div');
+    if (typeof d.setHTMLUnsafe === 'function') d.setHTMLUnsafe(str); else d.innerHTML = str;
+    const nodes = [...d.childNodes];
+    for (const n of nodes) d.removeChild(n);
+    return nodes;
+  };
+
+function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const host = document.getElementById('mirrorHost');
     if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
     else mirrorRoot = host.shadowRoot;
@@ -1107,9 +1119,7 @@
               for (let ni = 0; ni < p.kidTotal && ok; ni++) {
                 const v = byNew[ni];
                 if (typeof v === 'string') {
-                  const tpl = document.createElement('template');
-                  if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(v); else tpl.innerHTML = v;
-                  const nodes = [...tpl.content.childNodes];
+                  const nodes = parseHtml(v);
                   if (nodes.length === 1 && nodes[0].nodeType === 1) finalNodes[ni] = nodes[0];
                   else ok = false;
                 } else {
@@ -1136,18 +1146,13 @@
           for (let i = 0; i < (p.delHead || 0) && el.firstChild; i++) unregisterSubtree(el.firstChild), el.removeChild(el.firstChild);
           for (let i = 0; i < (p.delTail || 0) && el.lastChild; i++) unregisterSubtree(el.lastChild), el.removeChild(el.lastChild);
           if (p.append !== undefined) {
-            const tpl = document.createElement('template');
-            if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(p.append); else tpl.innerHTML = p.append;
             const before = el.childNodes.length;
-            el.appendChild(tpl.content);
+            for (const n2 of parseHtml(p.append)) el.appendChild(n2);
             for (let ci = before; ci < el.childNodes.length; ci++) { try { registerSubtree(el.childNodes[ci]); } catch (e2) {} }
           }
           if (p.prepend !== undefined) {
-            const tpl = document.createElement('template');
-            if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(p.prepend); else tpl.innerHTML = p.prepend;
-            const anchor = el.firstChild;
-            const news = [...tpl.content.childNodes];
-            for (const n2 of news) { el.insertBefore(n2, anchor); try { registerSubtree(n2); } catch (e2) {} }
+            const anchorNode = el.firstChild;
+            for (const n2 of parseHtml(p.prepend)) { el.insertBefore(n2, anchorNode); try { registerSubtree(n2); } catch (e2) {} }
           }
           continue;
         }
@@ -1161,10 +1166,8 @@
         // v0.17 带宽·追加型：纯末尾追加（聊天/日志/表格流）O(增量) 追加，
         // setHTMLUnsafe 解析（含声明式 shadow 模板），随后注册新节点 id
         if (p.append !== undefined) {
-          const tpl = document.createElement('template');
-          if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(p.append); else tpl.innerHTML = p.append;
           const before = el.childNodes.length;
-          el.appendChild(tpl.content);
+          for (const n2 of parseHtml(p.append)) el.appendChild(n2);
           for (let ci = before; ci < el.childNodes.length; ci++) {
             try { registerSubtree(el.childNodes[ci]); } catch (e2) {}
           }
@@ -1177,13 +1180,20 @@
           const savedLayer = frameMode ? (mirrorBody ? mirrorBody.querySelector('.xy-tiles') : null) : null;
           for (const c of [...el.children]) unregisterSubtree(c);
           if (typeof el.setHTMLUnsafe === 'function') el.setHTMLUnsafe(p.inner); else el.innerHTML = p.inner;
+          // v0.28 elbit：宿主获得真实内容后清除位图叠加与 min 尺寸（真实内容自行撑盒）
+          if (el.getAttribute && el.getAttribute('data-xy-elbit') === '1' && el.children.length) {
+            el.style.backgroundImage = '';
+            el.style.minWidth = '';
+            el.style.minHeight = '';
+            el.removeAttribute('data-xy-elbit');
+          }
           registerSubtree(el);
           if (savedLayer && el === mirrorBody) el.appendChild(savedLayer);
         }
         else if (p.outer !== undefined) {
-          const tpl = document.createElement('template');
-          if (typeof tpl.setHTMLUnsafe === 'function') tpl.setHTMLUnsafe(p.outer); else tpl.innerHTML = p.outer;
-          const next = tpl.content.firstChild;
+          const nodes = parseHtml(p.outer);
+          const next = nodes[0];
+          if (!next || nodes.length !== 1) throw new Error('outer parse');
           unregisterSubtree(el);
           el.replaceWith(next);
           registerSubtree(next);
@@ -1504,12 +1514,20 @@
           }
           if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); rum.patches += (j.patches || []).length; applyPatches(j.patches); rumApplied(); }
           if (j.type === 'canvas-tile') {
-            // v3：canvas 元素按需捕获（有变化才推）——换掉镜像里的占位 img
+            // v3：canvas 元素按需捕获（有变化才推）——换掉镜像里的占位 img；
+            // v0.28 elbit（声明式 closed 宿主）：宿主保留为原元素（挂载点可
+            // 继续收 innerHTML），位图以 backgroundImage 叠加
             noteBytes(ev.data.length || ev.data.size || 0);
             noteFrame(0);
             try {
               const el = mirrorFind(j.id !== undefined ? j.id : j.path);
               if (el && el.tagName === 'IMG') { el.src = j.url; rumApplied(); }
+              else if (el && el.getAttribute && el.getAttribute('data-xy-elbit') === '1') {
+                el.style.backgroundImage = 'url("' + j.url + '")';
+                el.style.backgroundSize = '100% 100%';
+                el.style.backgroundRepeat = 'no-repeat';
+                rumApplied();
+              }
             } catch (e) {}
           }
           if (j.type === 'canvas-ops') {

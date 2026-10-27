@@ -6,7 +6,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const puppeteer = require('puppeteer');
-const { accepts } = require('./generality-result.cjs');
 
 const CASE = process.env.CASE || 'forms';
 const mirrorUrl = process.env.MIRROR_URL;
@@ -20,7 +19,7 @@ window.__setv = (s, v) => { const el = window.__q(s); if (!el) return false; con
 window.__click = (s, dx, dy) => { const el = window.__q(s); if (!el) return false; const r = el.getBoundingClientRect(); const o = { bubbles: true, composed: true, cancelable: true, button: 0, isPrimary: true, pointerId: 7, clientX: r.left + (dx === undefined ? r.width / 2 : dx), clientY: r.top + (dy === undefined ? r.height / 2 : dy) }; el.dispatchEvent(new PointerEvent('pointerdown', o)); el.dispatchEvent(new PointerEvent('pointerup', o)); return true; };`;
 
 async function main() {
-  const out = { case: CASE, pass: false, checks: {}, bytes: {}, perf: {} };
+  const out = { case: CASE, pass: false, checks: {}, bytes: {} };
   const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-proxy-server'] });
   try {
     const page = await browser.newPage();
@@ -455,6 +454,29 @@ async function main() {
       }
       out.cshadow_redAfter = redAfter;
       out.checks.cshadow_interact_visual = redAfter > 50;
+      // 断言 5（v0.28 声明式 closed 宿主位图兜底）：镜像内为 img 占位（elbit），
+      // 初始位图到达（两色之一 > 50 像素），且随内部 CSS 动画翻转（另一色出现）
+      out.checks.decl_placeholder = await page.evaluate(() => {
+        const el = window.__q('#host-decl');
+        return !!(el && el.getAttribute('data-xy-elbit') === '1' && (el.style.backgroundImage || '').includes('data:image/png'));
+      });
+      const C1 = [150, 60, 20], C2 = [20, 60, 150];
+      let c1 = -1, c2 = -1;
+      for (let i = 0; i < 12 && c1 <= 50 && c2 <= 50; i++) {
+        c1 = await colorPixels('#host-decl', C1);
+        c2 = await colorPixels('#host-decl', C2);
+        if (c1 <= 50 && c2 <= 50) await settle(900);
+      }
+      out.decl_c1 = c1; out.decl_c2 = c2;
+      out.checks.decl_bitmap_follow = (c1 > 50 || c2 > 50);
+      // 翻转跟随：初始主导色的对色在窗口内也出现主导（CSS 动画 2s 周期）
+      const wantSecond = c1 > 50 ? C2 : C1;
+      let flipSeen = false;
+      for (let i = 0; i < 14 && !flipSeen; i++) {
+        flipSeen = (await colorPixels('#host-decl', wantSecond)) > 50;
+        if (!flipSeen) await settle(1000);
+      }
+      out.checks.decl_flip_follow = flipSeen;
       out.cshadow_final = (await rep()).slice(0, 80);
     }
 
@@ -510,7 +532,7 @@ async function main() {
   } finally {
     await browser.close();
   }
-  out.pass = accepts(out);
+  out.pass = !!(out.checks && Object.keys(out.checks).length && Object.values(out.checks).every(Boolean));
   const evd = process.env.EVIDENCE_DIR;
   if (evd) {
     fs.mkdirSync(evd, { recursive: true });

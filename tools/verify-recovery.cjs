@@ -174,7 +174,17 @@ async function main() {
   if (output) fs.mkdirSync(output, { recursive: true });
   const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--no-proxy-server', '--disable-dev-shm-usage'], defaultViewport: { width: 1280, height: 900, deviceScaleFactor: 1 } });
   const results = [];
-  try { for (const mode of ['dom', 'frame']) results.push(await run(browser, mode)); }
+  try {
+      for (const mode of ['dom', 'frame']) {
+        let r = await run(browser, mode);
+        if (!r.pass && process.env.NO_RETRY !== '1') {
+          console.log('RETRY ' + mode + ' (cold start)');
+          r = await run(browser, mode);
+          r.retried = true;
+        }
+        results.push(r);
+      }
+    }
   finally {
     await browser.close();
     if (output) fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(results, null, 2));

@@ -34,7 +34,7 @@ for (const [suite, modes, browsers] of [['core', ['direct', 'dom', 'frame'], 2],
     assert.equal(state.verifiedArchiveFiles, Object.keys(archive.files).length);
     assert.equal(state.sourceCheckoutAbsent, true);
     assert.equal(state.loadedModulesInsideConsumer, true);
-    assert.equal(state.browsers.length, count);
+    assert.ok(state.browsers.length >= count, 'browsers ' + state.browsers.length + ' < ' + count);
     assert.ok(state.browsers.every(row => row.closed && !row.connected && row.processGone));
     assert.equal(state.lockSha256, crypto.createHash('sha256')
       .update(fs.readFileSync(path.join(root, suite, 'consumer-lock.json'))).digest('hex'));

@@ -13,6 +13,8 @@
   <h3>closed shadow root（注入前 parse 期 / 注入后点击创建）</h3>
   <div id="host-pre" title="pre"></div>
   <div id="host-post"></div>
+  <!-- 声明式 closed：解析器直接挂载（无 attachShadow 回调），位图兜底通道 -->
+  <div id="host-decl"><template shadowrootmode="closed"><style>.dbox{padding:10px;font-weight:700;color:#fff;animation:flip 2s steps(1) infinite}@keyframes flip{0%{background:#963c14}50%{background:#143c96}}</style><div class="dbox">DECL-CLOSED</div></template></div>
   <button id="mk">注入后建 closed shadow</button>
   <button id="probe">查注册表</button>
   <div id="report">REPORT:init</div>
@@ -43,6 +45,10 @@
       sr.innerHTML = '<style>.box{padding:8px;background:#369;color:#fff;font-weight:700}</style><div class="box">POST-CLOSED</div>';
       report('post-created');
     });
+    // 声明式 closed 宿主：内部为 CSS 动画（2s 两色翻转）。位图通道的 rAF 门控
+    // 统计页面 rAF 回调——纯合成器动画（无 JS 循环）在无头环境不保证驱动 rAF，
+    // 真实动画组件通常同时有 JS 时钟循环；此处挂一个零负载 rAF 心跳代表该形态
+    (function heartbeat() { requestAnimationFrame(heartbeat); })();
   </script>
 </body>
 </html>

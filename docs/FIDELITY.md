@@ -150,6 +150,34 @@
   ≥100 会话或分布显著漂移（p95 帧时间 >25ms / 交互延迟 p95 >30ms）时更新
   基线并排查回归。
 
+### v0.28 —— 声明式 closed 模板位图兜底 + main 重构同步
+- **声明式 closed shadow 位图兜底（最后一项规范不可观测残余的缓解落地）**：
+  `<template shadowrootmode=closed>` 由 HTML 解析器直接挂载（不调 attachShadow、
+  无回调）——识别谓词（无 light 子树/open 影子根/closed 注册表条目/自身可视盒样式，
+  尺寸 16~3000px）在 **stamp 并行游走**中非破坏式标记（data-xy-elbit + 源站计算尺寸
+  为 min 尺寸——镜像端空 div 高 0，位图需要盒子；获得真实内容时客户端自动清除标记/
+  背景/min 尺寸）。位图复用 startCanvasWatch 的 region clip + 帧差跳过通道：fresh
+  旁路 rAF 门保证静态内容首拍，变化后 ≥500ms 节流（120ms 全页截图在重应用上打满
+  CPU）；客户端以 backgroundImage 叠加。**XY_ELBIT=0 可整体停用**（误捕逃生门）。
+  开发中被回归套件拦下的两个关键缺陷：①live/clone 全量数组位序对照在 clone 剥
+  script 后错位一格（#gap 标记落到 #outer-button，min-height:1200 撑坏布局）→
+  移入 stamp 游走；②破坏式替换占位 img 会吞掉快照时空、后填充的 Vue 挂载点
+  （Vikunja 整个登录表单消失）→ 非破坏式标记。
+  ③（0045b04，逃过本地回归、被 CI 冷 runner 拦下）开关注入未插值——
+  `const __xyElbitOn = config.elbit !== false` 在模板串中原样下发页面，无全局
+  config 的页面 helpers-1 evaluate 抛 ReferenceError、会话必死（snaps:0、客户端
+  20s 超时）；源站自带 window.config（Vue 站）恰好掩盖，故线上三症状与部分基准
+  绿、scroll fixture 必死。教训：page-helpers 模板串引用服务端变量一律 ${} 构建
+  期插值（canvasStream 开关同款），不得依赖源站全局名做巧合兜底。
+- 实证（gen-cshadow 六断言全绿）：parse 期/注入后 closed 内容渲染、交互视觉回路、
+  声明式宿主占位标记、位图首拍（绿像素 43825）、CSS 动画翻转跟随。
+- **main 同步（144a9ec，11 提交重构）**：PAGE_HELPERS→lib/page-helpers.js、
+  input dispatch/frame-codec/xframe/canvas 捕获辅助抽取、tarball 独立宿主回归；
+  v0.28 elbit 三处已移植到新结构（lib/page-helpers 谓词+标记、lib/canvas 候选+
+  record elbit 节流、server.js watch fresh 旁路）。合并树全量回归绿（Vikunja 3/3，
+  xframe-policy 过；package-business 需宿主 node，由 CI 覆盖）。
+- 周度 RUM 复评：见 v0.27 节流程（aggregate-rum.cjs）。
+
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
 - 跨源 iframe 动态嵌入：周期重抓刷新已解决（v0.26，变化才推）；postMessage 双向驱动的嵌入仍为快照语义。

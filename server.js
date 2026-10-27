@@ -1268,7 +1268,7 @@ async function runSession(ws, req, lifecycle) {
         // CPU 大头：实测 34-47%）
         const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
         if (rafN === null) return;
-        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300) return; }
+        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh)) return; }
         else rafLast = { n: rafN, at: Date.now() };
         const nowMs = Date.now();
         while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
@@ -1293,7 +1293,7 @@ async function runSession(ws, req, lifecycle) {
               sig = { w: info.width, h: info.height, data };
             } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
           } catch (e) {}
-          if (!sigs.record(sigKey, sig, Date.now())) continue;
+          if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) continue;
           if (ws.readyState === 1) {
             const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, url: 'data:image/png;base64,' + shot.data });
             ws.send(pl);

@@ -1,3 +1,18 @@
+# v0.28.0
+
+- 声明式 closed shadow 模板位图兜底：<template shadowrootmode=closed> 由 HTML
+  解析器直接挂载（不调 attachShadow、无回调）——引用截获无效。识别谓词（无
+  light 子树内容/无 open 影子根/不在 closed 注册表/自身无可视盒样式/尺寸
+  16~3000px）在 stamp 并行游走中非破坏式标记（data-xy-elbit + 源站计算尺寸
+  为 min 尺寸；位序对照数组会因 clone 剥 script 错位一格——实测 #gap 标记
+  落到 #outer-button，min-height:1200 撑坏布局，已由回归套件拦截）。位图经
+  startCanvasWatch 的 region clip + 帧差跳过通道推送（elbit 变化后 ≥500ms
+  节流；fresh 旁路 rAF 门保证首拍），客户端以 backgroundImage 叠加、获得
+  真实内容时自动清除。XY_ELBIT=0 可整体停用（兜底开关）。
+- gen-cshadow 扩 6 断言：parse 期/注入后 closed、交互视觉回路、声明式宿主
+  占位、位图首拍、CSS 动画翻转跟随。
+- RUM 心跳 grep 竞态缓冲（beacon 落盘 2s）。
+
 # v0.27.0
 
 - 合并准入修复：上传原始分块降至 32KiB，增加会话总量/并发/空闲超时及文件数预算；跨源 iframe Node 抓取改为显式宿主白名单并复用字段过滤；移除业务模式重试与浏览器预热，保留首次失败；补 64KiB 以上与 8MiB 上传 SHA-256、默认拒绝及字段过滤回归，同步消费端锁文件版本。
