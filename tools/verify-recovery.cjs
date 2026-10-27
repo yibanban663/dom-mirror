@@ -161,6 +161,19 @@ async function run(browser, mode) {
     result.pass = true;
   } catch (error) {
     result.steps.push({ name: step, pass: false, error: error.message });
+    try {
+      result.dump = await tabs.at(-1).page.evaluate(() => {
+        const root = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
+        if (!root) return 'no mirror root';
+        const ta = root.querySelector('textarea');
+        if (!ta) return 'no textarea';
+        return {
+          value: ta.value,
+          childNodes: [...ta.childNodes].map(n => n.nodeType + ':' + JSON.stringify(n.textContent)),
+          outerStart: ta.outerHTML.slice(0, 300),
+        };
+      });
+    } catch (e) { result.dump = 'dump err ' + e.message; }
     if (output && tabs.length) await tabs.at(-1).page.screenshot({ path: path.join(output, mode + '-failure.png'), waitForFonts: false }).catch(() => {});
   } finally {
     for (const t of tabs) await release(t);
