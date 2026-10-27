@@ -1746,7 +1746,7 @@ async function runSession(ws, req, lifecycle) {
     // 补丁路径与骨架代理碰撞错位且不报 miss。导航后 +2.5s/+7s 定时重拍兜底。
     page.on('framenavigated', (frame) => {
       try {
-        // v0.30 伪路由：主框架导航（含 SPA pushState）即同步地址栏
+        // v0.30 pseudo-route
         if (frame === page.mainFrame() && ws.readyState === 1) { try { sendJson({ type: 'location', url: frame.url() }); } catch (e2) {} }
         if (frame !== page.mainFrame()) return;
         if (!domActive || ws.readyState !== 1) return;
