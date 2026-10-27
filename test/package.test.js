@@ -17,7 +17,7 @@ function deferred() {
 }
 
 async function host(t, options = {}) {
-  const mirror = createMirror({ originUrl: 'http://127.0.0.1:1/', logger: quiet, ...options });
+  const mirror = createMirror({ browserPoolSize: 0, originUrl: 'http://127.0.0.1:1/', logger: quiet, ...options });
   const server = http.createServer((req, res) => {
     if (req.url === '/host-health') { res.end('host alive'); return; }
     mirror.handleRequest(req, res);
@@ -68,7 +68,7 @@ test('invalid package options fail before creating resources', async () => {
     { originUrl: 'http://localhost/', allowedOrigins: '*' }]) {
     assert.throws(() => createMirror(options), TypeError);
   }
-  const mirror = createMirror({ originUrl: 'http://localhost/', logger: quiet });
+  const mirror = createMirror({ browserPoolSize: 0, originUrl: 'http://localhost/', logger: quiet });
   assert.strictEqual(mirror.close(), mirror.close());
   await mirror.close();
 });
