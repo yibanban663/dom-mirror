@@ -73,6 +73,23 @@ async function main() {
     if (kind.legacy !== 'IMG') throw new Error('legacy canvas should be IMG (bitmap fallback), got ' + kind.legacy);
     results.steps = (results.steps || []).concat(['kinds:' + kind.live + '/' + kind.legacy]);
 
+    // v0.29 指令流字节预算：#mkheavy 画布持续 putImageData 大块数据（单批远超
+    // 100KB/10s 预算）——引擎应停发指令流并转位图，镜像侧 canvas 原位换 img
+    //（img 继承 data-xy-canvas-stream 且补 data-xy-canvas 标记）。仅流模式有意义。
+    if (expectStream) {
+      await page.click('#mirrorHost >>> #mkheavy');
+      // 超预算画布可能在追加补丁序列化时即占位 img（预算先于序列化触发），
+      // 也可能先镜像为 canvas 再由 tile 触发原位替换——两种终态都是
+      // img[data-xy-canvas]（流模式基线只有 legacy 1 个，heavy 到位后 ≥2）
+      const heavy = await page.waitForFunction(() => {
+        const b = document.querySelector('#mirrorHost')?.shadowRoot?.querySelector('.xy-body');
+        return b && b.querySelectorAll('img[data-xy-canvas]').length >= 2;
+      }, { timeout: 15000 }).then(() => true).catch(() => false);
+      results.heavyBudgetFlip = heavy;
+      if (!heavy) throw new Error('heavy canvas should flip to bitmap (img) after ops budget exceeded');
+      results.steps.push('heavy:flip-to-img');
+    }
+
     // 采样镜像 live 画布像素（stream 直接 getImageData；bitmap 过一层 drawImage）。
     // 首批指令可能晚于 canvas 元素插入到达：带重试（最多 ~3s）等首批重放落笔。
     const sample = () => page.evaluate((stream) => {

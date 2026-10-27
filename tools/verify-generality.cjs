@@ -338,7 +338,10 @@ async function main() {
       out.perf = Object.assign(out.perf || {}, { vlistPatchBytesScroll1: b1, vlistPatchBytesScroll2: b2 });
       out.vlist_final = (await rep()).slice(0, 80);
       // 功能断言：服务端真实换窗（updates ≥10 且 first 前移两位数）且窗口行数恒定
-      out.checks.vlist_updates = await page.evaluate(() => /^REPORT:first=\d{2,};updates=\d{2,}/.test(window.__rep()));
+      // v0.29：属性补丁直发消除了 outer 替换 churn 引起的滚动回声放大
+      // （旧路径 348px 滚出 first=228/updates=23 的病理放大），updates 计数
+      // 回落到真实交互量级——阈值 10→5，first 两位数断言不变
+      out.checks.vlist_updates = await page.evaluate(() => { const m = /^REPORT:first=(\d+);updates=(\d+)/.exec(window.__rep() || ''); return !!m && Number(m[1]) >= 10 && Number(m[2]) >= 5; });
       out.checks.vlist_rows = await page.evaluate(() => window.__qa('#vwin .vrow').length === 20);
       // v0.23 平移 diff：机制断言（负载无关）——慢滚期间必须收到 ≥1 条
       // delHead/prepend 平移补丁；字节数记录不断言（慢 runner 量级漂移大）

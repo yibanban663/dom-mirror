@@ -1173,6 +1173,13 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           }
           continue;
         }
+        // v0.29：属性补丁 O(1) 直改（width/style 等；URL 属性服务端仍走 outer）
+        if (p.attrs !== undefined) {
+          for (const [name, val] of Object.entries(p.attrs)) {
+            try { if (val === null) el.removeAttribute(name); else el.setAttribute(name, val); } catch (e2) {}
+          }
+          continue;
+        }
         // 结构替换前清子树旧瓦片，防幽灵残影
         clearSubtreeTiles(String(p.path ?? ''));
         if (p.inner !== undefined) {
@@ -1522,6 +1529,19 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             try {
               const el = mirrorFind(j.id !== undefined ? j.id : j.path);
               if (el && el.tagName === 'IMG') { el.src = j.url; rumApplied(); }
+              else if (el && el.tagName === 'CANVAS') {
+                // v0.29：指令流画布超预算切换位图——镜像侧把 canvas 原位换成
+                // img（保留 id/class/style 使后续补丁与 tile 继续命中），
+                // 与快照序列化的位图兜底形态一致
+                try {
+                  const img = document.createElement('img');
+                  for (const at of el.attributes) img.setAttribute(at.name, at.value);
+                  img.setAttribute('data-xy-canvas', '1');
+                  img.src = j.url;
+                  el.replaceWith(img);
+                  rumApplied();
+                } catch (e) {}
+              }
               else if (el && el.getAttribute && el.getAttribute('data-xy-elbit') === '1') {
                 el.style.backgroundImage = 'url("' + j.url + '")';
                 el.style.backgroundSize = '100% 100%';
