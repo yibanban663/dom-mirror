@@ -19,7 +19,7 @@ const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer').default;
 const { assetUrl, selectOrigin } = require('./lib/policy');
 const { SessionStore } = require('./lib/sessions');
-const { frameCropInput } = require('./lib/frame-codec');
+const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
 
 const { normalizeOptions } = require('./lib/options');
@@ -1433,42 +1433,11 @@ async function runSession(ws, req, lifecycle) {
         return { tiles: [{ w: W, h: H, cssX: Math.round(meta.sx || 0), cssY: Math.round(meta.sy || 0),
           cssW: W / DPR, cssH: H / DPR, url: 'data:image/png;base64,' + b64 }], full: true };
       }
-      // 逐像素比较找脏行/列（Uint32 视图加速；行级先筛再列级细化）
-      const dirtyRows = new Uint8Array(H);
-      let any = false;
-      const a = new Uint32Array(data.buffer, data.byteOffset, (data.length / 4) | 0);
-      const b = new Uint32Array(prevRaw.buffer, prevRaw.byteOffset, (prevRaw.length / 4) | 0);
-      const w32 = W >> 2; // 每行 Uint32 数（4 像素/步，TH 兜底用通道级复检）
-      for (let y = 0; y < H; y++) {
-        const off = y * W;
-        for (let x = 0; x < W; x++) {
-          if (a[off + x] !== b[off + x]) {
-            // Uint32 不等但可能只是 alpha 位——通道级复检（阈值 2）
-            const p = (off + x) * CH, q = p - CH + 3;
-            void q;
-            const dd = data, pp = prevRaw;
-            if (Math.abs(dd[p] - pp[p]) > 2 || Math.abs(dd[p + 1] - pp[p + 1]) > 2 || Math.abs(dd[p + 2] - pp[p + 2]) > 2) { dirtyRows[y] = 1; any = true; break; }
-          }
-        }
-      }
+      const { dirtyRows, any } = scanDirtyRows(data, prevRaw, W, H, CH);
       prevRaw = data; prevW = W; prevH = H;
       if (!any) return { tiles: [] };
-      // 行程合并成矩形（按连续脏行段，列取整行宽——screencast 帧内横向裁剪收益小
-      // 且增加编码次数；行段合并上限 8 段防碎片）
-      const rects = [];
-      let y0 = -1;
-      for (let y = 0; y <= H; y++) {
-        const d2 = y < H && dirtyRows[y];
-        if (d2 && y0 < 0) y0 = y;
-        else if (!d2 && y0 >= 0) { rects.push([0, y0, W, y - y0]); y0 = -1; }
-      }
-      if (rects.length > 8) {
-        // 合并为整帧一张
-        rects.length = 0;
-        rects.push([0, 0, W, H]);
-      }
       const tiles = [];
-      for (const [rx, ry, rw, rh] of rects) {
+      for (const [rx, ry, rw, rh] of dirtyRects(dirtyRows, W, H)) {
         if (rw < 2 || rh < 2) continue;
         const png = await frameCropInput(sharp, framePng, { info, data }).extract({ left: rx, top: ry, width: rw, height: rh }).png({ compressionLevel: 3 }).toBuffer();
         tiles.push({ w: rw, h: rh, cssX: Math.round(rx / DPR) + Math.round(meta.sx || 0), cssY: Math.round(ry / DPR) + Math.round(meta.sy || 0), cssW: rw / DPR, cssH: rh / DPR, url: 'data:image/png;base64,' + png.toString('base64') });

@@ -6,10 +6,7 @@ const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const sharp = require('sharp');
 const output = process.env.PROFILE_DIR;
-const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-const start = source.indexOf('const dirtyRows = new Uint8Array(H);'), end = source.indexOf('prevRaw = data; prevW = W; prevH = H;', start);
-if (start < 0 || end < 0) throw new Error('Scan benchmark anchor changed');
-const js = new Function('data', 'prevRaw', 'W', 'H', 'CH', source.slice(start, end) + 'return { dirtyRows, any };');
+const { scanDirtyRows: js } = require('../lib/frame-codec');
 function measure(action) {
   const values = [];
   for (let i = 0; i < 60; i++) {
