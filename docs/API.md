@@ -25,6 +25,7 @@ const mirror = createMirror({
 | `presentation` | `embedded` | 隐藏演示壳；`demo` 保留模式切换和统计 |
 | `allowedOrigins` | `[]` | 允许 `x-rbi-origin` 选取的源站列表；不是 WS Origin 校验 |
 | `crossOriginFrameOrigins` | `[]` | 允许 Node 侧抓取的跨源 iframe 源列表；默认仅占位，不允许 URL 凭据；独立于 `allowedOrigins` |
+| `requestOrigins` | `[]` | 服务端浏览器额外可访问的源（CDN、接口域名）。会话源站、`crossOriginFrameOrigins` 与此列表之外的请求一律拦截，含导航、表单提交与弹窗；主框架导航被拦截时向客户端发送 `NAVIGATION_BLOCKED` |
 | `canvasStream` | `true` | 可序列化 2D canvas 指令流，其他画布回退位图 |
 | `chromiumSandbox` | `true` | 保留 Chromium sandbox；宿主须以非 root 运行并提供 user namespace（容器见 `docker/seccomp-chromium.json`）。`false` 仅用于无法满足的环境，渲染进程被攻破即获得宿主进程权限 |
 | `maskInputTypes` | `[]` | 指定输入类型的下发值改为最多 32 个星号；textarea 使用 `textarea`，不处理像素或上行数据 |

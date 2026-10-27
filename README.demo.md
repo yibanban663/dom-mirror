@@ -81,6 +81,7 @@ These environment variables are read by the **Demo**. Library consumers pass [fa
 | `CHROMIUM_SANDBOX` | `1` | `0` disables the Chromium sandbox (unsafe) / `0` 关闭 Chromium sandbox（不安全） |
 | `PROD_PRESENTATION` | `0` | `1` hides Demo chrome; adds no security / 仅隐藏演示面板 |
 | `RBI_ALLOWED_ORIGINS` | empty / 空 | Allowed source origins for the trusted `x-rbi-origin` header; not WS Origin policy |
+| `REQUEST_ALLOWED_ORIGINS` | empty / 空 | Extra origins the server browser may request; all others are blocked / 服务端浏览器额外可访问的源，其余一律拦截 |
 | `PUPPETEER_EXECUTABLE_PATH` | Puppeteer-managed | Browser executable / 浏览器路径 |
 
 To mirror your source with the Demo / 接入其他源站：

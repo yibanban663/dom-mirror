@@ -85,6 +85,10 @@ jobs:
         run: |
           mkdir -p artifacts/xframe-policy && chmod a+rwx artifacts/xframe-policy
           docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 3g --cpus 2 -v "$PWD/artifacts/xframe-policy:/evidence" -e EVIDENCE_DIR=/evidence dom-mirror:ci timeout 120 node tools/verify-xframe-policy.cjs
+      - name: 服务端浏览器请求白名单回归
+        run: |
+          mkdir -p artifacts/request-policy && chmod a+rwx artifacts/request-policy
+          docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 3g --cpus 2 -v "$PWD/artifacts/request-policy:/evidence" -e EVIDENCE_DIR=/evidence dom-mirror:ci timeout 120 node tools/verify-request-policy.cjs
       - name: Shadow DOM 回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-shadow.sh
       - name: 同源 iframe 回归
@@ -161,6 +165,13 @@ jobs:
         with:
           name: longtail-p0-regression
           path: artifacts/longtail-p0/
+          if-no-files-found: warn
+      - name: 保存请求白名单证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: request-policy-regression
+          path: artifacts/request-policy/
           if-no-files-found: warn
       - name: 保存跨源 iframe 策略证据
         if: always()

@@ -37,3 +37,11 @@ test('Chromium sandbox is on by default and only an explicit boolean disables it
     assert.throws(() => normalizeOptions({ originUrl: 'http://localhost/', chromiumSandbox }), TypeError);
   }
 });
+
+test('request origins default to none and reject credentials or non-HTTP schemes', () => {
+  assert.deepEqual(normalizeOptions({ originUrl: 'http://localhost/' }).requestOrigins, []);
+  assert.deepEqual(normalizeOptions({ originUrl: 'http://localhost/', requestOrigins: ['https://cdn.example/path'] }).requestOrigins, ['https://cdn.example']);
+  for (const requestOrigins of ['https://cdn.example', ['ftp://cdn.example'], ['https://u:p@cdn.example']]) {
+    assert.throws(() => normalizeOptions({ originUrl: 'http://localhost/', requestOrigins }), TypeError);
+  }
+});

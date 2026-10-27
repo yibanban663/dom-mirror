@@ -79,7 +79,7 @@ DOM 客户端在 pointerdown 之前发送 `scroll`，包括页面位置和目标
 
 恢复时保留 Chromium，丢弃离线期间下行更新，串行完成此前已接收的命令，再发送 meta、全量 dom-snapshot 与 sync-ready。快照包含运行中的非密码/非文件表单值及滚动位置；客户端清掉旧输入缓存，以服务端状态为准。恢复期间冻结操作，不缓冲或重发业务命令。客户端需同时等待该连接的快照构建完成及 sync-ready，不能仅凭 WS open 开放交互。
 
-默认服务端检测断线后保留 60000ms，由 SESSION_GRACE_MS 调整，最大 300000ms。检测依赖 WS close 或 10 秒心跳，网络黑洞检测可能延迟。断线保留仍计入 MAX_SESSIONS；过期、release 或浏览器退出会清理会话。SESSION_BUSY（原连接仍活跃）及 SESSION_LIMIT 可退避重试；SESSION_EXPIRED 和 INVALID_HANDSHAKE 为 terminal，停止自动重试，等待用户手动新建。错误不会悄悄回退成新会话。
+默认服务端检测断线后保留 60000ms，由 SESSION_GRACE_MS 调整，最大 300000ms。检测依赖 WS close 或 10 秒心跳，网络黑洞检测可能延迟。断线保留仍计入 MAX_SESSIONS；过期、release 或浏览器退出会清理会话。SESSION_BUSY（原连接仍活跃）及 SESSION_LIMIT 可退避重试；SESSION_EXPIRED 和 INVALID_HANDSHAKE 为 terminal，停止自动重试，等待用户手动新建。NAVIGATION_BLOCKED 为非 terminal 提示：服务端浏览器的主框架导航指向请求白名单之外的源，已被拦截，会话停留在原页面。错误不会悄悄回退成新会话。
 
 宿主主动调用 `revokeSession` / `revokeIdentity` 时，逻辑会话立即失效，WS 发送应用关闭码 **4001**，reason 为 `SESSION_REVOKED`（不是 JSON error 消息）。客户端收到 4001 后清空恢复 token、禁用交互，显示“会话已撤销，请重新登录后再访问”，停止自动重连及页面上的重连操作，并隐藏直接新建按钮。宿主鉴权决定后续重新登录是否允许新会话。
 
