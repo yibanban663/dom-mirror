@@ -27,12 +27,12 @@ docker network create --internal "$run_id" >/dev/null
 
 overall=0
 xframe_container=""
-for c in ${CASES:-forms editor media layout style canvas dnd vlist xiframe cshadow audio}; do
+for c in ${CASES:-forms editor media layout style canvas dnd vlist nav xiframe cshadow audio}; do
   docker rm -f "$server" >/dev/null 2>&1 || true
   case "$c" in
     forms) page=gen-forms.html ;; editor) page=gen-editor.html ;; media) page=gen-media-pix.html ;;
     layout) page=gen-layout.html ;; style) page=gen-style.html ;; canvas) page=gen-canvas-key.html ;;
-    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; xiframe) page=gen-xiframe.html ;; cshadow) page=gen-cshadow.html ;; audio) page=gen-media-audio.html ;;
+    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; nav) page=gen-forms.html ;; xiframe) page=gen-xiframe.html ;; cshadow) page=gen-cshadow.html ;; audio) page=gen-media-audio.html ;;
     *) exit 2 ;;
   esac
   # xiframe 需要第二源站（跨源嵌入目标）：origin-b 静态容器

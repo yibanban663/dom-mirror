@@ -12,6 +12,16 @@
   body.prod main { padding: 0; gap: 0; }
   body.prod .stage { flex: 1 1 auto; width: 100%; }
   body.prod .canvas-box { position: fixed; inset: 0; border: none; border-radius: 0; background: #fff; z-index: 50; }
+  /* v0.30 伪地址栏：生产模式固定顶部（业务壳外唯一的浏览器语义 UI） */
+  #navWrap { display:flex; gap:6px; padding:6px 10px; background:var(--panel); border-bottom:1px solid var(--line); align-items:center; }
+  #navWrap[hidden] { display:none; }
+  #navWrap button { background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:5px 10px; cursor:pointer; font-size:13px; }
+  #navWrap button:hover { border-color: var(--accent); }
+  #navUrl { flex:1; min-width:120px; background:var(--bg); border:1px solid var(--line); color:var(--txt); border-radius:14px; padding:6px 12px; font-size:12.5px; outline:none; }
+  #navUrl:focus { border-color: var(--accent); }
+  body.prod #navWrap { position: fixed; top:0; left:0; right:0; z-index:90; transform: translateY(-100%); transition: transform .18s ease; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+  body.prod #navWrap:hover, body.prod #navHot:hover ~ #navWrap { transform: none; }
+  body.prod #navHot { position: fixed; top:0; left:0; right:0; height: 9px; z-index:89; }
   body.prod #mirrorScroll { width: 100vw !important; height: 100vh !important; }
   body.prod #rbi { width: 100vw; height: 100vh; }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -55,6 +65,13 @@
 </style>
 </head>
 <body>
+<div id="navHot" hidden></div>
+<div id="navWrap" hidden>
+  <button id="navBack" title="后退">←</button>
+  <button id="navFwd" title="前进">→</button>
+  <input id="navUrl" placeholder="输入地址（限允许源站）" spellcheck="false" autocomplete="off" />
+  <button id="navGo">跳转</button>
+</div>
 <div id="connectionNotice" role="status"><span id="connectionText">正在连接…</span><button id="newSession" class="btn" hidden>重新开始</button></div>
 <header>
   <div class="logo">影</div>
@@ -1591,6 +1608,17 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             } catch (e) {}
             rumApplied(); // v0.21 RUM：滚动同步应用=闭环
           }
+            if (j.type === 'location') {
+            // v0.30 伪路由：地址栏跟随（输入聚焦时不打断编辑）
+            const nu = m('navUrl');
+            if (document.activeElement !== nu) nu.value = j.url || '';
+            m('navWrap').hidden = false; m('navHot').hidden = false;
+          }
+          if (j.type === 'nav-blocked') {
+            lastErr = j.msg || '导航被拒绝';
+            setStatus('目标不在允许范围', false);
+            setTimeout(() => { if (lastErr === (j.msg || '导航被拒绝')) { lastErr = ''; setStatus('会话在线', true); } }, 2600);
+          }
           if (j.type === 'doc-class' && mirrorBody) {
             // 主题/状态类切换：直改镜像根类名（轻量，不重建）
             mirrorBody.className = 'xy-body ' + (j.cls || '');
@@ -1737,6 +1765,12 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
   document.querySelectorAll('.quality button[data-m]').forEach(b => b.addEventListener('click', () => {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: b.dataset.m }));
   }));
+  // v0.30 伪地址栏交互：跳转/前进/后退
+  const navGo = () => { const v = document.getElementById('navUrl').value.trim(); if (v) send({ type: 'navigate', url: v }); document.getElementById('navUrl').blur(); };
+  document.getElementById('navGo').addEventListener('click', navGo);
+  document.getElementById('navUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') navGo(); });
+  document.getElementById('navBack').addEventListener('click', () => send({ type: 'history', dir: 'back' }));
+  document.getElementById('navFwd').addEventListener('click', () => send({ type: 'history', dir: 'forward' }));
   document.getElementById('reconn').addEventListener('click', () => {
     if (!retryAllowed) return;
     clearTimeout(retryTimer);

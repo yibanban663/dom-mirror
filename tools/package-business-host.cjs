@@ -28,6 +28,7 @@ const dependencies = Object.fromEntries(Object.keys(installed.dependencies).map(
 }));
 const puppeteer = resolvePackage('puppeteer').default;
 const browsers = [];
+const contexts = [];
 const launch = puppeteer.launch.bind(puppeteer);
 puppeteer.launch = async options => {
   const browser = await launch(options);
@@ -35,6 +36,18 @@ puppeteer.launch = async options => {
   const close = browser.close.bind(browser);
   browser.close = async () => { await close(); record.closed = true; };
   browser.once('disconnected', () => { record.connected = false; });
+  // v0.30 实例池：会话级资源是 BrowserContext——按上下文追踪（池化浏览器
+  // 常驻复用，进程级 reclaimed 语义移到 contexts）
+  const origCtx = browser.createBrowserContext.bind(browser);
+  browser.createBrowserContext = async (...args) => {
+    const ctx = await origCtx(...args);
+    const rec = { pid: record.pid, closed: false, connected: true };
+    const cc = ctx.close.bind(ctx);
+    ctx.close = async () => { await cc(); rec.closed = true; rec.connected = false; };
+    browser.once('disconnected', () => { rec.connected = false; });
+    contexts.push(rec);
+    return ctx;
+  };
   browsers.push(record);
   return browser;
 };
@@ -49,7 +62,8 @@ function status() {
     integrity: expected.integrity, entry, dependencies, verifiedArchiveFiles: Object.keys(expected.files).length,
     lockSha256: sha256(fs.readFileSync('/consumer/package-lock.json')), node: process.version,
     sourceCheckoutAbsent: !fs.existsSync('/app'), loadedModulesInsideConsumer: true,
-    browsers: browsers.map(record => ({ ...record, processGone: !fs.existsSync('/proc/' + record.pid) })) };
+    browsers: browsers.map(record => ({ ...record, processGone: !fs.existsSync('/proc/' + record.pid) })),
+    contexts: contexts.map(rec => ({ ...rec, processGone: false })) };
 }
 const server = http.createServer(async (req, res) => {
   try {
