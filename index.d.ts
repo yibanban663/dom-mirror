@@ -28,6 +28,8 @@ export interface MirrorOptions {
   allowedOrigins?: string[];
   /** Explicit origins eligible for Node-side cross-origin iframe fetching; default none. Hosts must also isolate outbound network access. */
   crossOriginFrameOrigins?: string[];
+  /** Extra origins the server-side browser may request (CDNs, APIs). Everything outside the session origin, crossOriginFrameOrigins and this list is blocked, including navigations and popups. */
+  requestOrigins?: string[];
   defaultMode?: 'dom' | 'frame';
   /** Defaults to embedded; demo keeps the mode controls and statistics. */
   presentation?: 'embedded' | 'demo';

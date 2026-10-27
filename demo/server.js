@@ -41,6 +41,7 @@ async function startDemo(createMirror = require('..').createMirror) {
       sessionGraceMs: Number(process.env.SESSION_GRACE_MS ?? 60000),
       allowedOrigins: (process.env.RBI_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
       crossOriginFrameOrigins: (process.env.XFRAME_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
+      requestOrigins: (process.env.REQUEST_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
       defaultMode: process.env.DEFAULT_MODE || 'dom',
       presentation: process.env.PROD_PRESENTATION === '1' ? 'embedded' : 'demo',
       obfuscate: process.env.OBFUSCATE !== '0',
