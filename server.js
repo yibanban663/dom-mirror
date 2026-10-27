@@ -508,24 +508,33 @@ async function runSession(ws, req, lifecycle) {
   ws.on('pong', () => { lastAliveAt = Date.now(); });
   // 仅池化模式创建（空转 interval 会吊住"无句柄自然退出"的测试进程——CI
   // 语法 job 实测卡死；pool-off 路径与历史行为完全同构）
-  if (browserPool) timers.setInterval(() => {
-    if (dead) return;
-    // 实测：浏览器页销毁后 ws 内部转为 CLOSED 但 close 事件不发出（terminate
-    // 对已关 socket 为空操作）——轮询 readyState，≥CLOSING 即直接 cleanup（幂等）
-    if (ws.readyState >= 2) {
-      logger.log('[sess  ] closed-socket reaped (state=' + ws.readyState + ', close event missed)');
-      try { ws.terminate(); } catch (e) {}
-      cleanup();
-      return;
-    }
-    if (Date.now() - lastAliveAt > 15000) {
-      logger.log('[sess  ] dead-connection reaped (no pong 15s)');
-      try { ws.terminate(); } catch (e) {}
-      cleanup();
-      return;
-    }
-    try { ws.ping(); } catch (e) {}
-  }, 1000);
+  if (browserPool) {
+    // 收割条件：readyState=3（握手完毕）且连续 3 次轮询（3s）close 事件仍未
+    // 发出——只收"漏发 close"的僵死 socket。readyState=2（客户端主动断连握手
+    // 进行中）不干预：close 事件会自然发出走既有清理/宽限链路（恢复测试的
+    // 主动断连-重连即此形态，2CPU 下立即 terminate 会掐断恢复窗口）
+    let closedTicks = 0;
+    timers.setInterval(() => {
+      if (dead) return;
+      if (ws.readyState === 3) {
+        closedTicks++;
+        if (closedTicks >= 3) {
+          logger.log('[sess  ] closed-socket reaped (state=3 x' + closedTicks + 's, close event missed)');
+          try { ws.terminate(); } catch (e) {}
+          cleanup();
+        }
+        return;
+      }
+      closedTicks = 0;
+      if (Date.now() - lastAliveAt > 15000) {
+        logger.log('[sess  ] dead-connection reaped (no pong 15s)');
+        try { ws.terminate(); } catch (e) {}
+        cleanup();
+        return;
+      }
+      try { ws.ping(); } catch (e) {}
+    }, 1000);
+  }
 
   // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
   const sessionOrigin = req.rbiOrigin || ORIGIN_URL;
