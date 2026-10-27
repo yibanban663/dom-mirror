@@ -200,6 +200,31 @@
   p50 66.6ms、p95 66.8ms（空闲页 beacon 采样节奏，非交互负载）/ 交互延迟暂无
   样本（容器刚重建，仅探针流量）——通道与工具链端到端可用。
 
+### v0.30 —— 伪路由 URL 导航 + Chromium 实例池（PR #9/#10）
+- **伪路由**：服务端 navigate/history 消息（白名单同请求拦截语义：相对地址
+  按当前页解析、裸主机名补 http://、越权回 nav-blocked）；主框架导航（含 SPA
+  pushState）即时同步 location；客户端地址栏生产模式为悬停唤出悬浮层（不占
+  镜像可视区几何——fixed/inner-scroll 实测不受扰）。
+- **实例池**（lib/browser-pool.js）：N 常驻 Chromium × 会话级 BrowserContext
+  （cookie/存储隔离保持），browserPoolSize 默认 max(2, ceil(maxSessions/2))，
+  0=回退一会话一浏览器。历史幽灵瓦片（同浏览器并发截图错位）以每浏览器截图
+  互斥（三处 captureScreenshot 走 exclusive() 串行）兜底。下载按
+  browserContextId 隔离；弹窗关闭限定本上下文；mirror.close() 清池。
+- **池自愈四件套**（PR #10）：获取链全链 20s 竞速超时逐出、context.close 5s
+  竞速、容量等待 20s 上限超发、宽限感知收割（readyState=3 连续 3s 无 close
+  事件才收——state=2 主动断连握手不干预，2CPU 下立即 terminate 会掐断恢复
+  测试的 500ms 重连窗口，CI 连续 5 次抖动即此竞速）。
+- **既有缺陷修复**：浏览器页销毁后 ws 内部 CLOSED 但 close 事件不发出（v0.29
+  靠 MAX_SESSIONS 冗余掩盖）——收割器轮询兜底。
+- **验收**：SoulBind :82 真实登录→1320 节点仪表盘→地址栏跳转（已认证回弹
+  属源站正确行为）/后退/越权拒绝（状态提示+内容保持）；MAX_SESSIONS=8 下
+  chrome 主进程 2（v0.29 为 8）；零间隔快速连击 3 会话×3 轮 8/9（自愈前
+  ~50% 超时）。
+- 装置适配：generality 新增 nav case（7 断言）；package 宿主生命周期/汇总改
+  contexts 语义；revocation/frame-baseline 装置显式 pool-off（进程级仪表化
+  保持原 patch 面）；cleanup pool-off 恢复历史并行关闭形态（串行拆分悬挂
+  mock 编排——CI 语法 job 卡死真根因）。
+
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
 - 跨源 iframe 动态嵌入：周期重抓刷新已解决（v0.26，变化才推）；postMessage 双向驱动的嵌入仍为快照语义。
