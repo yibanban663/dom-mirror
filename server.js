@@ -304,6 +304,26 @@ const PAGE_HELPERS = `(() => {
       return M_BASE + u.pathname + u.search;
     } catch (e) { return null; }
   }
+  // v0.28 声明式 closed 宿主谓词（sanitizeClone 占位替换与像素捕获清单共用）
+  // XY_ELBIT=0 可整体停用（消融/兜底：误捕真实组件挂载点时的逃生门）
+  window.__xyElbitPred = (${JSON.stringify(process.env.XY_ELBIT !== '0')}) ? ((el) => {
+    try {
+      if (!el || el.nodeType !== 1) return false;
+      const T = el.tagName;
+      if (T === 'CANVAS' || T === 'IMG' || T === 'INPUT' || T === 'TEXTAREA' || T === 'SELECT' || T === 'IFRAME' || T === 'VIDEO' || T === 'AUDIO' || T === 'BR' || T === 'HR') return false;
+      if (el.shadowRoot) return false;
+      if (window.__xyClosedRoots && window.__xyClosedRoots.has(el)) return false;
+      if (el.children.length || el.textContent.trim()) return false;
+      const r = el.getBoundingClientRect();
+      // 尺寸窗口：≥16px 的 UI 级盒子；≤3000px 排除虚拟列表 spacer（数千像素高、
+      // 无可见样式，巨幅 region clip 是捕获隐患且非真实组件形态）
+      if (r.width < 16 || r.height < 16 || r.height > 3000) return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      return cs.backgroundColor === 'rgba(0, 0, 0, 0)' && cs.backgroundImage === 'none' && (cs.borderTopStyle === 'none' || cs.borderTopWidth === '0px');
+    } catch (e) { return false; }
+  }) : (() => false);
+  
   function fixUrl(v) {
     if (!v || /^(data:|blob:|#|mailto:|tel:|javascript:|about:)/i.test(v)) return v;
     if (v.startsWith('//')) return v;
@@ -467,6 +487,20 @@ const PAGE_HELPERS = `(() => {
           if (cn.nodeType !== 1 || ln.nodeType !== 1) return;
           try {
             cn.setAttribute('data-xy-id', String(idOf(ln)));
+          // v0.28 声明式 closed 宿主：非破坏式标记 + 源站计算尺寸为 min 尺寸
+          //（镜像端空 div 高 0，位图背景需要盒子；元素获得真实内容时客户端清除）。
+          // 标记必须在 stamp 并行游走里做——此前用 live/clone 全量数组位序对照，
+          // clone 剥 script 后数组错位一格（实测 #gap 的标记落到 #outer-button，
+          // min-height:1200 直接把按钮撑成 1200px 高、点击错位）
+          try {
+            if (window.__xyElbitPred && window.__xyElbitPred(ln)) {
+              cn.setAttribute('data-xy-elbit', '1');
+              const csE = getComputedStyle(ln);
+              const wE = parseFloat(csE.width), hE = parseFloat(csE.height);
+              if (Number.isFinite(wE) && wE > 0) cn.style.minWidth = wE + 'px';
+              if (Number.isFinite(hE) && hE > 0) cn.style.minHeight = hE + 'px';
+            }
+          } catch (e) {}
             if (ln.shadowRoot) {
               const t = document.createElement('template');
               t.setAttribute('shadowrootmode', 'open');
@@ -2315,6 +2349,18 @@ async function runSession(ws, req, lifecycle) {
                 out.push({ id: window.__xy.idOf(c), path, x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height });
                 if (out.length >= 3) break;
               }
+              // v0.28 声明式 closed 宿主位图兜底（同一 region clip 通道；fresh=未首拍）
+              try {
+                const hosts = [...document.body.querySelectorAll('*')].filter((el) => window.__xyElbitPred && window.__xyElbitPred(el));
+                for (const el of hosts) {
+                  const r = el.getBoundingClientRect();
+                  if (r.width < 8 || r.height < 8) continue;
+                  if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
+                  out.push({ id: window.__xy.idOf(el), path: window.__xy.pathOf(el), x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height, kind: 'elbit', fresh: !(el.__xyElbitSeen) });
+                  el.__xyElbitSeen = 1;
+                  if (out.length >= 6) break;
+                }
+              } catch (e) {}
             } catch (e) {}
             return out;
           }), 1500, 'canvasList').catch(() => null);
@@ -2328,7 +2374,7 @@ async function runSession(ws, req, lifecycle) {
         // CPU 大头：实测 34-47%）
         const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
         if (rafN === null) return;
-        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300) return; }
+        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh)) return; }
         else rafLast = { n: rafN, at: Date.now() };
         const nowMs = Date.now();
         while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
@@ -2368,7 +2414,7 @@ async function runSession(ws, req, lifecycle) {
             continue;
           }
           const st2 = lastSigs.get(sigKey);
-          if (st2) { st2.unchanged = 0; st2.nextAt = 0; }
+          if (st2) { st2.unchanged = 0; st2.nextAt = (it.kind === 'elbit') ? Date.now() + 500 : 0; }
           if (ws.readyState === 1) {
             const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, url: 'data:image/png;base64,' + shot.data });
             ws.send(pl);

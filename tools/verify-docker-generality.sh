@@ -75,6 +75,7 @@ for c in forms editor media layout style canvas dnd vlist xiframe cshadow audio;
     echo "gen_${c}_OK"
     # v0.21 RUM 通道断言：forms 会话必须产生 [rum] 心跳或 [rum-beacon] 尾包日志
     if [ "$c" = "forms" ]; then
+      sleep 2  # beacon 与日志落盘的竞态缓冲
       if docker logs "$server" 2>&1 | grep -qE '\[rum(-beacon)?\]'; then
         echo "gen_rum_OK"
       else
