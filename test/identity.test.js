@@ -8,7 +8,7 @@ const puppeteer = require('puppeteer').default;
 const { createMirror } = require('..');
 
 async function fixture(t, getSessionIdentity) {
-  const mirror = createMirror({ originUrl: 'http://127.0.0.1:1/', logger: { log() {} }, getSessionIdentity });
+  const mirror = createMirror({ browserPoolSize: 0, originUrl: 'http://127.0.0.1:1/', logger: { log() {} }, getSessionIdentity });
   const server = http.createServer(mirror.handleRequest);
   server.on('upgrade', (req, socket, head) => {
     // A synthetic host authentication layer; public identity headers are never trusted.

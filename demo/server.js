@@ -48,6 +48,7 @@ async function startDemo(createMirror = require('..').createMirror) {
       canvasStream: process.env.CANVAS_STREAM !== '0',
       elbit: process.env.XY_ELBIT !== '0',
       chromiumSandbox: process.env.CHROMIUM_SANDBOX !== '0',
+      browserPoolSize: Number(process.env.BROWSER_POOL ?? 2),
       maskInputTypes: (process.env.MASK_INPUT_TYPES || '').split(',').map(v => v.trim()).filter(Boolean),
     });
     const server = http.createServer(mirror.handleRequest);

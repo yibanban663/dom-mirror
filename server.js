@@ -81,6 +81,18 @@ const { sendFile, staticHandler, clear: clearStaticFiles } = createStaticFiles()
 // ---------- Chromium：每会话独立实例 ----------
 // 共享单例下多标签并发截图会间歇产出错位/幽灵瓦片（像素级实测：瓦片内容与坐标
 // 张冠李戴）。使用独立实例；实际容量由宿主按业务测量。
+const { createBrowserPool } = require('./lib/browser-pool');
+// v0.30 实例池（browserPoolSize=0 时为 null，保持一会话一浏览器）
+const sessionLaunch = () => puppeteer.launch({
+  headless: true,
+  args: CHROME_ARGS,
+  defaultViewport: { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 },
+  ...config.launchOptions,
+});
+const browserPool = config.browserPoolSize > 0
+  ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger })
+  : null;
+
 async function launchSessionBrowser() {
   const b = await puppeteer.launch({
     headless: true,
@@ -427,6 +439,8 @@ async function runSession(ws, req, lifecycle) {
 
   let page = null, cdp = null, mode = DEFAULT_MODE;
   let sessionBrowser = null;
+  let sessionExclusive = (fn) => fn(); // v0.30 池化：同浏览器截图互斥（无池=直通）
+  let sessionRelease = null;
   const obfSess = nextObfSession(); // 防抓取字体混淆（dom 模式启用；无池则 null 透明降级）
   let lastInputAt = 0, inputLatMs = null, frameTimes = [], statTimer = null;
   // v0.13 文件传输：会话临时目录（上传暂存/下载落地），会话结束即删除
@@ -444,6 +458,7 @@ async function runSession(ws, req, lifecycle) {
   // setup 期间也要登记清理，避免浏览器晚启动后泄漏。
   let dead = false;
   let helloIv = null;
+  let lastAliveAt = Date.now(); // v0.30 ws 活性
   let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
   let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
   let driftStreak = 0, lastDriftHeal = 0; // v0.18 分歧自愈：连续漂移计数与限频
@@ -463,7 +478,14 @@ async function runSession(ws, req, lifecycle) {
       if (xframeSecret) xframeOrigins.delete(xframeSecret);
       if (xframeTimer) { clearInterval(xframeTimer); xframeTimer = null; }
       domActive = false;
-      await Promise.allSettled([page?.close(), sessionBrowser?.close()]);
+      // pool-off 保持历史形态（page 与 browser 关闭并行发起——mock 编排按此时序
+      // 编写，实测串行拆分会悬挂 close 等待链）；池化时只关上下文不关浏览器
+      if (sessionRelease) {
+        await Promise.allSettled([page?.close()]);
+        await sessionRelease();
+      } else {
+        await Promise.allSettled([page?.close(), sessionBrowser?.close()]);
+      }
       sessionUploads.clear();
       sessionDownloads.clear();
       if (browserCdpDetached) browserCdpDetached();
@@ -480,6 +502,30 @@ async function runSession(ws, req, lifecycle) {
   lifecycle.cleanup = cleanup;
   ws.on('close', cleanup);
   ws.on('error', () => {});
+  // v0.30 会话活性探测：浏览器页销毁后 TCP 半开不触发 close（既有缺陷，
+  // 一会话一浏览器时靠 MAX_SESSIONS 冗余掩盖；池化后会占死池位）。
+  // 3s 轮询：readyState≥2 直调 cleanup；协议 ping 探活，15s 无活性兜底。
+  ws.on('pong', () => { lastAliveAt = Date.now(); });
+  // 仅池化模式创建（空转 interval 会吊住"无句柄自然退出"的测试进程——CI
+  // 语法 job 实测卡死；pool-off 路径与历史行为完全同构）
+  if (browserPool) timers.setInterval(() => {
+    if (dead) return;
+    // 实测：浏览器页销毁后 ws 内部转为 CLOSED 但 close 事件不发出（terminate
+    // 对已关 socket 为空操作）——轮询 readyState，≥CLOSING 即直接 cleanup（幂等）
+    if (ws.readyState >= 2) {
+      logger.log('[sess  ] closed-socket reaped (state=' + ws.readyState + ', close event missed)');
+      try { ws.terminate(); } catch (e) {}
+      cleanup();
+      return;
+    }
+    if (Date.now() - lastAliveAt > 15000) {
+      logger.log('[sess  ] dead-connection reaped (no pong 15s)');
+      try { ws.terminate(); } catch (e) {}
+      cleanup();
+      return;
+    }
+    try { ws.ping(); } catch (e) {}
+  }, 3000);
 
   // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
   const sessionOrigin = req.rbiOrigin || ORIGIN_URL;
@@ -498,6 +544,7 @@ async function runSession(ws, req, lifecycle) {
   let structTimer = null; const structBuf = new Map();
   const lastPatchSent = new Map();
   let lastScrollKey = '';
+  let navOrigins = null; // v0.30 伪路由：requestOrigins 构建后回填（作用域桥接）
   let statLastChunks = 0;
   let canvasSigsReset = null; // 全量重同步后 canvas 捕获基准失效（画面已变）
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
@@ -580,6 +627,31 @@ async function runSession(ws, req, lifecycle) {
             // 输入后不再做防抖全量重发：差分循环（140ms）+ 结构补丁已覆盖一切视觉
             // 跟进，而全量重建会吞掉重建窗口内的点击（实测登录按钮点击落在 700ms
             // 防抖重建里被静默丢弃 → 登录"点了没反应"）。结构漂移由元素数指纹兜底。
+            break;
+          }
+          case 'navigate': {
+            // v0.30 伪路由：地址栏跳转。仅允许会话源站白名单内的目标（与请求
+            // 拦截同语义）；相对地址按当前页解析，裸主机名自动补 http://
+            noteInput();
+            try {
+              let u = String(m.url || '').trim();
+              if (!u) break;
+              if (!/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith('/') && !u.startsWith('//') && /^[^/\s]+\.[^/\s]+/.test(u)) u = 'http://' + u;
+              const parsed = new URL(u, page.url());
+              if (!['http:', 'https:'].includes(parsed.protocol)) { sendJson({ type: 'nav-blocked', msg: '仅支持 http/https 地址' }); break; }
+              if (!navOrigins || !requestAllowed(parsed.href, navOrigins)) { sendJson({ type: 'nav-blocked', msg: '目标地址不在允许范围内' }); break; }
+              await page.goto(parsed.href, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+              sendJson({ type: 'location', url: page.url() });
+            } catch (e) { sendJson({ type: 'nav-blocked', msg: '导航失败: ' + e.message }); }
+            break;
+          }
+          case 'history': {
+            noteInput();
+            try {
+              const fn = m.dir === 'forward' ? page.goForward : page.goBack;
+              await fn.call(page, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+              sendJson({ type: 'location', url: page.url() });
+            } catch (e) {}
             break;
           }
           case 'mouse':
@@ -667,7 +739,7 @@ async function runSession(ws, req, lifecycle) {
             // （单张瓦片，消除 putImageData 复原与服务端瓦片的竞态）
             noteInput();
             try {
-              const shotR = await cdp.send('Page.captureScreenshot', { format: 'png' });
+              const shotR = await sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png' }));
               const tileR = await page.evaluate((b64, x, y, w, h, d) => {
                 return new Promise((res) => {
                   const im = new Image();
@@ -711,7 +783,7 @@ async function runSession(ws, req, lifecycle) {
   };
   let cmdChain = Promise.resolve();
   const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
-  ws.on('message', (raw) => { if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
+  ws.on('message', (raw) => { lastAliveAt = Date.now(); if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
   const noteInput = () => { lastInputAt = Date.now(); };
   ws.on('resume', () => {
     if (!dispatchReady) return; // 初始化中的会话仍由首次快照完成同步
@@ -719,6 +791,7 @@ async function runSession(ws, req, lifecycle) {
       if (dead || ws.readyState !== 1) return;
       if (domStarting) await domStarting;
       sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode });
+      sendJson({ type: 'location', url: page.url() });
       structBuf.clear(); lastPatchSent.clear();
       clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
       await startDomMirror();
@@ -1043,7 +1116,7 @@ async function runSession(ws, req, lifecycle) {
     await page.evaluate((d) => { window.__xyDpr = d; }, DPR);
     if (mode === 'frame') {
       try {
-        const shotF = await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'frameSheet');
+        const shotF = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })), 8000, 'frameSheet');
         await page.evaluate((b64) => { window.__xyFrameShot = b64; }, shotF.data);
       } catch (e) { await page.evaluate(() => { window.__xyFrameShot = null; }).catch(() => {}); }
     }
@@ -1290,11 +1363,11 @@ async function runSession(ws, req, lifecycle) {
           if (!sigs.due(sigKey, nowMs)) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
-          const shot = await withTimeout(cdp.send('Page.captureScreenshot', {
+          const shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
             format: 'png',
             clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: DPR },
             captureBeyondViewport: true,
-          }), 3000, 'canvasShot').catch(() => null);
+          })), 3000, 'canvasShot').catch(() => null);
           if (!shot) continue;
           captureTimes.push(Date.now());
           let sig = null;
@@ -1451,12 +1524,25 @@ async function runSession(ws, req, lifecycle) {
   }
 
   try {
-    const b = await launchSessionBrowser();
-    if (dead) { await b.close(); return; }
+    // v0.30：池化时会话取常驻浏览器的独立上下文（隔离 cookie/存储），结束只关
+    // 上下文不关浏览器；无池保持历史一会话一浏览器
+    let poolHandle = null;
+    let b;
+    if (browserPool) {
+      poolHandle = await browserPool.acquire();
+      b = poolHandle.browser;
+      sessionExclusive = poolHandle.exclusive;
+      sessionRelease = poolHandle.release;
+    } else {
+      b = await launchSessionBrowser();
+    }
+    if (dead) { if (poolHandle) await poolHandle.release(); else await b.close(); return; }
     sessionBrowser = b;
     // 弹窗不镜像且不受页面拦截约束：除会话页面外新建的页面一律关闭
     b.on('targetcreated', (t) => {
       if (!page || t.type() !== 'page' || t === page.target()) return;
+      // v0.30：池化时同浏览器还有其他会话的上下文——只关本上下文的弹窗
+      if (poolHandle && t.browserContext && t.browserContext() !== poolHandle.context) return;
       t.page().then((p) => p && p.close()).catch(() => {});
     });
     b.on('disconnected', () => {
@@ -1464,7 +1550,7 @@ async function runSession(ws, req, lifecycle) {
       sendJson({ type: 'error', code: 'SESSION_EXPIRED', terminal: true, msg: '服务端浏览器已关闭，请核对上次提交结果后重新开始' });
       ws.close(1011, 'browser closed');
     });
-    page = await b.newPage();
+    page = poolHandle ? await poolHandle.context.newPage() : await b.newPage();
     if (dead) { await page.close(); return; }
     // v0.27 closed shadow 捕获：attachShadow 补丁在页面任何脚本之前安装
     //（evaluateOnNewDocument），parse 期创建的 closed root 也进注册表——此前
@@ -1497,6 +1583,7 @@ async function runSession(ws, req, lifecycle) {
     // 请求白名单（默认拒绝）：服务端浏览器只访问会话源站与显式允许的源，访客无法
     // 借源站链接/跳转/表单把它当作内网跳板。puppeteer 拦截同时覆盖跨站 iframe（OOPIF）
     const requestOrigins = new Set([new URL(sessionOrigin).origin, ...config.crossOriginFrameOrigins, ...config.requestOrigins]);
+    navOrigins = requestOrigins;
     if (typeof page.setRequestInterception === 'function') {
       await page.setRequestInterception(true);
       // 弹窗的首个请求发生在新页面上、不经过本页拦截：在页面脚本之前禁用新窗口
@@ -1536,9 +1623,10 @@ async function runSession(ws, req, lifecycle) {
     try {
       const browserCdp = await sessionBrowser.target().createCDPSession();
       sessionDownloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-dl-'));
-      await browserCdp.send('Browser.setDownloadBehavior', {
-        behavior: 'allow', downloadPath: sessionDownloadDir, eventsEnabled: true,
-      });
+      // v0.30：池化时按 browserContextId 限定下载目录——同浏览器多会话互不串扰
+      const dlOpts = { behavior: 'allow', downloadPath: sessionDownloadDir, eventsEnabled: true };
+      if (poolHandle && poolHandle.context && poolHandle.context.id) dlOpts.browserContextId = poolHandle.context.id;
+      await browserCdp.send('Browser.setDownloadBehavior', dlOpts);
       browserCdpDetached = () => browserCdp.detach().catch(() => {});
     } catch (e) { logger.log('[dl    ] behavior set fail:', e.message); }
     // CDP 事件按域分发：Page.downloadWillBegin/Progress 需要 Page.enable，
@@ -1665,6 +1753,8 @@ async function runSession(ws, req, lifecycle) {
     // 补丁路径与骨架代理碰撞错位且不报 miss。导航后 +2.5s/+7s 定时重拍兜底。
     page.on('framenavigated', (frame) => {
       try {
+        // v0.30 pseudo-route
+        if (frame === page.mainFrame() && ws.readyState === 1) { try { sendJson({ type: 'location', url: frame.url() }); } catch (e2) {} }
         if (frame !== page.mainFrame()) return;
         if (!domActive || ws.readyState !== 1) return;
         navChain = navChain.then(async () => {
@@ -1769,6 +1859,7 @@ function close() {
     for (const socket of wss.clients) socket.terminate();
     for (const request of requests) request.destroy();
     await Promise.allSettled([...sessionTasks, ...[...cleanups].map(cleanup => cleanup())]);
+    if (browserPool) await browserPool.close(); // v0.30 常驻浏览器统一收口
     await new Promise(resolve => wss.close(resolve));
     obfSessions.clear();
     obfFontCache.clear();

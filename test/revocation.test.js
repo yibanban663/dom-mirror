@@ -26,7 +26,7 @@ function mockLaunch(t) {
 }
 
 async function host(t, authenticated = true) {
-  const mirror = createMirror({ originUrl: 'http://127.0.0.1:1/', maxSessions: 6,
+  const mirror = createMirror({ originUrl: 'http://127.0.0.1:1/', maxSessions: 6, browserPoolSize: 0,
     logger: { log() {} }, getSessionIdentity: authenticated ? req => req.identity : undefined });
   const server = http.createServer(mirror.handleRequest);
   server.on('upgrade', (req, socket, head) => {

@@ -68,7 +68,7 @@ async function runCase(browser, mode) {
     tenant: crypto.randomBytes(24).toString('hex') };
   const authenticated = new Map([[tickets.owner, 'tenant-one/alice'], [tickets.other, 'tenant-one/bob'],
     [tickets.tenant, 'tenant-two/alice']]);
-  const mirror = createMirror({ originUrl: origin, defaultMode: mode, obfuscate: false, maxSessions: 6,
+  const mirror = createMirror({ originUrl: origin, defaultMode: mode, obfuscate: false, maxSessions: 6, browserPoolSize: 0,
     getSessionIdentity: req => req.fixtureIdentity, logger: { log() {} } });
   const sockets = new Set();
   let ownerUpgradeAttempts = 0;

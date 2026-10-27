@@ -51,7 +51,7 @@ const source = http.createServer(async (req, res) => {
 (async () => {
   let mirror, host, client;
   try {
-    mirror = createMirror({ originUrl: await listen(source), defaultMode: 'frame', obfuscate: false, logger: { log() {} } });
+    mirror = createMirror({ browserPoolSize: 0, originUrl: await listen(source), defaultMode: 'frame', obfuscate: false, logger: { log() {} } });
     host = http.createServer(mirror.handleRequest); host.on('upgrade', mirror.handleUpgrade);
     const url = await listen(host);
     client = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'],

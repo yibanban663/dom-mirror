@@ -24,12 +24,14 @@ function load(file, text) {
   return mod;
 }
 replace("const crypto = require('crypto');", "const crypto = require('crypto');\nconst __perf = require('./tools/profile-runtime.cjs');");
-replace('const b = await launchSessionBrowser();', "const b = await __perf.measure('browser.launch', () => launchSessionBrowser());");
+// v0.30 实例池：浏览器获取有池化/独立两条路径，分别打点
+replace('      poolHandle = await browserPool.acquire();', "      poolHandle = await __perf.measure('browser.acquire', () => browserPool.acquire());");
+replace('      b = await launchSessionBrowser();', "      b = await __perf.measure('browser.launch', () => launchSessionBrowser());");
 replace("await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });", "if (process.env.PROFILE_PRESENTATION === '1') { await page.exposeFunction('__profileTaskMarker', value => __perf.sourceMarker(value)); await page.evaluateOnNewDocument(require('./tools/profile-marker.cjs')); }\n    await __perf.measure('origin.goto', () => page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 }));");
 replaceHelpers('const clone = sanitizeClone(document.body);', 'const perfStart = performance.now();\n      const clone = sanitizeClone(document.body);\n      const perfCloneEnd = performance.now();');
 replaceHelpers("let docClass = '', docAttrs = '';", "const perfCssEnd = performance.now();\n      let docClass = '', docAttrs = '';");
 replaceHelpers("return { css, html: clone.innerHTML,", "return { __profile: { clone: perfCloneEnd - perfStart, css: perfCssEnd - perfCloneEnd, rest: performance.now() - perfCssEnd }, css, html: clone.innerHTML,");
-replace("await withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'frameSheet')", "await __perf.measure('snapshot.captureScreenshot', () => withTimeout(cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }), 8000, 'frameSheet'))");
+replace("await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })), 8000, 'frameSheet')", "await __perf.measure('snapshot.captureScreenshot', () => withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })), 8000, 'frameSheet'))");
 replace("await withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot');", "await __perf.measure('snapshot.evaluate', () => withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot'));\n    for (const [name, ms] of Object.entries(snap.__profile)) __perf.record('snapshot.page.' + name, ms);");
 replace('const diffFrame = async (b64) => {', 'const diffFrame = async (b64, pf) => {\n      const perfDecodeStart = performance.now();\n      __perf.consumedFrame();');
 replace('const { info, data } = await img.raw().toBuffer({ resolveWithObject: true });', "const { info, data } = await img.raw().toBuffer({ resolveWithObject: true });\n      __perf.record('frame.decode', performance.now() - perfDecodeStart);\n      __perf.capture(b64);");

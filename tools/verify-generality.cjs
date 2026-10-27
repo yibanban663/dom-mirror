@@ -320,6 +320,32 @@ async function main() {
       out.dnd_final = (await rep()).slice(0, 120);
     }
 
+    // v0.30 伪路由：地址栏跳转/后退/前进/越权拒绝 + location 同步
+    if (CASE === 'nav') {
+      await page.waitForFunction(() => !!window.__q('#dump'), { timeout: 20000 });
+      await settle(800);
+      out.checks.nav_initial = true;
+      out.navUrl0 = await page.evaluate(() => document.getElementById('navUrl').value);
+      out.checks.nav_url_sync = /gen-forms\.html$/.test(out.navUrl0);
+      // 跳转到 gen-layout
+      await page.evaluate(() => { document.getElementById('navUrl').value = '/gen-layout.html'; });
+      await page.click('#navGo');
+      out.checks.nav_goto = await page.waitForFunction(() => !!window.__q('#scroller'), { timeout: 20000 }).then(() => true).catch(() => false);
+      out.navUrl1 = await page.evaluate(() => document.getElementById('navUrl').value);
+      out.checks.nav_goto_url = /gen-layout\.html$/.test(out.navUrl1);
+      // 后退回 gen-forms
+      await page.click('#navBack');
+      out.checks.nav_back = await page.waitForFunction(() => !!window.__q('#dump'), { timeout: 20000 }).then(() => true).catch(() => false);
+      out.navUrl2 = await page.evaluate(() => document.getElementById('navUrl').value);
+      out.checks.nav_back_url = /gen-forms\.html$/.test(out.navUrl2);
+      // 越权导航：拒绝且内容不变
+      await page.evaluate(() => { document.getElementById('navUrl').value = 'http://example.invalid/x'; });
+      await page.click('#navGo');
+      await settle(1500);
+      out.checks.nav_blocked_kept = await page.evaluate(() => !!window.__q('#dump'));
+      out.checks.nav_blocked_status = await page.evaluate(() => /允许范围/.test(document.getElementById('status').textContent));
+    }
+
     if (CASE === 'vlist') {
       await page.waitForFunction(() => !!window.__q('#vwrap'), { timeout: 20000 });
       await settle(1200);
