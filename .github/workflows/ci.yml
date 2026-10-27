@@ -27,7 +27,13 @@ jobs:
         run: |
           timeout 120 npm run check > check.log 2>&1 || { echo "::error::CHECK failed: $(tail -c 500 check.log | tr '\n' '|')"; exit 1; }
           echo CHECK_OK
-          timeout 900 npm test > npmtest.log 2>&1 || { echo "::error::TEST failed: $(tail -c 500 npmtest.log | tr '\n' '|')"; exit 1; }
+          timeout 900 npm test > npmtest.log 2>&1 || {
+            TAIL=$(tail -c 2400 npmtest.log | tr '\n' '|')
+            echo "::error::TEST-tail1: ${TAIL:0:800}"
+            echo "::error::TEST-tail2: ${TAIL:800:800}"
+            echo "::error::TEST-tail3: ${TAIL:1600:800}"
+            exit 1
+          }
           echo TEST_OK
       - name: 打包后独立宿主集成检查
         run: node tools/verify-package.cjs
