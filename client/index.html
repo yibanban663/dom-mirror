@@ -1625,7 +1625,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             try {
               const su = new URL(j.url || '', 'http://x/');
               const sp = su.pathname + (su.search || '');
-              if (sp && sp !== '/' && sp !== location.pathname + location.search) {
+              if (sp && sp !== location.pathname + location.search) {
                 if (sp !== lastSyncPath) history.pushState({ m: 1 }, '', sp);
                 else history.replaceState({ m: 1 }, '', sp);
               }
