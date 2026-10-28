@@ -25,6 +25,14 @@ http.createServer((req, res) => {
     res.end('<!doctype html><html><head><meta charset="utf-8"><style>body{font:13px system-ui,sans-serif;margin:8px;background:#eef7ee}.badge{display:inline-block;padding:3px 8px;background:#2c7;color:#fff;border-radius:4px}</style></head><body><span class="badge">EMBED-OK</span><img src="pic-b.png" width="24" alt=""><div id="tick">TICK:' + ver + '</div><div id="xstat">STAT:loading</div><script>document.getElementById("xstat").textContent="STAT:ran-script";</scr' + 'ipt></body></html>');
     return;
   }
+  // v0.31 anim 基准用：可控延迟响应（拖住 networkidle0 静默判定）
+  {
+    const dm = pathname.match(/^\/__(delay)\/(\d+)$/);
+    if (dm) {
+      setTimeout(() => { res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('ok'); }, Math.min(30000, Number(dm[2]) || 0));
+      return;
+    }
+  }
   if (pathname === '/') pathname = '/index.html';
   const file = path.join(root, pathname.replace(/^\/+/, ''));
   if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }

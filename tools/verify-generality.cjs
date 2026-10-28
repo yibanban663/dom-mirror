@@ -340,11 +340,14 @@ async function main() {
       out.checks.nav_goto = await page.waitForFunction(() => !!window.__q('#scroller'), { timeout: 20000 }).then(() => true).catch(() => false);
       out.navUrl1 = await page.evaluate(() => document.getElementById('navUrl').value);
       out.checks.nav_goto_url = /gen-layout\.html$/.test(out.navUrl1);
+      // v0.31 真路由：浏览器地址栏随会话 pushState 同步
+      out.checks.nav_urlbar_sync = await page.evaluate(() => location.pathname.endsWith('gen-layout.html'));
       // 后退回 gen-forms
       await navClick('#navBack');
       out.checks.nav_back = await page.waitForFunction(() => !!window.__q('#dump'), { timeout: 20000 }).then(() => true).catch(() => false);
       out.navUrl2 = await page.evaluate(() => document.getElementById('navUrl').value);
       out.checks.nav_back_url = /gen-forms\.html$/.test(out.navUrl2);
+      out.checks.nav_urlbar_back = await page.evaluate(() => location.pathname.endsWith('gen-forms.html'));
       // 栈底再退：业务首页之下只剩池化 context 的初始 about:blank——必须被弹回，
       // 访客不可退入空白镜像（与原生浏览器首页不可退同语义）
       await navClick('#navBack');
@@ -358,6 +361,40 @@ async function main() {
       await settle(1500);
       out.checks.nav_blocked_kept = await page.evaluate(() => !!window.__q('#dump'));
       out.checks.nav_blocked_status = await page.evaluate(() => /允许范围/.test(document.getElementById('status').textContent));
+      // v0.31 真路由深链：直接打开 /gen-layout.html——客户端在任何业务路径可承载，
+      // 会话首跳该路径而非源站根（此前该 URL 直接 404）
+      {
+        const p2 = await browser.newPage();
+        await p2.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+        await p2.goto(mirrorUrl.replace(/\/$/, '') + '/gen-layout.html', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        out.checks.deeplink_content = await p2.waitForFunction(() => {
+          const sr = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
+          return !!(sr && sr.querySelector('#scroller'));
+        }, { timeout: 25000 }).then(() => true).catch(() => false);
+        out.checks.deeplink_url = await p2.evaluate(() => /gen-layout\.html$/.test((document.getElementById('navUrl') || {}).value || ''));
+        await p2.close();
+      }
+    }
+
+    // v0.31 入场动画保真：框架形态（animationend 移除动画类）+ 拖住网络静默 4s——
+    // networkidle0 首帧必拿终态（红），DCL 首帧在动画进行中拍下、访客端完整重放（绿）
+    if (CASE === 'anim') {
+      await page.waitForFunction(() => !!window.__q('#box'), { timeout: 20000 });
+      let sawAnim = false;
+      for (let i = 0; i < 22; i++) {
+        sawAnim = await page.evaluate(() => {
+          const el = window.__q('#box');
+          return !!el && getComputedStyle(el).animationName !== 'none';
+        });
+        if (sawAnim) break;
+        await settle(100);
+      }
+      out.checks.anim_replay = sawAnim;
+      out.animClassAtSample = await page.evaluate(() => String(window.__q('#box').className || ''));
+      // 补丁管线照常：会话侧 animationend 移除类 + fetch 完成都必须回显
+      await settle(6000);
+      out.anim_state_text = await page.evaluate(() => window.__rep() || '');
+      out.checks.anim_state_done = await page.evaluate(() => /done\+net/.test(window.__rep() || ''));
     }
 
     if (CASE === 'vlist') {

@@ -355,7 +355,21 @@ function handleRequest(req, res) {
       'font/woff2', 'public, max-age=86400, immutable');
     return;
   }
-  return staticHandler(path.join(__dirname, 'client'))(req, res);
+  // v0.31 真路由：任意业务路径承载镜像客户端（/login、/dashboard/x 深链直开）。
+  // 静态文件优先命中；无扩展名或 .html 且未命中的路径回落 index.html，其余资源 404 保持
+  const clientRoot = path.join(__dirname, 'client');
+  const serveStatic = staticHandler(clientRoot);
+  if (req.method !== 'GET' && req.method !== 'HEAD') return serveStatic(req, res);
+  let spaPath = '';
+  try { spaPath = decodeURIComponent((req.url || '/').split('?')[0]); } catch { return serveStatic(req, res); }
+  const spaExt = path.extname(spaPath);
+  if (spaExt && spaExt !== '.html') return serveStatic(req, res);
+  const spaFile = path.join(clientRoot, path.normalize(spaPath === '/' ? '/index.html' : spaPath).replace(/^([/\\])+/, ''));
+  if (!spaFile.startsWith(clientRoot)) return serveStatic(req, res);
+  fs.access(spaFile, (err) => {
+    if (!err) return serveStatic(req, res);
+    sendFile(req, res, path.join(clientRoot, 'index.html'), 'text/html; charset=utf-8', 'no-store');
+  });
 }
 // permessage-deflate：JSON 快照/补丁文本高度重复，deflate 通常 5-10× 缩减
 // （阈值 512B，小帧不压省 CPU）；浏览器 WS 客户端普遍支持，握手透明协商
@@ -1836,7 +1850,24 @@ async function runSession(ws, req, lifecycle) {
     if (hello.w) viewW = Math.max(320, Math.min(2560, parseInt(hello.w, 10) || viewW));
     if (hello.h) viewH = Math.max(240, Math.min(1600, parseInt(hello.h, 10) || viewH));
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
-    await page.goto(sessionOrigin, { waitUntil: 'networkidle0', timeout: 20000 });
+    // v0.31 真路由：访客深链路径接管首跳（仅非根路径且形态安全——单个 / 开头、
+    // 无协议与反斜杠，防 //host 协议相对地址逃逸出会话源站）
+    let initialUrl = sessionOrigin;
+    {
+      const hp = String(hello.path || '');
+      if (hp && hp !== '/' && hp.startsWith('/') && !hp.startsWith('//') && !hp.includes('\\') && !hp.includes('://')) {
+        try {
+          const u = new URL(sessionOrigin);
+          u.pathname = hp.split('?')[0] || '/';
+          u.search = hp.includes('?') ? '?' + hp.slice(hp.indexOf('?') + 1) : '';
+          if (requestAllowed(u.href, new Set([u.origin]))) initialUrl = u.href;
+        } catch (e) {}
+      }
+    }
+    // v0.31 入场动画保真：DCL 即开流。networkidle0 等完整静默，挂载入场动画
+    // （框架加动画类→animationend 即移除类）早已结束，首帧快照只余终态，访客
+    // 永远看不到动画；从 DCL 起拍首帧，入场序列经快照+补丁在访客端完整重放
+    await page.goto(initialUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
     sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode });
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
 

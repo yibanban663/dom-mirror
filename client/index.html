@@ -1256,7 +1256,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     socket.onopen = () => {
       if (ws !== socket) return;
       lastErr = '';
-      socket.send(JSON.stringify({ type: 'hello', resume: resumeToken || undefined, dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight }));
+      socket.send(JSON.stringify({ type: 'hello', resume: resumeToken || undefined, dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight, path: location.pathname + location.search || '/' }));
     };
     socket.onclose = (event) => {
       if (ws !== socket) return;
@@ -1613,6 +1613,17 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             const nu = m('navUrl');
             if (document.activeElement !== nu) nu.value = j.url || '';
             m('navWrap').hidden = false; m('navHot').hidden = false;
+            // v0.31 真路由：浏览器地址栏随会话同步（取会话 URL 的 path+query 压到
+            // 本站；新地址 pushState、原地变化 replaceState，浏览器前进后退由此可用）
+            try {
+              const su = new URL(j.url || '', 'http://x/');
+              const sp = su.pathname + (su.search || '');
+              if (sp && sp !== '/' && sp !== location.pathname + location.search) {
+                if (sp !== lastSyncPath) history.pushState({ m: 1 }, '', sp);
+                else history.replaceState({ m: 1 }, '', sp);
+              }
+              lastSyncPath = sp;
+            } catch (e) {}
           }
           if (j.type === 'nav-blocked') {
             lastErr = j.msg || '导航被拒绝';
@@ -1771,6 +1782,12 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
   document.getElementById('navUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') navGo(); });
   document.getElementById('navBack').addEventListener('click', () => send({ type: 'history', dir: 'back' }));
   document.getElementById('navFwd').addEventListener('click', () => send({ type: 'history', dir: 'forward' }));
+  // v0.31 真路由：浏览器前进/后退驱动会话同址导航（path 恒在同源白名单内）
+  let lastSyncPath = location.pathname + location.search;
+  window.addEventListener('popstate', () => {
+    const sp = location.pathname + location.search;
+    if (sp !== lastSyncPath) { lastSyncPath = sp; send({ type: 'navigate', url: sp }); }
+  });
   document.getElementById('reconn').addEventListener('click', () => {
     if (!retryAllowed) return;
     clearTimeout(retryTimer);
