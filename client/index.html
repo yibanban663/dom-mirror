@@ -516,6 +516,12 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         // （点击本身已由 pointer 管线转发，这里只拦本地导航副作用）
         const t = realTarget(e);
         if (t.closest && t.closest('a, form')) e.preventDefault();
+        // 合成点击（脚本/自动化/a11y 的 el.click()，isTrusted=false）不经过指针
+        // 管线，曾在此被静默丢弃——源站直连可提交的按钮在镜像内点了没反应
+        // （:82 登录实测）。按元素锚转发，服务端对同元素执行等价 el.click()
+        if (!e.isTrusted) {
+          try { const aid = idOfMirror(t); if (aid !== null) send({ type: 'domclick', id: aid }); } catch (e2) {}
+        }
       });
       // 指针事件输入管线（点击/拖拽的唯一转发通道）：
       // 1) pointerdown 永远先于一切销毁到达（结构补丁的 innerHTML 替换会让浏览器
