@@ -265,6 +265,29 @@
   仿真）下零 CSS/WAAPI 动画事件、帧哈希无逐帧变化——其 13 条 keyframes 均为
   挂载即删的入场工具类，稳态无持续动画，镜像与源站一致。
 
+### v0.32 —— 镜像复用：热页池 + 源站资产共享缓存（PR #15，34e1400）
+- **热页池**（lib/warm-pages.js）：预热「单访客专用」已加载页——context 在访客
+  到来前创建并完成源站导航（networkidle0 静止后才入库存），取走即归该访客
+  独占、随会话销毁，绝不跨访客共享 cookie/存储（WAF 隔离语义不变）。命中免
+  context 创建与冷加载（skipGoto），meta.warm 可观测。容量纪律：idle>0 才预热
+  （池 live 计所有存活实例，live<size 是误判——曾致永不复热）；会话冷路径先
+  yieldForSession 抢占（预热中止/库存释放）；TTL 90s 清仓重建。
+- **源站资产共享缓存**（lib/origin-asset-cache.js）：css/js/img/font 回源命中
+  本地回填；未命中网关侧抓取入库再回给会话浏览器（拦截开启下 response.body()
+  对部分响应永不 settle，捕获式不可靠）。保守规则：200/无 set-cookie/非
+  no-store/private/Vary 无凭据头/单体 ≤4MB/max-age 限幅 [30s,10min]/字节 LRU。
+  **带 Cookie 头的请求一律绕过**：网关抓取不带凭据，源站对鉴权资产回 200
+  登录页 HTML（Vikunja 恢复回归实测中毒）；亦防跨用户内容污染。/m/ 通道同缓存。
+- **本轮抓到的回归**（CI 恢复回归拦截）：resume 路径 meta 误引会话创建闭包的
+  warmEntry（ReferenceError 掐断恢复链路）；修复后 Vikunja 恢复 dom+frame
+  4 步全绿。
+- **回归与验证**：generality warm case（冷→热[warm=true+TTI 降]→宽限后冷启
+  [缓存命中]）+ runner 日志断言；阴性对照（env 全关）warm_used_on_second=
+  false、tti2>tti1、命中 0 → 红。单测 12 项；全量 13 case + RUM；npm test 61 绿。
+- **生产实测（v0.32.0）**：:81 灵袭 926→352ms（2.6×，深链 /login 326ms）；
+  :82 SoulBind 1863→277ms（6.7×）；网关日志 [cache]fill×5 → hit×6（回源
+  资产零重复）；双源站 [warm]ready 各一、多租户预热正常。
+
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
 - 跨源 iframe 动态嵌入：周期重抓刷新已解决（v0.26，变化才推）；postMessage 双向驱动的嵌入仍为快照语义。
