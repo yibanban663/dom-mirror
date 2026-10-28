@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>gen-anim</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; background: #fff; }
+  /* 入场动画：真实前端框架形态——挂载时加动画类，animationend 即移除 */
+  @keyframes xy-pop {
+    0% { opacity: 0; transform: translateY(14px); }
+    100% { opacity: 1; transform: none; }
+  }
+  .pop { animation: xy-pop 2.5s ease both; }
+  #box { width: 220px; padding: 10px 14px; background: #2b6; color: #fff; border-radius: 6px; }
+</style>
+</head>
+<body>
+  <div id="box" class="pop">ENTRANCE-ANIM</div>
+  <div id="state">init</div>
+  <script>
+    document.getElementById('box').addEventListener('animationend', function () {
+      this.classList.remove('pop');
+      document.getElementById('state').textContent = 'done';
+    });
+    // 拖住网络静默 4s：networkidle0 首帧语义必须等到动画类已移除（红），
+    // domcontentloaded 首帧语义在动画进行中就拍下（绿）——红绿由本用例裁决
+    fetch('/__delay/4000').then(function () {
+      document.getElementById('state').textContent += '+net';
+    }).catch(function () {});
+  </script>
+</body>
+</html>

@@ -27,12 +27,12 @@ docker network create --internal "$run_id" >/dev/null
 
 overall=0
 xframe_container=""
-for c in ${CASES:-forms editor media layout style canvas dnd vlist nav xiframe cshadow audio}; do
+for c in ${CASES:-forms editor media layout style canvas dnd vlist nav anim xiframe cshadow audio}; do
   docker rm -f "$server" >/dev/null 2>&1 || true
   case "$c" in
     forms) page=gen-forms.html ;; editor) page=gen-editor.html ;; media) page=gen-media-pix.html ;;
     layout) page=gen-layout.html ;; style) page=gen-style.html ;; canvas) page=gen-canvas-key.html ;;
-    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; nav) page=gen-forms.html ;; xiframe) page=gen-xiframe.html ;; cshadow) page=gen-cshadow.html ;; audio) page=gen-media-audio.html ;;
+    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; nav) page=gen-forms.html ;; anim) page=gen-anim.html ;; xiframe) page=gen-xiframe.html ;; cshadow) page=gen-cshadow.html ;; audio) page=gen-media-audio.html ;;
     *) exit 2 ;;
   esac
   # xiframe 需要第二源站（跨源嵌入目标）：origin-b 静态容器
@@ -51,7 +51,7 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist nav xiframe c
     -e ORIGIN_URL="http://127.0.0.1:8077/$page" \
     "$image" timeout 240 node demo/server.js >/dev/null
   for f in gen-forms.html gen-editor.html gen-media-pix.html gen-layout.html gen-style.html \
-           gen-style-base.css gen-style-imp.css gen-style-late.css gen-canvas-key.html gen-dnd.html gen-vlist.html gen-xiframe.html gen-cshadow.html gen-media-audio.html \
+           gen-style-base.css gen-style-imp.css gen-style-late.css gen-canvas-key.html gen-dnd.html gen-vlist.html gen-xiframe.html gen-anim.html gen-cshadow.html gen-media-audio.html \
            pic-a.png pic-b.png pic-c.png; do
     docker cp "$repo/test/fixtures/$f" "$server:/app/protected/$f"
   done

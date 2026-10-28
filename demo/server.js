@@ -16,7 +16,18 @@ function listen(server, port, host) {
 
 async function startDemo(createMirror = require('..').createMirror) {
   const files = createStaticFiles();
-  const origin = http.createServer(files.staticHandler(path.join(__dirname, '..', 'protected')));
+  // v0.31 anim 基准用：/__delay/<ms> 可控延迟响应（拖住 networkidle0 静默判定，
+  // 让「首帧等静默」与「首帧 DCL 起流」两种语义在本用例下红绿可判）
+  const originStatic = files.staticHandler(path.join(__dirname, '..', 'protected'));
+  const origin = http.createServer((req, res) => {
+    let dm = null;
+    try { dm = new URL(req.url, 'http://x').pathname.match(/^\/(__delay)\/(\d+)$/); } catch (e) {}
+    if (dm) {
+      setTimeout(() => { res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('ok'); }, Math.min(30000, Number(dm[2]) || 0));
+      return;
+    }
+    originStatic(req, res);
+  });
   const servers = [origin];
   let mirror;
   let closing;
