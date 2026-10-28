@@ -376,6 +376,44 @@ async function main() {
       }
     }
 
+    // v0.32 镜像复用：连续两次访问同源——第二次应取热页（meta.warm=true，
+    // 免 context 创建与冷加载），TTI 显著低于首次冷启（含浏览器启动）
+    if (CASE === 'warm') {
+      const visit = async () => {
+        const ctx = await browser.createBrowserContext(); // 隔离存储：不带上一访客的 resume 令牌
+        const pv = await ctx.newPage();
+        await pv.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+        const t = Date.now();
+        await pv.goto(mirrorUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await pv.waitForFunction(() => {
+          const sr = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
+          return sr && sr.querySelector('#target');
+        }, { timeout: 30000, polling: 80 });
+        const tti = Date.now() - t;
+        const info = await pv.evaluate(() => ({
+          warm: !!window.__xyWarmMeta,
+          nodes: document.querySelector('#mirrorHost').shadowRoot.querySelectorAll('*').length,
+        }));
+        await ctx.close();
+        return Object.assign({ tti }, info);
+      };
+      const first = await visit();
+      await settle(4000);
+      await settle(4000); // 给后台预热器（5s tick + 本地源站加载）就位窗口
+      const second = await visit();
+      await settle(4500); // 短宽限（3s）过期后第三访冷启——CSS 回源必命中共享缓存
+      const third = await visit();
+      out.warmFirst = first;
+      out.warmSecond = second;
+      out.warmThird = third;
+      out.checks.warm_content_1 = first.nodes > 5;
+      out.checks.warm_content_2 = second.nodes > 5;
+      out.checks.warm_content_3 = third.nodes > 5;
+      out.checks.warm_used_on_second = second.warm === true;
+      out.checks.warm_tti2_lt_tti1 = second.tti < first.tti;
+      out.checks.warm_tti2_fast = second.tti < 4000;
+    }
+
     // v0.31 入场动画保真：框架形态（animationend 移除动画类）+ 拖住网络静默 4s——
     // networkidle0 首帧必拿终态（红），DCL 首帧在动画进行中拍下、访客端完整重放（绿）
     if (CASE === 'anim') {

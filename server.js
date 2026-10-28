@@ -92,6 +92,31 @@ const sessionLaunch = () => puppeteer.launch({
 const browserPool = config.browserPoolSize > 0
   ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger })
   : null;
+// v0.32 镜像复用：热页池（单访客专用预热页，免冷启动）+ 源站静态资产跨会话共享缓存
+const { createWarmPageManager } = require('./lib/warm-pages');
+const { createOriginAssetCache } = require('./lib/origin-asset-cache');
+const originAssetCache = config.originAssetCacheMb > 0
+  ? createOriginAssetCache({ maxBytes: config.originAssetCacheMb * 1024 * 1024, defaultTtlMs: config.originAssetCacheTtl })
+  : null;
+const warmPages = createWarmPageManager({
+  browserPool, warmup: config.sessionWarmup, ttlMs: config.sessionWarmupTtl, requestAllowed, logger,
+});
+// v0.32 资产缓存回源抓取：10s 超时 + 单体上限（超限中断），失败由调用方放行
+const fetchOriginAsset = (u) => new Promise((resolve, reject) => {
+  let parsed;
+  try { parsed = new URL(u); } catch (e) { reject(e); return; }
+  const mod = parsed.protocol === 'https:' ? httpBoth.https : httpBoth.http;
+  const req = trackRequest(mod.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: '*/*' } }, (up) => {
+    if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300) { up.resume(); reject(new Error('asset status ' + up.statusCode)); return; }
+    const chunks = [];
+    let total = 0, over = false;
+    up.on('data', (c) => { total += c.length; if (total > originAssetCache.maxEntryBytes) { over = true; try { up.destroy(); } catch (e) {} } else chunks.push(c); });
+    up.on('end', () => { if (over) { reject(new Error('asset too large')); return; } resolve({ status: up.statusCode || 200, headers: up.headers, body: Buffer.concat(chunks) }); });
+    up.on('error', reject);
+  }));
+  req.setTimeout(10000, () => req.destroy(new Error('asset fetch timeout')));
+  req.on('error', reject);
+});
 
 async function launchSessionBrowser() {
   const b = await puppeteer.launch({
@@ -178,11 +203,44 @@ function proxyAsset(req, res) {
   const mod = base.protocol === 'https:' ? httpBoth.https : httpBoth.http;
   const u = assetUrl(rest, base);
   if (!u) { res.writeHead(403); res.end('asset allowlist'); return; }
+  // v0.32 镜像复用：/m/ 表现层资产跨访客共享缓存——命中免回源
+  if (originAssetCache) {
+    const hit = originAssetCache.get(u);
+    if (hit) {
+      try { logger.log('[cache ] m-hit', new URL(u).pathname.slice(0, 70)); } catch (e) {}
+      res.writeHead(hit.status, {
+        'content-type': hit.headers['content-type'] || 'application/octet-stream',
+        'cache-control': 'public, max-age=300',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(hit.body);
+      return;
+    }
+  }
   const upstream = trackRequest(mod.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
     const ct = (up.headers['content-type'] || '').toLowerCase();
     if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300 || /text\/html|json|javascript|xml/.test(ct)) {
       up.resume();
       res.writeHead(403); res.end('asset allowlist');
+      return;
+    }
+    if (originAssetCache) {
+      // 缓冲回填（/m/ 本就限图片/字体小资产）：入库由 put 的保守规则裁决
+      const chunks = [];
+      up.on('data', (c) => chunks.push(c));
+      up.on('end', () => {
+        const body = Buffer.concat(chunks);
+        originAssetCache.put(u, { status: up.statusCode || 200, headers: up.headers, body });
+        if (!res.headersSent) {
+          res.writeHead(up.statusCode || 200, {
+            'content-type': up.headers['content-type'] || 'application/octet-stream',
+            'cache-control': 'public, max-age=300',
+            'x-content-type-options': 'nosniff',
+          });
+        }
+        res.end(body);
+      });
+      up.on('error', () => res.destroy());
       return;
     }
     res.writeHead(up.statusCode || 502, {
@@ -820,7 +878,7 @@ async function runSession(ws, req, lifecycle) {
     cmdChain = cmdChain.then(async () => {
       if (dead || ws.readyState !== 1) return;
       if (domStarting) await domStarting;
-      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode });
+      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: false }); // v0.32 resume 不经热页（本闭包无 warmEntry）
       sendJson({ type: 'location', url: page.url() });
       structBuf.clear(); lastPatchSent.clear();
       clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
@@ -1558,7 +1616,29 @@ async function runSession(ws, req, lifecycle) {
     // 上下文不关浏览器；无池保持历史一会话一浏览器
     let poolHandle = null;
     let b;
-    if (browserPool) {
+    let warmEntry = null; // v0.32 镜像复用：热页命中时免 context 创建与冷加载
+    if (browserPool && warmPages) {
+      try { warmPages.register(sessionOrigin, sessionOrigin); } catch (e) {}
+      try {
+        warmEntry = warmPages.take(sessionOrigin);
+        if (warmEntry) {
+          poolHandle = warmEntry.handle;
+          page = warmEntry.page;
+          try { page.off('request', warmEntry.reqHandler); } catch (e2) {}
+          b = poolHandle.browser;
+          sessionExclusive = poolHandle.exclusive;
+          sessionRelease = poolHandle.release;
+          logger.log('[warm  ] take', warmEntry.url, 'age', Date.now() - warmEntry.loadedAt, 'ms');
+        }
+      } catch (e) {
+        logger.log('[warm  ] take fail:', e && e.message);
+        warmEntry = null; poolHandle = null;
+      }
+    }
+    if (browserPool && !warmEntry) {
+      // v0.32 镜像复用：冷路径启动——预热立即让位（中止在途/释放库存），
+      // 真实访客绝不等在预热后面（小池下预热隐形占位曾致会话 20s 干等）
+      if (warmPages) { try { warmPages.yieldForSession(); } catch (e) {} }
       // v0.30 自愈：newPage 20s 竞速——宿主高压下实测池浏览器可能连接存活但
       // newPage 永久悬挂；超时逐出该实例重取一次，仍败回退独立浏览器保证会话必达
       const takePooled = () => Promise.race([
@@ -1591,7 +1671,7 @@ async function runSession(ws, req, lifecycle) {
       } else {
         b = await launchSessionBrowser();
       }
-    } else {
+    } else if (!browserPool) {
       b = await launchSessionBrowser();
     }
     if (dead) { if (poolHandle) await poolHandle.release(); else await b.close(); return; }
@@ -1646,6 +1726,8 @@ async function runSession(ws, req, lifecycle) {
       await page.setRequestInterception(true);
       // 弹窗的首个请求发生在新页面上、不经过本页拦截：在页面脚本之前禁用新窗口
       if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(() => {
+        if (window.__xyNoWinOpen) return;
+        window.__xyNoWinOpen = true;
         window.open = () => null;
         const newWindow = (t) => t && !/^_(self|parent|top)$/i.test(t);
         for (const type of ['click', 'submit']) {
@@ -1656,7 +1738,35 @@ async function runSession(ws, req, lifecycle) {
         }
       });
       page.on('request', (r) => {
-        if (requestAllowed(r.url(), requestOrigins)) { r.continue().catch(() => {}); return; }
+        if (requestAllowed(r.url(), requestOrigins)) {
+          // v0.32 镜像复用：源站静态资产跨会话共享缓存命中——本地回填免回源
+          // 带 Cookie 的请求（登录后鉴权资产）一律绕过缓存直连：网关侧抓取不带
+          // 凭据，源站可能回 200 登录页 HTML——当 JS 回给浏览器即中毒（Vikunja
+          // 恢复回归实测）；也是跨用户内容污染的载体
+          if (originAssetCache && r.method() === 'GET' && !r.headers()['cookie'] && originAssetCache.isCacheableUrl(r.url())) {
+            const hit = originAssetCache.get(r.url());
+            if (hit) {
+              r.respond({ status: hit.status, headers: hit.headers, body: hit.body }).catch(() => {});
+              try { logger.log('[cache ] hit', new URL(r.url()).pathname.slice(0, 70)); } catch (e) {}
+              return;
+            }
+            // 未命中：网关侧回源抓取（拦截开启时 response.body() 对部分响应永不
+            // settle，捕获式入库不可靠）——入库成功直接回给会话浏览器，失败放行
+            fetchOriginAsset(r.url()).then((got) => {
+              if (originAssetCache.put(r.url(), got)) {
+                const e2 = originAssetCache.get(r.url());
+                if (e2) {
+                  try { logger.log('[cache ] fill', new URL(r.url()).pathname.slice(0, 70)); } catch (e) {}
+                  r.respond({ status: e2.status, headers: e2.headers, body: e2.body }).catch(() => {});
+                  return;
+                }
+              }
+              r.continue().catch(() => {});
+            }).catch(() => r.continue().catch(() => {}));
+            return;
+          }
+          r.continue().catch(() => {}); return;
+        }
         logger.log('[policy] blocked', r.resourceType(), r.url().slice(0, 90));
         // 主框架导航用 aborted：取消而不提交错误页，页面停留原处；子框架与子资源用
         // blockedbyclient（iframe 落到跨源错误页，镜像按跨源占位处理）
@@ -1867,8 +1977,14 @@ async function runSession(ws, req, lifecycle) {
     // v0.31 入场动画保真：DCL 即开流。networkidle0 等完整静默，挂载入场动画
     // （框架加动画类→animationend 即移除类）早已结束，首帧快照只余终态，访客
     // 永远看不到动画；从 DCL 起拍首帧，入场序列经快照+补丁在访客端完整重放
-    await page.goto(initialUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode });
+    // v0.32 镜像复用：热页命中且访客未深链（initialUrl 未变）时免首跳——热页
+    // 即源站入口导航后的稳态，首帧从「快照+WS」起步
+    if (warmEntry && initialUrl === sessionOrigin && (Date.now() - warmEntry.loadedAt) <= config.sessionWarmupTtl) {
+      logger.log('[warm  ] snapshot-only takeover:', page.url());
+    } else {
+      await page.goto(initialUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    }
+    sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: !!warmEntry }); // v0.32 热页命中标志（验收可观测）
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
 
     dispatchReady = true;
@@ -1934,6 +2050,7 @@ function close() {
     for (const socket of wss.clients) socket.terminate();
     for (const request of requests) request.destroy();
     await Promise.allSettled([...sessionTasks, ...[...cleanups].map(cleanup => cleanup())]);
+    if (warmPages) await warmPages.stop(); // v0.32 热页库存释放（在池收口前）
     if (browserPool) await browserPool.close(); // v0.30 常驻浏览器统一收口
     await new Promise(resolve => wss.close(resolve));
     obfSessions.clear();

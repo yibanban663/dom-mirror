@@ -61,6 +61,12 @@ async function startDemo(createMirror = require('..').createMirror) {
       chromiumSandbox: process.env.CHROMIUM_SANDBOX !== '0',
       // v0.30：池随会话上限缩放（min 半数、至少 2）——burst 下排队窗口可控；测试环境 maxSessions 2-3 → 2 不变
       browserPoolSize: process.env.BROWSER_POOL !== undefined ? Number(process.env.BROWSER_POOL) : Math.max(2, Math.ceil((Number(process.env.MAX_SESSIONS) || 3) / 2)),
+      // v0.32 镜像复用：热页与源站资产缓存（演示/生产默认开；0 关）
+      sessionWarmup: process.env.SESSION_WARMUP !== undefined ? Number(process.env.SESSION_WARMUP) : 1,
+      sessionWarmupTtl: Number(process.env.SESSION_WARMUP_TTL) || 90000,
+      originAssetCacheMb: process.env.ORIGIN_ASSET_CACHE_MB !== undefined ? Number(process.env.ORIGIN_ASSET_CACHE_MB) : 32,
+      originAssetCacheTtl: Number(process.env.ORIGIN_ASSET_CACHE_TTL) || 120000,
+      sessionGraceMs: Number(process.env.SESSION_GRACE_MS) || 60000,
       maskInputTypes: (process.env.MASK_INPUT_TYPES || '').split(',').map(v => v.trim()).filter(Boolean),
     });
     const server = http.createServer(mirror.handleRequest);
