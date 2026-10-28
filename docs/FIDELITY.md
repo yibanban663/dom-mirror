@@ -225,6 +225,25 @@
   保持原 patch 面）；cleanup pool-off 恢复历史并行关闭形态（串行拆分悬挂
   mock 编排——CI 语法 job 卡死真根因）。
 
+### v0.30.2 —— history 栈底防护 + 测试静默通过修复（PR #11，生产 :81 驱动）
+- **缺陷（生产 :81 实测发现）**：地址栏在业务首页点后退，会话退入池化 context
+  的 newPage() 初始 about:blank——镜像整页空白、URL 栏显示 about:blank，访客
+  困在白页。原生浏览器首页本就不可退，镜像同语义。
+- **修复**：history 处理器栈底弹回（goBack/goForward 落在 about:blank 时原地
+  反向回退）；favicon.ico 返 204（消掉访客控制台每页一条的 404 噪声）。
+- **测试静默通过（同轮抓到）**：①generality prod 模式地址栏 translateY(-100%)
+  藏起时 page.click 打在屏外致 case 中断而 pass:true——悬停热区唤出落位后再
+  点；②out.error 不再允许 pass=true；③editor case out.perf 未初始化即赋值
+  抛错（被①②翻出，此前长期静默吞掉）。
+- **验收**：nav case 10/10 绿（新增 nav_floor_kept/nav_floor_url）；阴性对照
+  撤修复后 navUrl3=about:blank 精确复现；全量 11 case + RUM 复跑全绿；CI 同
+  路径 npm ci + npm test 49/49。
+- **生产复验（v0.30.2，:81 灵袭 + :82 SoulBind 双源）**：WS 取证栈底后退
+  about:blank（瞬时）→ 立即回弹 location /login、表单完整还原；跨源
+  10.1.1.180 与 example.com 双拒（:81 会话导航白名单=会话源站，租户隔离按
+  设计）；favicon 204；:82 冒烟 200；池 2 常驻实例、宽限收割器工作正常
+  （state=3 ×3s 收割日志实证）。
+
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
 - 跨源 iframe 动态嵌入：周期重抓刷新已解决（v0.26，变化才推）；postMessage 双向驱动的嵌入仍为快照语义。
