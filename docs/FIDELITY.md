@@ -244,6 +244,27 @@
   设计）；favicon 204；:82 冒烟 200；池 2 常驻实例、宽限收割器工作正常
   （state=3 ×3s 收割日志实证）。
 
+### v0.31 —— 真路由深链 + 浏览器地址栏同步 + 入场动画保真（PR #13，生产 :81 驱动）
+- **真路由**：网关任意业务路径承载镜像客户端（静态优先命中；无扩展名/.html
+  未命中回落 index.html；其余资源 404 保持）；hello.path 携带访客深链，会话
+  首跳该路径（单 / 开头、无协议/反斜杠防 //host 逃逸，requestAllowed 双保险）；
+  location 消息驱动浏览器地址栏 pushState/replaceState，浏览器前进后退经
+  popstate 反向驱动会话——伪路由升级为真 URL。
+- **入场动画保真**：首帧 networkidle0→domcontentloaded 起流。根因：框架挂载
+  入场动画「加动画类→animationend 即删类」，networkidle0 等到静默时动画已
+  结束且类已移除，快照只余终态；DCL 起拍则动画类尚在快照里，访客端插入即
+  完整重放，TTI 同步显著提前（生产 :81 深链实测 1003ms 出首帧）。
+- **回归**：新增 generality anim case——fixture 复刻框架形态 + /__delay 拖住
+  网络静默 4s，networkidle0 语义必红（阴性对照 gen_anim_FAIL 已验）、DCL 语义
+  必绿；nav case 增至 15 断言（地址栏同步×2 + 深链×2）。
+- **生产验收（v0.31.0）**：:81 /login 深链直开 200、会话首跳 /login、浏览器
+  URL 同步（/login?from=probe 探针验证）；地址栏跳转/越权拒绝/栈底弹回不回退。
+- **动画盘点（穷尽取证）**：SoulBind(:82) 登录页 3 个无限动画（float/
+  float-reverse/pulse 光球）在镜像内真实运行（两时点 transform/opacity 全变）；
+  灵袭(:81) 源站登录页在服务端 Chromium（真 UA/隐藏 webdriver/1920 宽/媒体
+  仿真）下零 CSS/WAAPI 动画事件、帧哈希无逐帧变化——其 13 条 keyframes 均为
+  挂载即删的入场工具类，稳态无持续动画，镜像与源站一致。
+
 ### 已知边界（记录在案，不计入缺口）
 - 有声媒体播放受客户端自动播放策略限制（静音可跟随，进度始终同步）。
 - 跨源 iframe 动态嵌入：周期重抓刷新已解决（v0.26，变化才推）；postMessage 双向驱动的嵌入仍为快照语义。
