@@ -878,7 +878,7 @@ async function runSession(ws, req, lifecycle) {
     cmdChain = cmdChain.then(async () => {
       if (dead || ws.readyState !== 1) return;
       if (domStarting) await domStarting;
-      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: !!warmEntry }); // v0.32 热页命中标志（验收可观测）
+      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: false }); // v0.32 resume 不经热页（本闭包无 warmEntry）
       sendJson({ type: 'location', url: page.url() });
       structBuf.clear(); lastPatchSent.clear();
       clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
@@ -1740,7 +1740,10 @@ async function runSession(ws, req, lifecycle) {
       page.on('request', (r) => {
         if (requestAllowed(r.url(), requestOrigins)) {
           // v0.32 镜像复用：源站静态资产跨会话共享缓存命中——本地回填免回源
-          if (originAssetCache && r.method() === 'GET' && originAssetCache.isCacheableUrl(r.url())) {
+          // 带 Cookie 的请求（登录后鉴权资产）一律绕过缓存直连：网关侧抓取不带
+          // 凭据，源站可能回 200 登录页 HTML——当 JS 回给浏览器即中毒（Vikunja
+          // 恢复回归实测）；也是跨用户内容污染的载体
+          if (originAssetCache && r.method() === 'GET' && !r.headers()['cookie'] && originAssetCache.isCacheableUrl(r.url())) {
             const hit = originAssetCache.get(r.url());
             if (hit) {
               r.respond({ status: hit.status, headers: hit.headers, body: hit.body }).catch(() => {});
