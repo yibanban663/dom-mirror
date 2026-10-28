@@ -746,6 +746,21 @@ async function runSession(ws, req, lifecycle) {
             if (m.action !== 'move') noteInput();
             await input.mouse(page, cdp, m);
             break;
+          case 'domclick': {
+            // 合成点击等价转发：客户端 el.click() 无指针手势，服务端对同锚点
+            // 元素执行 el.click()——与源站直连的程序化点击同语义
+            noteInput();
+            try {
+              await page.evaluate((id) => {
+                try {
+                  let el = window.__xy ? window.__xy.find(id) : null;
+                  if (el && el.nodeType === 3) el = el.parentElement;
+                  if (el && el.click) el.click();
+                } catch (e) {}
+              }, m.id).catch(() => {});
+            } catch (e) {}
+            break;
+          }
           case 'key':
             noteInput();
             await input.key(cdp, m);

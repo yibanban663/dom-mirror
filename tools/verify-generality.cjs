@@ -64,6 +64,10 @@ async function main() {
       await settle(700);
       await page.evaluate(() => window.__click('#dump'));
       const ok = await waitRep('^STATE:', 8000);
+      // 合成点击等价（v0.32.1）：脚本裸 el.click()（isTrusted=false，不走指针
+      // 管线）必须与服务端等价——曾静默丢弃（:82 登录按钮直连可提交、镜像无效）
+      await page.evaluate(() => { window.__q('#dump').click(); });
+      out.checks.synthetic_click = await waitRep('^STATE:', 8000);
       const txt = ok ? await rep() : 'TIMEOUT';
       const j = (() => { try { return JSON.parse(txt.slice(6)); } catch { return {}; } })();
       out.checks.text = j.t1 === 'hello镜像';
