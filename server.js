@@ -343,6 +343,7 @@ function handleRequest(req, res) {
     });
     return;
   }
+  if (req.url === '/favicon.ico') { res.writeHead(204); return res.end(); } // 网关壳无图标：204 消掉访客控制台每页一条的 404
   if (req.url && req.url.startsWith('/m/x/')) return proxyXframeAsset(req, res);
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
@@ -659,6 +660,12 @@ async function runSession(ws, req, lifecycle) {
             try {
               const fn = m.dir === 'forward' ? page.goForward : page.goBack;
               await fn.call(page, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+              // 历史栈底防护：池化 context 的 newPage 初始 about:blank 残留在栈底，
+              // 业务首页再退会落入空白镜像（原生浏览器首页本就不可退）——原地弹回
+              if (page.url() === 'about:blank') {
+                const back = m.dir === 'forward' ? page.goBack : page.goForward;
+                await back.call(page, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+              }
               sendJson({ type: 'location', url: page.url() });
             } catch (e) {}
             break;

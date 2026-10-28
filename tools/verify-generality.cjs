@@ -108,7 +108,7 @@ async function main() {
       let keyRtt = null;
       await page.waitForFunction(() => /KEYS:a/.test(window.__q('#keys').textContent), { timeout: 8000, polling: 10 })
         .then(() => { keyRtt = Date.now() - t0; }).catch(() => {});
-      out.perf.keyRttMs = keyRtt; // 键盘型应用首字符回显 RTT（10ms 轮询粒度）
+      out.perf = Object.assign(out.perf || {}, { keyRttMs: keyRtt }); // 键盘型应用首字符回显 RTT（10ms 轮询粒度；此前 perf 未初始化即赋值抛错，被宽松 pass 吞掉）
       await page.keyboard.press('ArrowLeft');
       await page.keyboard.press('Enter');
       await settle(600);
@@ -327,20 +327,34 @@ async function main() {
       out.checks.nav_initial = true;
       out.navUrl0 = await page.evaluate(() => document.getElementById('navUrl').value);
       out.checks.nav_url_sync = /gen-forms\.html$/.test(out.navUrl0);
+      // prod 模式地址栏 translateY(-100%) 藏起：先悬停顶部热区唤出、待 transform
+      // 落位再点，否则 click 打在屏外静默失配（曾致 case 中断而 pass 仍真）
+      const navClick = async (sel) => {
+        await page.mouse.move(640, 4);
+        await settle(350);
+        await page.click(sel);
+      };
       // 跳转到 gen-layout
       await page.evaluate(() => { document.getElementById('navUrl').value = '/gen-layout.html'; });
-      await page.click('#navGo');
+      await navClick('#navGo');
       out.checks.nav_goto = await page.waitForFunction(() => !!window.__q('#scroller'), { timeout: 20000 }).then(() => true).catch(() => false);
       out.navUrl1 = await page.evaluate(() => document.getElementById('navUrl').value);
       out.checks.nav_goto_url = /gen-layout\.html$/.test(out.navUrl1);
       // 后退回 gen-forms
-      await page.click('#navBack');
+      await navClick('#navBack');
       out.checks.nav_back = await page.waitForFunction(() => !!window.__q('#dump'), { timeout: 20000 }).then(() => true).catch(() => false);
       out.navUrl2 = await page.evaluate(() => document.getElementById('navUrl').value);
       out.checks.nav_back_url = /gen-forms\.html$/.test(out.navUrl2);
+      // 栈底再退：业务首页之下只剩池化 context 的初始 about:blank——必须被弹回，
+      // 访客不可退入空白镜像（与原生浏览器首页不可退同语义）
+      await navClick('#navBack');
+      await settle(2500);
+      out.checks.nav_floor_kept = await page.evaluate(() => !!window.__q('#dump'));
+      out.navUrl3 = await page.evaluate(() => document.getElementById('navUrl').value);
+      out.checks.nav_floor_url = /gen-forms\.html$/.test(out.navUrl3);
       // 越权导航：拒绝且内容不变
       await page.evaluate(() => { document.getElementById('navUrl').value = 'http://example.invalid/x'; });
-      await page.click('#navGo');
+      await navClick('#navGo');
       await settle(1500);
       out.checks.nav_blocked_kept = await page.evaluate(() => !!window.__q('#dump'));
       out.checks.nav_blocked_status = await page.evaluate(() => /允许范围/.test(document.getElementById('status').textContent));
@@ -561,7 +575,7 @@ async function main() {
   } finally {
     await browser.close();
   }
-  out.pass = !!(out.checks && Object.keys(out.checks).length && Object.values(out.checks).every(Boolean));
+  out.pass = !out.error && !!(out.checks && Object.keys(out.checks).length && Object.values(out.checks).every(Boolean));
   const evd = process.env.EVIDENCE_DIR;
   if (evd) {
     fs.mkdirSync(evd, { recursive: true });
