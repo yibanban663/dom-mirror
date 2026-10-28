@@ -1357,6 +1357,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           }
           if (j.type === 'sync-ready') { syncReady = true; activate(); }
           if (j.type === 'meta') {
+            window.__xyWarmMeta = !!j.warm; // v0.32 热页命中（验收观测点）
             m('oTitle').textContent = j.title || '-';
             if (j.mode) setMode(j.mode);
             if (j.prod) {

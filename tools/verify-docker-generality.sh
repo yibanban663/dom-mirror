@@ -27,12 +27,12 @@ docker network create --internal "$run_id" >/dev/null
 
 overall=0
 xframe_container=""
-for c in ${CASES:-forms editor media layout style canvas dnd vlist nav anim xiframe cshadow audio}; do
+for c in ${CASES:-forms editor media layout style canvas dnd vlist nav anim warm xiframe cshadow audio}; do
   docker rm -f "$server" >/dev/null 2>&1 || true
   case "$c" in
     forms) page=gen-forms.html ;; editor) page=gen-editor.html ;; media) page=gen-media-pix.html ;;
     layout) page=gen-layout.html ;; style) page=gen-style.html ;; canvas) page=gen-canvas-key.html ;;
-    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; nav) page=gen-forms.html ;; anim) page=gen-anim.html ;; xiframe) page=gen-xiframe.html ;; cshadow) page=gen-cshadow.html ;; audio) page=gen-media-audio.html ;;
+    dnd) page=gen-dnd.html ;; vlist) page=gen-vlist.html ;; nav) page=gen-forms.html ;; anim) page=gen-anim.html ;; warm) page=gen-style.html ;; xiframe) page=gen-xiframe.html ;; cshadow) page=gen-cshadow.html ;; audio) page=gen-media-audio.html ;;
     *) exit 2 ;;
   esac
   # xiframe 需要第二源站（跨源嵌入目标）：origin-b 静态容器
@@ -44,9 +44,15 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist nav anim xifr
       --entrypoint timeout "$image" 240 node tools/origin-static.cjs /origin-b 8000 >/dev/null
     xframe_container="$run_id-originb"
   fi
+  # warm 连续访问断言：默认 60s 恢复宽限会让第二访客撞 SESSION_LIMIT——该用例短宽限。
+  # 必须在 server 容器启动前设置（-e 取值在 docker run 时求值）
+  if [ "$c" = "warm" ]; then SESSION_GRACE_MS=3000; else SESSION_GRACE_MS=60000; fi
+  export SESSION_GRACE_MS
   docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
     "${proxy_env[@]}" \
     --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=2 \
+    -e SESSION_GRACE_MS="${SESSION_GRACE_MS:-60000}" \
+    -e SESSION_WARMUP="${SESSION_WARMUP:-1}" -e ORIGIN_ASSET_CACHE_MB="${ORIGIN_ASSET_CACHE_MB:-32}" \
     -e XFRAME_ALLOWED_ORIGINS=http://origin-b:8000 -e XFRAME_REFRESH_MS="${XFRAME_REFRESH_MS:-15000}" \
     -e ORIGIN_URL="http://127.0.0.1:8077/$page" \
     "$image" timeout 240 node demo/server.js >/dev/null
@@ -75,6 +81,18 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist nav anim xifr
     --entrypoint timeout "$image" 200 node tools/verify-generality.cjs > "$evidence/$c.json" 2> "$evidence/$c.err"; then
     echo "gen_${c}_OK"
     # v0.21 RUM 通道断言：forms 会话必须产生 [rum] 心跳或 [rum-beacon] 尾包日志
+    # v0.32 镜像复用可观测断言：warm 会话必须出现热页取走与资产缓存命中日志
+    if [ "$c" = "warm" ]; then
+      warmtake=$(docker logs "$server" 2>&1 | grep -c '\[warm  \] take' || true)
+      warmcache=$(docker logs "$server" 2>&1 | grep -cE '\[cache \] (m-)?hit' || true)
+      if [ "$warmtake" -ge 1 ] && [ "$warmcache" -ge 1 ]; then
+        echo "gen_warmtake_OK(${warmtake}) gen_warmcache_OK(${warmcache})"
+      else
+        echo "gen_warmtake_FAIL($warmtake) gen_warmcache_FAIL($warmcache)"
+        docker logs "$server" 2>&1 | grep -E 'warm|cache' | tail -6
+        overall=1
+      fi
+    fi
     if [ "$c" = "forms" ]; then
       # 尾包在客户端浏览器关闭（pagehide）时才发出，可能晚于客户端容器退出：轮询等待
       rum_seen=0
