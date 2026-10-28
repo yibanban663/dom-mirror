@@ -108,7 +108,7 @@ async function main() {
       let keyRtt = null;
       await page.waitForFunction(() => /KEYS:a/.test(window.__q('#keys').textContent), { timeout: 8000, polling: 10 })
         .then(() => { keyRtt = Date.now() - t0; }).catch(() => {});
-      out.perf.keyRttMs = keyRtt; // 键盘型应用首字符回显 RTT（10ms 轮询粒度）
+      out.perf = Object.assign(out.perf || {}, { keyRttMs: keyRtt }); // 键盘型应用首字符回显 RTT（10ms 轮询粒度；此前 perf 未初始化即赋值抛错，被宽松 pass 吞掉）
       await page.keyboard.press('ArrowLeft');
       await page.keyboard.press('Enter');
       await settle(600);
