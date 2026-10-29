@@ -1642,6 +1642,12 @@ async function runSession(ws, req, lifecycle) {
     if (canvasTimer) return;
     const sigs = createCanvasSigs();
     canvasSigsReset = sigs.clear;
+    // v0.37 缓冲直读失真检测：WebGL 族（无 preserveDrawingBuffer）toDataURL 恒为
+    // 等长空白——注入前创建的 GL 上下文无 __xyCtxGL 标记（首跳注入晚于页面脚本）。
+    // 收敛策略：直读结果连续 2 拍不变且 rAF 在动（像素必在变=直读在说谎）→ 本
+    // id 永久切回截图通道（合成面为真）。2D 画布直读忠实，不会命中
+    const dataUrlBlank = new Map();
+    const glSticky = new Set();
     let canvasBusy = false;
     let rafLast = { n: -1, at: 0 };
     let listCache = { at: 0, list: null };
@@ -1659,14 +1665,16 @@ async function runSession(ws, req, lifecycle) {
           listCache = { at: now, list: fresh };
         }
         const list = listCache.list;
+        if (process.env.XY_DBG_TILE && list.length) { try { logger.log('[dbgtile] tick list=' + list.length + ' sigs=' + sigs.size); } catch (e) {} }
         if (!list.length) { if (sigs.size) sigs.clear(); return; }
         // rAF 活动门（轻量差分版）：相邻 tick 采样 __xyRafCount，300ms 无增量
         // = 动画循环停转 → canvas 必然静止零捕获（静止 canvas 的持续捕获曾是
         // CPU 大头：实测 34-47%）
         const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
         if (rafN === null) return;
+        let rafActive = false;
         if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.hot)) return; }
-        else rafLast = { n: rafN, at: Date.now() };
+        else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
         const nowMs = Date.now();
         while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
         for (const it of list) {
@@ -1677,21 +1685,26 @@ async function runSession(ws, req, lifecycle) {
           if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
-          // v0.37 canvas tile 改画布缓冲直读（toDataURL）：截图 clip 依赖合成面，
+          // v0.37 canvas tile 默认画布缓冲直读（toDataURL）：截图 clip 依赖合成面，
           // 视口外/内部滚动容器未合成区域截出来是空白（实测仪表盘图表下半在
           // 内部滚动容器折叠线下，空白 tile 反把快照好帧覆盖回空白）。缓冲直读
-          // 与合成无关且为原生分辨率（不受 scale 1.5 上限）；失败（污染/WebGL
-          // 不可读）回落截图。elbit（DOM 区域）保持截图通道
+          // 与合成无关且为原生分辨率（不受 scale 1.5 上限）。例外走截图：
+          // ①WebGL 族（__xyCtxGL——无 preserveDrawingBuffer 时 toDataURL 恒空白）
+          // ②注入前创建的 GL 上下文无标记——直读连续 2 拍不变且 rAF 在动
+          //（像素在变=直读说谎）→ glSticky 永久切截图（收敛自愈）
+          // ③读取失败（污染）。elbit（DOM 区域）同走截图
+          const viaData = it.kind !== 'elbit' && it.id !== undefined && !glSticky.has(sigKey);
           let shot = null;
-          if (it.kind !== 'elbit' && it.id !== undefined) {
+          let usedData = false;
+          if (viaData) {
             const dataUrl = await withTimeout(page.evaluate((idv) => {
               try {
                 const c = window.__xy.find(idv);
-                if (!c || c.tagName !== 'CANVAS') return null;
+                if (!c || c.tagName !== 'CANVAS' || c.__xyCtxGL) return null;
                 return c.toDataURL('image/png');
               } catch (e) { return null; }
             }, it.id), 1500, 'canvasData').catch(() => null);
-            if (dataUrl && dataUrl.length > 40) shot = { data: dataUrl.slice(dataUrl.indexOf(',') + 1) };
+            if (dataUrl && dataUrl.length > 40) { shot = { data: dataUrl.slice(dataUrl.indexOf(',') + 1) }; usedData = true; }
           }
           if (!shot) {
             // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
@@ -1712,7 +1725,17 @@ async function runSession(ws, req, lifecycle) {
               sig = { w: info.width, h: info.height, data };
             } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
           } catch (e) {}
-          if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) continue;
+          if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) {
+            // 直读失真收敛：rAF 在动但直读内容连续不变 → 切截图通道
+            if (usedData) {
+              const n = (dataUrlBlank.get(sigKey) || 0) + 1;
+              dataUrlBlank.set(sigKey, n);
+              if (n >= 2 && rafActive) { glSticky.add(sigKey); dataUrlBlank.delete(sigKey); try { logger.log('[canvas] dataUrl stale x' + n + ' + rAF active -> screenshot mode id=' + sigKey); } catch (e) {} }
+            } else dataUrlBlank.delete(sigKey);
+            continue;
+          }
+          if (usedData) dataUrlBlank.delete(sigKey);
+          if (process.env.XY_DBG_TILE) { try { logger.log('[dbgtile] id=' + sigKey + ' kind=' + (it.kind || 'canvas') + ' via=' + (usedData ? 'data' : 'shot') + ' len=' + (shot ? shot.data.length : 'null')); } catch (e) {} }
           if (ws.readyState === 1) {
             // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
             //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id

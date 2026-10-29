@@ -48,7 +48,8 @@ replace("tiles: out.tiles || [], holes:", "_profile: out.profile, tiles: out.til
 replace('const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };',
   'const enqueue = (raw) => { const receivedAt = performance.now(); cmdChain = cmdChain.then(() => { __perf.queued(raw, receivedAt); return handleRaw(raw); }).catch(() => {}); };');
 for (const type of ['dom-patches', 'anim-tiles']) {
-  replace("JSON.stringify({ type: '" + type + "'", "__perf.json({ type: '" + type + "'", type === 'anim-tiles' ? 2 : 1);
+  // v0.37 dom-patches 出现两处：主发送通道 + repair 定点修复回包（两处都计量）
+  replace("JSON.stringify({ type: '" + type + "'", "__perf.json({ type: '" + type + "'", type === 'anim-tiles' ? 2 : (type === 'dom-patches' ? 2 : 1));
 }
 // v0.18 起 dom-snapshot payload 为 Object.assign 形态（cssSame 字段）
 replace("JSON.stringify(Object.assign({ type: 'dom-snapshot'", "__perf.json(Object.assign({ type: 'dom-snapshot'");
