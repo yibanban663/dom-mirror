@@ -11,7 +11,7 @@
   body.prod .quality, body.prod .conn-info, body.prod main .panel { display: none !important; }
   body.prod main { padding: 0; gap: 0; }
   body.prod .stage { flex: 1 1 auto; width: 100%; }
-  body.prod .canvas-box { position: fixed; inset: 0; border: none; border-radius: 0; background: #fff; z-index: 50; }
+  body.prod .canvas-box { position: fixed; inset: 0; border: none; border-radius: 0; background: transparent; z-index: 50; } /* v0.35.1：#fff 是全屏白层——prod 类加上到内容上屏之间盖出第二记白闪 */
   /* v0.30 伪地址栏：生产模式固定顶部（业务壳外唯一的浏览器语义 UI） */
   #navWrap { display:flex; gap:6px; padding:6px 10px; background:var(--panel); border-bottom:1px solid var(--line); align-items:center; }
   #navWrap[hidden] { display:none; }
@@ -22,11 +22,14 @@
   /* v0.32.5 消黑闪：prod 模式客户端壳不画自己的深色底——白底中性（与原生浏览器
      首绘一致）；源站底色由网关注入（缓存热后首绘即正确色）/meta.bg 接管。
      曾因壳深色底在白与浅色源站页之间插进一帧 #0f1420 黑闪（:82 实测） */
-  body.prod { background: #ffffff; }
+  body.prod { background: transparent; } /* 透出 html 注入底色；底色未注入时为浏览器默认白 */
   body.prod #navWrap { position: fixed; top:0; left:0; right:0; z-index:90; transform: translateY(-100%); transition: transform .18s ease; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
   body.prod #navWrap:hover, body.prod #navHot:hover ~ #navWrap { transform: none; }
   body.prod #navHot { position: fixed; top:0; left:0; right:0; height: 9px; z-index:89; }
   body.prod #mirrorScroll { width: 100vw !important; height: 100vh !important; }
+  /* v0.35.1 三闪修复：镜像容器内联 #fff 在 prod 全屏下是一块白板——在 html 注入
+     底色与内容上屏之间盖出第二记白闪（全帧率实测 629ms 帧）。透明透出注入底色 */
+  body.prod #mirrorScroll { background: transparent !important; }
   body.prod #rbi { width: 100vw; height: 100vh; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--txt); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; overflow-x:auto; }
@@ -1387,9 +1390,12 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               } catch (e) {}
             }
             m('oTitle').textContent = j.title || '-';
+            // v0.35.1：prod 类必须先于 setMode——setMode 显示 mirrorBox（内联白底），
+            // prod 透明规则晚一拍就是一帧全屏白闪（全帧率实测 582ms 帧）
+            if (j.prod) document.body.classList.add('prod');
             if (j.mode) setMode(j.mode);
             if (j.prod) {
-              document.body.classList.add('prod');
+              // prod 类已在 setMode 前加过（防白闪时序）
               viewW = j.w || window.innerWidth; viewH = j.h || window.innerHeight;
               const ms = document.getElementById('mirrorScroll');
               if (ms) { ms.style.width = viewW + 'px'; ms.style.height = viewH + 'px'; }
