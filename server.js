@@ -116,8 +116,9 @@ let clientHtmlRaw = null;
 function serveClientHtml(req, res) {
   try {
     if (clientHtmlRaw === null) clientHtmlRaw = fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8');
+    // req.rbiOrigin 只在 WS upgrade 设置；GET 请求直接从受信头选源（多租户）
     let origin = ORIGIN_URL;
-    try { origin = (req.rbiOrigin ? new URL(req.rbiOrigin) : new URL(ORIGIN_URL)).origin; } catch (e) {}
+    try { origin = new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, ALLOWED_ORIGINS)).origin; } catch (e) {}
     const bg = originBgCache.get(origin);
     const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
     const html = bgSafe
