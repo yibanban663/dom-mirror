@@ -491,7 +491,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     // 豆腐块。同一组 @font-face 必须额外注入文档级（document.head），文档级字体对所有
     // shadow 内容可见；按会话 sid 变化时整体替换（URL 变了自然重新拉取）。
     try {
-      const faces = (css.match(/@font-face\{[^}]*\/m\/obf\/[^}]*\}/g) || []).join('\n');
+      const faces = (css.match(/@font-face\{[^}]*\/(?:m\/obf\/|f\/noto-)[^}]*\}/g) || []).join('\n');
       if (faces) {
         let st = document.getElementById('xy-obf-fonts');
         if (!st) { st = document.createElement('style'); st.id = 'xy-obf-fonts'; document.head.appendChild(st); }
