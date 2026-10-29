@@ -140,9 +140,21 @@ const addDynamicOrigin = (origin) => {
 
 // v0.32.2 消白闪：入口 HTML 注入源站底色（首绘即源站色；<head> 后插一行样式）
 let clientHtmlRaw = null;
+// v0.36 防泄漏：下发前剥注释（整行 // 与 /* */ 续行、HTML 注释整段）——
+// 引擎内部版本史/设计注释不该暴露给访客；并注入控制台静默（?xydebug 开启）
+function stripClientComments(html) {
+  let out = html.replace(/<!--[\s\S]*?-->/g, '');
+  // 引擎身份串不外泄（指纹化目标）：标题/页头等处的产品名统一中性化
+  out = out.replace(/dom-mirror/gi, 'mirror');
+  out = out.split('\n').filter((line) => {
+    const t = line.trim();
+    return !(t.startsWith('//') || t.startsWith('/*') || t === '*' || t.startsWith('* ') || t.startsWith('*/'));
+  }).join('\n');
+  return out;
+}
 function serveClientHtml(req, res) {
   try {
-    if (clientHtmlRaw === null) clientHtmlRaw = fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8');
+    if (clientHtmlRaw === null) clientHtmlRaw = stripClientComments(fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8'));
     // req.rbiOrigin 只在 WS upgrade 设置；GET 请求直接从受信头选源（多租户）
     let origin = ORIGIN_URL;
     try { origin = new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())).origin; } catch (e) {}
@@ -159,8 +171,21 @@ function serveClientHtml(req, res) {
       // :82（浅色源站）实测白→黑→白两跳即此。一并纳入首绘底色
       html = html.replace('<head>', '<head><style id="xyBgPre">html,body,#mirrorScroll,.canvas-box{background:' + bgSafe + ' !important}</style>');
     }
+    // v0.36 WAF 加固：标题不泄露引擎身份（会话 meta 到达后换成业务页标题）；
+    // 控制台静默（内部日志不外泄；?xydebug 供排障）
+    html = html.replace(/<title>[^<]*<\/title>/, '<title></title>');
+    html = html.replace('<head>', '<head><script>if(!/[?&]xydebug/.test(location.search)){for(const k of ["log","info","debug","trace"]){console[k]=function(){}}}</script>');
     const buf = Buffer.from(html, 'utf8');
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': buf.length });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Length': buf.length,
+      // v0.36 WAF 加固：安全响应头
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'X-Frame-Options': 'SAMEORIGIN',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    });
     res.end(req.method === 'HEAD' ? undefined : buf);
   } catch (e) {
     try { console.error('[bgInject] fail:', e && e.message); } catch (e2) {}
@@ -495,6 +520,12 @@ function handleRequest(req, res) {
   }
   // v0.35 一键接入管理端点：POST /api/sites {"origin":"http://x"} 即时接入（热页
   // 预热/资产缓存/底色注入按源联动）；SITE_API_TOKEN 可选防护
+  // v0.36 WAF 加固：镜像禁用爬虫索引（robots 全禁）
+  if (pathname_api(req) === '/robots.txt') {
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    res.end('User-agent: *\nDisallow: /\n');
+    return;
+  }
   if (pathname_api(req) === '/api/sites') {
     const wantToken = process.env.SITE_API_TOKEN || '';
     if (wantToken && req.headers['x-site-token'] !== wantToken) { res.writeHead(403); res.end('token'); return; }

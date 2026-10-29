@@ -169,7 +169,14 @@
   const statusEl = document.getElementById('status');
   const curEl = document.getElementById('cur');
   let ws = null, connected = false, lastErr = '', mode = 'dom';
-  let resumeToken = null, retryTimer = null, retryDelay = 500, retryAllowed = true;
+  // v0.36 会话复用：resume 令牌持久化到 sessionStorage——刷新页面重连时认领
+  // 同一会话槽（此前只在内存，F5 即新建会话，8 次刷新耗尽上限）
+  let resumeToken = (() => { try { return sessionStorage.getItem('xyResume') || null; } catch (e) { return null; } })();
+  let retryTimer = null, retryDelay = 500, retryAllowed = true;
+  const setResume = (t) => {
+    resumeToken = t || null;
+    try { if (t) sessionStorage.setItem('xyResume', t); else sessionStorage.removeItem('xyResume'); } catch (e) {}
+  };
 
   let frames = 0, bytes = 0;
   let winBw = [], winFps = [];
@@ -201,7 +208,7 @@
     mode = mo;
     const isDom = mo === 'dom' || mo === 'frame';
     frameMode = mo === 'frame';
-    console.log('HOLEDBG setMode ' + mo + ' frameMode=' + frameMode);
+    if (window.__xyDebug) console.log('setMode', mo);
     m('mMode').textContent = mo;
     m('spec').textContent = mo === 'dom' ? 'DOM 镜像（本地渲染 + 服务端补丁）'
       : '像素直出（服务端整页渲染，本地零重排）';
@@ -1284,7 +1291,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
       if (ws !== socket) return;
       if (event.code === 4001) {
         retryAllowed = false;
-        resumeToken = null;
+        setResume(null);
         clearTimeout(retryTimer);
         lastErr = '会话已撤销，请重新登录后再访问。';
         m('newSession').hidden = true;
@@ -1323,7 +1330,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             left: Array.isArray(s) ? s[2] : s.left,
           });
           if (j.type === 'session') {
-            resumeToken = j.token;
+            setResume(j.token);
             if (j.resumed) { lastTyped.clear(); pendingFocusPatches = []; }
           }
           // v0.13 文件传输：上传握手应答/完成通知，下载装配与保存
@@ -1390,6 +1397,8 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               } catch (e) {}
             }
             m('oTitle').textContent = j.title || '-';
+            // v0.36：生产模式下浏览器标题跟随业务页（不暴露引擎身份）
+            if (j.prod && j.title) { try { document.title = j.title; } catch (e) {} }
             // v0.35.1：prod 类必须先于 setMode——setMode 显示 mirrorBox（内联白底），
             // prod 透明规则晚一拍就是一帧全屏白闪（全帧率实测 582ms 帧）
             if (j.prod) document.body.classList.add('prod');
@@ -1839,7 +1848,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     if (ws && ws.readyState === 1) ws.close(); else if (!ws || ws.readyState === 3) connect();
   });
   m('newSession').addEventListener('click', () => {
-    resumeToken = null; lastTyped.clear(); pendingFocusPatches = [];
+    setResume(null); lastTyped.clear(); pendingFocusPatches = [];
     retryAllowed = true; retryDelay = 500;
     connect();
   });
