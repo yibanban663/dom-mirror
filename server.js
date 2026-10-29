@@ -107,6 +107,13 @@ const warmPages = createWarmPageManager({
     } catch (e) {}
   },
 });
+// v0.33.1 启动即预热全部允许源（warm 原本只在首会话才注册——重启后无人访问
+// 则底色缓存恒冷、注入恒缺失；现 boot 即热，首访也零闪）
+if (warmPages) {
+  for (const o of [ORIGIN_URL, ...(ALLOWED_ORIGINS || [])]) {
+    try { warmPages.register(o, o); } catch (e) {}
+  }
+}
 // v0.32.2 消白闪：源站底色按源缓存——注入下发 index.html 首绘即源站色
 // （meta.bg 只救得了 meta 之后；HTML 自身首绘的白窗要靠注入消灭）
 const originBgCache = new Map(); // origin -> css color
