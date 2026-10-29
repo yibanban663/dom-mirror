@@ -1364,6 +1364,15 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           if (j.type === 'sync-ready') { syncReady = true; activate(); }
           if (j.type === 'meta') {
             window.__xyWarmMeta = !!j.warm; // v0.32 热页命中（验收观测点）
+            // v0.32.2 消白闪：快照落位前先铺源站底色
+            if (j.bg) {
+              try {
+                document.documentElement.style.background = j.bg;
+                document.body.style.background = j.bg;
+                const mb = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.getElementById('mirrorBody');
+                if (mb) mb.style.background = j.bg;
+              } catch (e) {}
+            }
             m('oTitle').textContent = j.title || '-';
             if (j.mode) setMode(j.mode);
             if (j.prod) {
@@ -1630,6 +1639,15 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
                 else history.replaceState({ m: 1 }, '', sp);
               }
               lastSyncPath = sp;
+            } catch (e) {}
+          }
+          if (j.type === 'bg') {
+            // v0.32.2 消白闪：快照期底色修正（覆盖 meta 期早采样值）
+            try {
+              document.documentElement.style.background = j.bg;
+              document.body.style.background = j.bg;
+              const mb = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.getElementById('mirrorBody');
+              if (mb) mb.style.background = j.bg;
             } catch (e) {}
           }
           if (j.type === 'nav-blocked') {

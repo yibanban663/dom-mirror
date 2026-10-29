@@ -101,6 +101,54 @@ const originAssetCache = config.originAssetCacheMb > 0
 const warmPages = createWarmPageManager({
   browserPool, warmup: config.sessionWarmup, ttlMs: config.sessionWarmupTtl, requestAllowed, logger,
 });
+// v0.32.2 消白闪：源站底色按源缓存——注入下发 index.html 首绘即源站色
+// （meta.bg 只救得了 meta 之后；HTML 自身首绘的白窗要靠注入消灭）
+const originBgCache = new Map(); // origin -> css color
+
+// v0.32.2 消白闪：入口 HTML 注入源站底色（首绘即源站色；<head> 后插一行样式）
+let clientHtmlRaw = null;
+function serveClientHtml(req, res) {
+  try {
+    if (clientHtmlRaw === null) clientHtmlRaw = fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8');
+    let origin = ORIGIN_URL;
+    try { origin = (req.rbiOrigin ? new URL(req.rbiOrigin) : new URL(ORIGIN_URL)).origin; } catch (e) {}
+    const bg = originBgCache.get(origin);
+    const html = bg
+      ? clientHtmlRaw.replace('<head>', '<head><style id="xyBgPre">html,body{background:' + bg.replace(/[^a-z0-9 (),.%#]/gi, '') + '}</style>')
+      : clientHtmlRaw;
+    const buf = Buffer.from(html, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': buf.length });
+    res.end(req.method === 'HEAD' ? undefined : buf);
+  } catch (e) {
+    res.writeHead(500); res.end();
+  }
+}
+
+// v0.32.2 消白闪：会话页主背景色——白屏期客户端预铺同色底，避免白→深色硬切
+// （:81 实测：首帧纯白、次帧完整深色，92.6% 像素跳变 = 用户感知的主闪）。
+// 取视口四边中点最上层不透明层的最深色；退化取 body 色
+const pageBodyBg = (pg) => pg.evaluate(() => {
+  try {
+    let best = '';
+    const pts = [[innerWidth / 2, 8], [8, innerHeight / 2], [innerWidth - 8, innerHeight / 2], [innerWidth / 2, innerHeight - 8]];
+    for (const [x, y] of pts) {
+      for (const el of document.elementsFromPoint(x, y)) {
+        if (!el || el === document.documentElement || el === document.body) continue;
+        const cs = getComputedStyle(el);
+        const m = cs.backgroundColor.match(/rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)/);
+        if (!m) continue;
+        const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+        if (a < 0.95) continue;
+        const lum = 0.2126 * m[1] + 0.7152 * m[2] + 0.0722 * m[3];
+        if (!best || lum < best.lum) best = { lum, css: cs.backgroundColor };
+        break;
+      }
+    }
+    if (best) return best.css;
+    return getComputedStyle(document.body).backgroundColor || '#ffffff';
+  } catch (e) { return '#ffffff'; }
+}).catch(() => '#ffffff');
+
 // v0.32 资产缓存回源抓取：10s 超时 + 单体上限（超限中断），失败由调用方放行
 const fetchOriginAsset = (u) => new Promise((resolve, reject) => {
   let parsed;
@@ -424,9 +472,11 @@ function handleRequest(req, res) {
   if (spaExt && spaExt !== '.html') return serveStatic(req, res);
   const spaFile = path.join(clientRoot, path.normalize(spaPath === '/' ? '/index.html' : spaPath).replace(/^([/\\])+/, ''));
   if (!spaFile.startsWith(clientRoot)) return serveStatic(req, res);
+  // v0.32.2 消白闪：入口 HTML 注入源站底色——HTML 首绘即源站色，白窗归零
+  if (spaPath === '/' || spaPath === '/index.html') return serveClientHtml(req, res);
   fs.access(spaFile, (err) => {
     if (!err) return serveStatic(req, res);
-    sendFile(req, res, path.join(clientRoot, 'index.html'), 'text/html; charset=utf-8', 'no-store');
+    serveClientHtml(req, res);
   });
 }
 // permessage-deflate：JSON 快照/补丁文本高度重复，deflate 通常 5-10× 缩减
@@ -893,7 +943,8 @@ async function runSession(ws, req, lifecycle) {
     cmdChain = cmdChain.then(async () => {
       if (dead || ws.readyState !== 1) return;
       if (domStarting) await domStarting;
-      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: false }); // v0.32 resume 不经热页（本闭包无 warmEntry）
+      { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
+        sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: false, bg: bgNow }); }
       sendJson({ type: 'location', url: page.url() });
       structBuf.clear(); lastPatchSent.clear();
       clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
@@ -1999,12 +2050,27 @@ async function runSession(ws, req, lifecycle) {
     } else {
       await page.goto(initialUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
     }
-    sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: !!warmEntry }); // v0.32 热页命中标志（验收可观测）
+    { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
+      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: !!warmEntry, bg: bgNow });
+      }
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
 
     dispatchReady = true;
     for (const raw of queue.splice(0)) enqueue(raw);
     sendJson({ type: 'sync-ready' });
+    // v0.32.2 消白闪：sync-ready 后重采样底色——meta 期 SPA 可能未挂载只采到
+    // body 浅色（:81 实测米白）；此刻快照已落 MAIN 必在，修正注入缓存并推送
+    timers.setTimeout(async () => {
+      try {
+        if (dead || ws.readyState !== 1) return;
+        const bgLate = await pageBodyBg(page);
+        const oKey = new URL(sessionOrigin).origin;
+        if (bgLate && bgLate !== originBgCache.get(oKey)) {
+          originBgCache.set(oKey, bgLate);
+          sendJson({ type: 'bg', bg: bgLate });
+        }
+      } catch (e) {}
+    }, 600);
 
   } catch (e) {
     sendJson({ type: 'error', msg: '会话建立失败: ' + e.message });
