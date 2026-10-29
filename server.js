@@ -100,6 +100,12 @@ const originAssetCache = config.originAssetCacheMb > 0
   : null;
 const warmPages = createWarmPageManager({
   browserPool, warmup: config.sessionWarmup, ttlMs: config.sessionWarmupTtl, requestAllowed, logger,
+  // v0.32.5 底色预热：热页就绪即采样回填注入缓存——服务重启后第一访也零白/黑闪
+  onReady: (entry) => {
+    try {
+      pageBodyBg(entry.page).then((bg) => { if (bg) originBgCache.set(new URL(entry.url).origin, bg); }).catch(() => {});
+    } catch (e) {}
+  },
 });
 // v0.32.2 消白闪：源站底色按源缓存——注入下发 index.html 首绘即源站色
 // （meta.bg 只救得了 meta 之后；HTML 自身首绘的白窗要靠注入消灭）
@@ -113,13 +119,15 @@ function serveClientHtml(req, res) {
     let origin = ORIGIN_URL;
     try { origin = (req.rbiOrigin ? new URL(req.rbiOrigin) : new URL(ORIGIN_URL)).origin; } catch (e) {}
     const bg = originBgCache.get(origin);
-    const html = bg
-      ? clientHtmlRaw.replace('<head>', '<head><style id="xyBgPre">html,body{background:' + bg.replace(/[^a-z0-9 (),.%#]/gi, '') + '}</style>')
+    const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
+    const html = bgSafe
+      ? clientHtmlRaw.replace('<head>', '<head><script>try{document.documentElement.style.setProperty("background","' + bgSafe + '","important");}catch(e){}</script><style id="xyBgPre">html,body{background:' + bgSafe + ' !important}</style>')
       : clientHtmlRaw;
     const buf = Buffer.from(html, 'utf8');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': buf.length });
     res.end(req.method === 'HEAD' ? undefined : buf);
   } catch (e) {
+    try { console.error('[bgInject] fail:', e && e.message); } catch (e2) {}
     res.writeHead(500); res.end();
   }
 }

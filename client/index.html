@@ -19,6 +19,10 @@
   #navWrap button:hover { border-color: var(--accent); }
   #navUrl { flex:1; min-width:120px; background:var(--bg); border:1px solid var(--line); color:var(--txt); border-radius:14px; padding:6px 12px; font-size:12.5px; outline:none; }
   #navUrl:focus { border-color: var(--accent); }
+  /* v0.32.5 消黑闪：prod 模式客户端壳不画自己的深色底——白底中性（与原生浏览器
+     首绘一致）；源站底色由网关注入（缓存热后首绘即正确色）/meta.bg 接管。
+     曾因壳深色底在白与浅色源站页之间插进一帧 #0f1420 黑闪（:82 实测） */
+  body.prod { background: #ffffff; }
   body.prod #navWrap { position: fixed; top:0; left:0; right:0; z-index:90; transform: translateY(-100%); transition: transform .18s ease; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
   body.prod #navWrap:hover, body.prod #navHot:hover ~ #navWrap { transform: none; }
   body.prod #navHot { position: fixed; top:0; left:0; right:0; height: 9px; z-index:89; }
@@ -240,6 +244,11 @@
     if (el.shadowRoot) for (const c of el.shadowRoot.children) unregisterSubtree(c);
   }
   let snapSelfCheckRetries = 0;
+  // v0.32.5 patch-miss 重同步限频：miss→全量重建→重建期补丁必然再 miss→再请求
+  // 的自激循环曾 10s 打出 16 次全量（1.2MB×16，仪表盘卡顿主因）。4s 冷却 +
+  // 快照落位后 1.5s 宽限（过渡期 miss 是重建自产物，不应再触发）
+  let lastMissResyncAt = 0;
+  let lastSnapAppliedAt = 0;
   // v0.14 canvas 指令流重放器：每镜像画布一份 {ring(自 reset 起的完整指令史),
   // grads(渐变索引), imgs(图像缓存), applied(已应用条数)}。常规批只应用新增尾段；
   // 图像异步加载完成 → 清空整环重放（drawImage 顺序正确；图表类 clearRect 循环
@@ -1230,7 +1239,11 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         }
       } catch (e) {
         console.log('[patch-miss]', p.id !== undefined ? '#' + p.id : p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'));
-        if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 请求全量重同步
+        const nowMs = Date.now();
+        if (ws && ws.readyState === 1 && nowMs - lastMissResyncAt > 4000 && nowMs - lastSnapAppliedAt > 1500) {
+          lastMissResyncAt = nowMs;
+          ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 请求全量重同步（限频）
+        }
         return;
       }
     }
@@ -1367,10 +1380,10 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             // v0.32.2 消白闪：快照落位前先铺源站底色
             if (j.bg) {
               try {
-                document.documentElement.style.background = j.bg;
-                document.body.style.background = j.bg;
+                document.documentElement.style.setProperty('background', j.bg, 'important');
+                document.body.style.setProperty('background', j.bg, 'important');
                 const mb = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.getElementById('mirrorBody');
-                if (mb) mb.style.background = j.bg;
+                if (mb) mb.style.setProperty('background', j.bg, 'important');
               } catch (e) {}
             }
             m('oTitle').textContent = j.title || '-';
@@ -1486,6 +1499,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               rumApplied(); // v0.21 RUM：快照应用=交互到视觉链路闭环
               snapshotReady = true;
               activate();
+              lastSnapAppliedAt = Date.now();
               const restoredScroll = document.getElementById('mirrorScroll');
               restoredScroll.__xySync = true;
               restoredScroll.scrollLeft = j.sx || 0; restoredScroll.scrollTop = j.sy || 0;
@@ -1644,10 +1658,10 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           if (j.type === 'bg') {
             // v0.32.2 消白闪：快照期底色修正（覆盖 meta 期早采样值）
             try {
-              document.documentElement.style.background = j.bg;
-              document.body.style.background = j.bg;
+              document.documentElement.style.setProperty('background', j.bg, 'important');
+              document.body.style.setProperty('background', j.bg, 'important');
               const mb = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.getElementById('mirrorBody');
-              if (mb) mb.style.background = j.bg;
+              if (mb) mb.style.setProperty('background', j.bg, 'important');
             } catch (e) {}
           }
           if (j.type === 'nav-blocked') {
