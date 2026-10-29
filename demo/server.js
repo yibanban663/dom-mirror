@@ -55,7 +55,10 @@ async function startDemo(createMirror = require('..').createMirror) {
       requestOrigins: (process.env.REQUEST_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
       defaultMode: process.env.DEFAULT_MODE || 'dom',
       presentation: process.env.PROD_PRESENTATION === '1' ? 'embedded' : 'demo',
-      obfuscate: process.env.OBFUSCATE !== '0',
+      // v0.36.2：混淆改为显式开启（OBFUSCATE=1）。此前默认开——池缺省时自动降级
+      // 掩盖了这一点；池子烘焙进镜像后默认翻转，所有断言中文明文的回归全红。
+      // 库层默认仍为 true（宿主显式关）；运行面显式开是运维自觉的 WAF 姿态
+      obfuscate: process.env.OBFUSCATE === '1',
       canvasStream: process.env.CANVAS_STREAM !== '0',
       elbit: process.env.XY_ELBIT !== '0',
       chromiumSandbox: process.env.CHROMIUM_SANDBOX !== '0',
