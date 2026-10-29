@@ -148,9 +148,13 @@ function serveClientHtml(req, res) {
     try { origin = new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())).origin; } catch (e) {}
     const bg = originBgCache.get(origin);
     const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
-    const html = bgSafe
-      ? clientHtmlRaw.replace('<head>', '<head><script>try{document.documentElement.style.setProperty("background","' + bgSafe + '","important");}catch(e){}</script><style id="xyBgPre">html,body{background:' + bgSafe + ' !important}</style>')
-      : clientHtmlRaw;
+    let html = clientHtmlRaw;
+    if (bgSafe) {
+      // html 标签 style 属性直写：随元素解析生效（比 head 内脚本更早一拍）；
+      // body.prod 为透明，透出本底色——中途不再有任何白盖层
+      html = html.replace('<html', '<html style="background:' + bgSafe + '"');
+      html = html.replace('<head>', '<head><style id="xyBgPre">html{background:' + bgSafe + ' !important}</style>');
+    }
     const buf = Buffer.from(html, 'utf8');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': buf.length });
     res.end(req.method === 'HEAD' ? undefined : buf);
