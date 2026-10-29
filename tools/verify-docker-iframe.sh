@@ -28,6 +28,7 @@ docker network create --internal "$run_id" >/dev/null
 docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" \
   --memory 2g --cpus 2 -e PROD_PRESENTATION=1 \
+  -e SESSION_WARMUP=0 \
   -e ORIGIN_URL=http://127.0.0.1:8077/iframe.html \
   "$image" timeout 150 node demo/server.js >/dev/null
 docker cp "$repo/test/fixtures/iframe.html" "$server:/app/protected/iframe.html"
