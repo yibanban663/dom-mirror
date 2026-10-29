@@ -1240,7 +1240,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
       } catch (e) {
         console.log('[patch-miss]', p.id !== undefined ? '#' + p.id : p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'));
         const nowMs = Date.now();
-        if (ws && ws.readyState === 1 && nowMs - lastMissResyncAt > 4000 && nowMs - lastSnapAppliedAt > 1500) {
+        if (ws && ws.readyState === 1 && nowMs - lastMissResyncAt > 8000 && nowMs - lastSnapAppliedAt > 3000) {
           lastMissResyncAt = nowMs;
           ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 请求全量重同步（限频）
         }

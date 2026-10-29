@@ -1561,9 +1561,12 @@ async function runSession(ws, req, lifecycle) {
           if (!sigs.due(sigKey, nowMs)) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
+          // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
+          // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
+          // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
           const shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
             format: 'png',
-            clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: DPR },
+            clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
             captureBeyondViewport: true,
           })), 3000, 'canvasShot').catch(() => null);
           if (!shot) continue;
