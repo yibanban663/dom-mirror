@@ -259,6 +259,12 @@
   // 快照落位后 1.5s 宽限（过渡期 miss 是重建自产物，不应再触发）
   let lastMissResyncAt = 0;
   let lastSnapAppliedAt = 0;
+  // v0.37 定点修复：id miss 不再全量重同步轮盘（实测仪表盘 25s 122 次 miss→
+  // 3 次全量重建=图表反复闪黑）。缺的 id 上报服务端，服务端回父元素 inner 补丁
+  // 原位重建（O(子树)）；连续修复仍不收敛才回落全量
+  const repairPending = new Set();
+  let lastRepairSentAt = 0;
+  let repairFailStreak = 0;
   // v0.14 canvas 指令流重放器：每镜像画布一份 {ring(自 reset 起的完整指令史),
   // grads(渐变索引), imgs(图像缓存), applied(已应用条数)}。常规批只应用新增尾段；
   // 图像异步加载完成 → 清空整环重放（drawImage 顺序正确；图表类 clearRect 循环
@@ -1099,9 +1105,11 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
       if (k === pathKey || k.startsWith(pre)) clearTileRect(k);
     }
   }
-  function applyPatches(patches) {
+  function applyPatches(patches, noRepair) {
     if (!mirrorBody) return;
     const dpr = window.devicePixelRatio || 1;
+    let batchMiss = 0;
+    const rebound = [];
     // 焦点保护：React 受控输入每次键入都会重渲染字段节点，补丁把输入框整个换掉，
     // 焦点掉回 body → 后续字符全部丢失（实测只打进第一个字符）。替换前记焦点元素，
     // 替换后回焦点（focusin 会按 lastTyped 恢复半截值）
@@ -1248,13 +1256,53 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           registerSubtree(next);
         }
       } catch (e) {
-        console.log('[patch-miss]', p.id !== undefined ? '#' + p.id : p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'));
-        const nowMs = Date.now();
-        if (ws && ws.readyState === 1 && nowMs - lastMissResyncAt > 8000 && nowMs - lastSnapAppliedAt > 3000) {
-          lastMissResyncAt = nowMs;
-          ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 请求全量重同步（限频）
+        // v0.37 id 解析失败三级处理：
+        // ①mirrorIds 表项过期（元素被补丁替换后旧引用滞留）——按 data-xy-id
+        //   DOM 直查回捞并重绑（实测 #128 全链持有但仍 miss）
+        // ②attrs/text 类 O(1) 增量 miss 视为良性：目标可能是瞬时节点（toast
+        //   退场动画期间 attrs 已发、插入补丁 flush 时节点已移除）或 HEAD 级
+        //   （镜像只承载 body 子树）——真值由父容器 inner flush 保鲜，静默跳过
+        //   不进修复/重同步通道（此前这类 miss 占 9 成，喂爆了修复限频）
+        // ③结构补丁（inner/outer/kidKeep/…）miss 才是真空洞 → 定点修复
+        let resolved = null;
+        if (p.id !== undefined && Number.isInteger(p.id) && mirrorBody) {
+          try {
+            const hit = mirrorBody.querySelector('[data-xy-id="' + p.id + '"]') || (mirrorRoot && mirrorRoot.querySelector ? mirrorRoot.querySelector('[data-xy-id="' + p.id + '"]') : null);
+            if (hit && hit.isConnected) { mirrorIds.set(p.id, hit); resolved = hit; }
+          } catch (e2) {}
         }
-        return;
+        if (resolved) {
+          if (!p.__xyRetry) { p.__xyRetry = 1; rebound.push(p); continue; }
+        }
+        const benign = p.attrs !== undefined || p.text !== undefined;
+        if (!benign) console.log('[patch-miss]', p.id !== undefined ? '#' + p.id : p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'), (JSON.stringify(p) || '').slice(0, 120));
+        if (!benign && p.id !== undefined && Number.isInteger(p.id)) repairPending.add(p.id);
+        if (!benign) batchMiss++;
+      }
+    }
+    if (rebound.length) { try { applyPatches(rebound, true); } catch (e) {} }
+    // v0.37 定点修复请求：批量收尾统一上报（≤12 个 id，1s 限频）。全量重同步
+    // 只作兜底：连续 4 轮修复仍在 miss（repairFailStreak）才触发；干净批次清零
+    if (batchMiss === 0 && repairFailStreak > 0) repairFailStreak = 0;
+    if (!noRepair && batchMiss > 0 && repairPending.size) {
+      const nowMs = Date.now();
+      if (!(ws && ws.readyState === 1)) console.log('[mirror] repair blk: ws');
+      else if (nowMs - lastRepairSentAt <= 1000) console.log('[mirror] repair blk: rate');
+      else {
+        lastRepairSentAt = nowMs;
+        // 快照宽限期内（<1.5s）的 miss 是重建自产物：照发修复但不累计兜底
+        // streak——否则全量重同步流会永久饿死修复通道（实测 snap-grace 连续阻塞）
+        const inGrace = nowMs - lastSnapAppliedAt <= 1500;
+        if (!inGrace) repairFailStreak++;
+        console.log('[mirror] repair req', repairFailStreak, inGrace ? 'grace' : '', [...repairPending].slice(0, 12).join(','));
+        ws.send(JSON.stringify({ type: 'repair', ids: [...repairPending].slice(0, 12) }));
+        repairPending.clear();
+        if (repairFailStreak >= 4 && nowMs - lastMissResyncAt > 8000) {
+          lastMissResyncAt = nowMs;
+          repairFailStreak = 0;
+          console.log('[mirror] repair fallback: full resync');
+          ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 兜底全量（限频）
+        }
       }
     }
     if (aeActive) {
@@ -1589,7 +1637,29 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             noteBytes(ev.data.length || ev.data.size || 0);
             noteFrame(0);
             try {
-              const el = mirrorFind(j.id !== undefined ? j.id : j.path);
+              let el = mirrorFind(j.id !== undefined ? j.id : j.path);
+              // v0.37 几何回退：图表库 reinit 会替换 canvas 元素（id 随之而变），
+              // 快照烘焙的 img 还持旧 id——tile 按 id 找不到时按尺寸+位置就近
+              // 匹配同位 img，命中后重绑 data-xy-id（后续 tile 恢复按 id 直达）
+              if ((!el || (el.tagName !== 'IMG' && el.tagName !== 'CANVAS' && (!el.getAttribute || el.getAttribute('data-xy-elbit') !== '1'))) && j.w >= 8 && mirrorBody) {
+                try {
+                  const ms = document.getElementById('mirrorScroll');
+                  const sx = ms ? ms.scrollLeft : 0, sy = ms ? ms.scrollTop : 0;
+                  let best = null, bestD = 40;
+                  for (const im of mirrorBody.querySelectorAll('img[data-xy-canvas]')) {
+                    const r = im.getBoundingClientRect();
+                    if (Math.abs(r.width - j.w) > 2 || Math.abs(r.height - j.h) > 2) continue;
+                    const d = Math.abs(r.x + sx - j.x) + Math.abs(r.y + sy - j.y);
+                    if (d < bestD) { bestD = d; best = im; }
+                  }
+                  if (best) {
+                    const staleId = best.getAttribute('data-xy-id');
+                    if (staleId !== null) { try { mirrorIds.delete(parseInt(staleId, 10)); } catch (e2) {} }
+                    if (j.id !== undefined) { best.setAttribute('data-xy-id', String(j.id)); mirrorIds.set(j.id, best); }
+                    el = best;
+                  }
+                } catch (e) {}
+              }
               if (el && el.tagName === 'IMG') { el.src = j.url; rumApplied(); }
               else if (el && el.tagName === 'CANVAS') {
                 // v0.29：指令流画布超预算切换位图——镜像侧把 canvas 原位换成

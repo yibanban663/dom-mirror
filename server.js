@@ -778,6 +778,7 @@ async function runSession(ws, req, lifecycle) {
   let navOrigins = null; // v0.30 伪路由：requestOrigins 构建后回填（作用域桥接）
   let statLastChunks = 0;
   let canvasSigsReset = null; // 全量重同步后 canvas 捕获基准失效（画面已变）
+  let repairTimes = null; // v0.37 定点修复限频窗口（10s 滑动）
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
   const queue = [];
@@ -858,6 +859,34 @@ async function runSession(ws, req, lifecycle) {
             // 输入后不再做防抖全量重发：差分循环（140ms）+ 结构补丁已覆盖一切视觉
             // 跟进，而全量重建会吞掉重建窗口内的点击（实测登录按钮点击落在 700ms
             // 防抖重建里被静默丢弃 → 登录"点了没反应"）。结构漂移由元素数指纹兜底。
+            break;
+          }
+          case 'repair': {
+            // v0.37 定点修复：客户端补丁 id miss 上报缺失 id，服务端对缺失节点的
+            // 父元素序列化 inner 补丁原位重建——代替全量重同步（实测仪表盘 25s
+            // 122 次 miss→3 次全量重建：图表闪黑+每次 2MB；修复收敛到 O(子树)）。
+            // 限频：≤8 次/10s；full:true（父级过大）时客户端自行回落全量
+            const nowRp = Date.now();
+            repairTimes = (repairTimes || []).filter((t) => nowRp - t < 10000);
+            if (repairTimes.length >= 8) break;
+            const ids = Array.isArray(m.ids) ? m.ids.filter((n) => Number.isInteger(n)).slice(0, 12) : [];
+            if (!ids.length || !page || mode !== 'dom' || !domActive) break;
+            repairTimes.push(nowRp);
+            try {
+              const patches = await withTimeout(page.evaluate((list) => window.__xy.repairNodes(list), ids), 1500, 'repair').catch(() => null);
+              try { logger.log('[repair] ids=' + ids.length + ' -> ' + (patches ? patches.length + ' patch' : 'null')); } catch (e) {}
+              if (patches && patches.length) {
+                const full = patches.some((p2) => p2.full);
+                const real = patches.filter((p2) => !p2.full && p2.id !== undefined && typeof p2.inner === 'string');
+                if (real.length && ws.readyState === 1) {
+                  const pl = JSON.stringify({ type: 'dom-patches', patches: real });
+                  ws.send(pl);
+                  ws._bytes = (ws._bytes || 0) + pl.length;
+                  ws._chunks = (ws._chunks || 0) + 1;
+                }
+                if (full) startDomMirror().catch(() => {}); // 父级过大：定点不可行，回落全量
+              }
+            } catch (e) {}
             break;
           }
           case 'navigate': {
@@ -1501,6 +1530,9 @@ async function runSession(ws, req, lifecycle) {
           if (!live) continue;
           if (live.nodeType === 3) live = live.parentElement;
           if (!live || live.nodeType !== 1) continue;
+          // v0.37 flush 期连接校验：入队时还挂在树上、flush 时已离体的节点
+          //（图表库 dispose 竞态）镜像端必 miss——离体零视觉价值，丢弃
+          if (live.isConnected === false) continue;
           const cl = window.__xy.sanitizeClone(live);
           if (it.outer !== undefined) {
             const html = cl.outerHTML;
@@ -1610,6 +1642,12 @@ async function runSession(ws, req, lifecycle) {
     if (canvasTimer) return;
     const sigs = createCanvasSigs();
     canvasSigsReset = sigs.clear;
+    // v0.37 缓冲直读失真检测：WebGL 族（无 preserveDrawingBuffer）toDataURL 恒为
+    // 等长空白——注入前创建的 GL 上下文无 __xyCtxGL 标记（首跳注入晚于页面脚本）。
+    // 收敛策略：直读结果连续 2 拍不变且 rAF 在动（像素必在变=直读在说谎）→ 本
+    // id 永久切回截图通道（合成面为真）。2D 画布直读忠实，不会命中
+    const dataUrlBlank = new Map();
+    const glSticky = new Set();
     let canvasBusy = false;
     let rafLast = { n: -1, at: 0 };
     let listCache = { at: 0, list: null };
@@ -1627,31 +1665,57 @@ async function runSession(ws, req, lifecycle) {
           listCache = { at: now, list: fresh };
         }
         const list = listCache.list;
+        if (process.env.XY_DBG_TILE && list.length) { try { logger.log('[dbgtile] tick list=' + list.length + ' sigs=' + sigs.size); } catch (e) {} }
         if (!list.length) { if (sigs.size) sigs.clear(); return; }
         // rAF 活动门（轻量差分版）：相邻 tick 采样 __xyRafCount，300ms 无增量
         // = 动画循环停转 → canvas 必然静止零捕获（静止 canvas 的持续捕获曾是
         // CPU 大头：实测 34-47%）
         const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
         if (rafN === null) return;
+        let rafActive = false;
         if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.hot)) return; }
-        else rafLast = { n: rafN, at: Date.now() };
+        else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
         const nowMs = Date.now();
         while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
         for (const it of list) {
           // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
           // （v0.14：键改为节点 id——影子内画布 path 可为 null）
           const sigKey = it.id !== undefined ? it.id : it.path;
-          if (!sigs.due(sigKey, nowMs)) continue;
+          // v0.37 hot（空白烘焙槽/预算热点）旁路退避：urgent 槽必须在下一拍拿到真值
+          if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
-          // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
-          // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
-          // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
-          const shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
-            format: 'png',
-            clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
-            captureBeyondViewport: true,
-          })), 3000, 'canvasShot').catch(() => null);
+          // v0.37 canvas tile 默认画布缓冲直读（toDataURL）：截图 clip 依赖合成面，
+          // 视口外/内部滚动容器未合成区域截出来是空白（实测仪表盘图表下半在
+          // 内部滚动容器折叠线下，空白 tile 反把快照好帧覆盖回空白）。缓冲直读
+          // 与合成无关且为原生分辨率（不受 scale 1.5 上限）。例外走截图：
+          // ①WebGL 族（__xyCtxGL——无 preserveDrawingBuffer 时 toDataURL 恒空白）
+          // ②注入前创建的 GL 上下文无标记——直读连续 2 拍不变且 rAF 在动
+          //（像素在变=直读说谎）→ glSticky 永久切截图（收敛自愈）
+          // ③读取失败（污染）。elbit（DOM 区域）同走截图
+          const viaData = it.kind !== 'elbit' && it.id !== undefined && !glSticky.has(sigKey);
+          let shot = null;
+          let usedData = false;
+          if (viaData) {
+            const dataUrl = await withTimeout(page.evaluate((idv) => {
+              try {
+                const c = window.__xy.find(idv);
+                if (!c || c.tagName !== 'CANVAS' || c.__xyCtxGL) return null;
+                return c.toDataURL('image/png');
+              } catch (e) { return null; }
+            }, it.id), 1500, 'canvasData').catch(() => null);
+            if (dataUrl && dataUrl.length > 40) { shot = { data: dataUrl.slice(dataUrl.indexOf(',') + 1) }; usedData = true; }
+          }
+          if (!shot) {
+            // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
+            // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
+            // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
+            shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
+              format: 'png',
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
+              captureBeyondViewport: true,
+            })), 3000, 'canvasShot').catch(() => null);
+          }
           if (!shot) continue;
           captureTimes.push(Date.now());
           let sig = null;
@@ -1661,9 +1725,21 @@ async function runSession(ws, req, lifecycle) {
               sig = { w: info.width, h: info.height, data };
             } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
           } catch (e) {}
-          if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) continue;
+          if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) {
+            // 直读失真收敛：rAF 在动但直读内容连续不变 → 切截图通道
+            if (usedData) {
+              const n = (dataUrlBlank.get(sigKey) || 0) + 1;
+              dataUrlBlank.set(sigKey, n);
+              if (n >= 2 && rafActive) { glSticky.add(sigKey); dataUrlBlank.delete(sigKey); try { logger.log('[canvas] dataUrl stale x' + n + ' + rAF active -> screenshot mode id=' + sigKey); } catch (e) {} }
+            } else dataUrlBlank.delete(sigKey);
+            continue;
+          }
+          if (usedData) dataUrlBlank.delete(sigKey);
+          if (process.env.XY_DBG_TILE) { try { logger.log('[dbgtile] id=' + sigKey + ' kind=' + (it.kind || 'canvas') + ' via=' + (usedData ? 'data' : 'shot') + ' len=' + (shot ? shot.data.length : 'null')); } catch (e) {} }
           if (ws.readyState === 1) {
-            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, url: 'data:image/png;base64,' + shot.data });
+            // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
+            //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:image/png;base64,' + shot.data });
             ws.send(pl);
             ws._bytes = (ws._bytes || 0) + pl.length;
             ws._chunks = (ws._chunks || 0) + 1;
