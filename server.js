@@ -107,6 +107,13 @@ const warmPages = createWarmPageManager({
     } catch (e) {}
   },
 });
+// v0.33.1 启动即预热全部允许源（warm 原本只在首会话才注册——重启后无人访问
+// 则底色缓存恒冷、注入恒缺失；现 boot 即热，首访也零闪）
+if (warmPages) {
+  for (const o of [ORIGIN_URL, ...(ALLOWED_ORIGINS || [])]) {
+    try { warmPages.register(o, o); } catch (e) {}
+  }
+}
 // v0.32.2 消白闪：源站底色按源缓存——注入下发 index.html 首绘即源站色
 // （meta.bg 只救得了 meta 之后；HTML 自身首绘的白窗要靠注入消灭）
 const originBgCache = new Map(); // origin -> css color
@@ -116,8 +123,9 @@ let clientHtmlRaw = null;
 function serveClientHtml(req, res) {
   try {
     if (clientHtmlRaw === null) clientHtmlRaw = fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8');
+    // req.rbiOrigin 只在 WS upgrade 设置；GET 请求直接从受信头选源（多租户）
     let origin = ORIGIN_URL;
-    try { origin = (req.rbiOrigin ? new URL(req.rbiOrigin) : new URL(ORIGIN_URL)).origin; } catch (e) {}
+    try { origin = new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, ALLOWED_ORIGINS)).origin; } catch (e) {}
     const bg = originBgCache.get(origin);
     const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
     const html = bgSafe

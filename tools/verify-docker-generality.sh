@@ -46,13 +46,15 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist nav anim warm
   fi
   # warm 连续访问断言：默认 60s 恢复宽限会让第二访客撞 SESSION_LIMIT——该用例短宽限。
   # 必须在 server 容器启动前设置（-e 取值在 docker run 时求值）
-  if [ "$c" = "warm" ]; then SESSION_GRACE_MS=3000; else SESSION_GRACE_MS=60000; fi
+  # warm 以外用例关预热：boot 预热会让会话直接取热页免导航，nav/xiframe 的导航断言被绕过
+  if [ "$c" = "warm" ]; then SESSION_GRACE_MS=3000; SESSION_WARMUP=1; else SESSION_GRACE_MS=60000; SESSION_WARMUP=0; fi
+  export SESSION_WARMUP
   export SESSION_GRACE_MS
   docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
     "${proxy_env[@]}" \
     --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=2 \
     -e SESSION_GRACE_MS="${SESSION_GRACE_MS:-60000}" \
-    -e SESSION_WARMUP="${SESSION_WARMUP:-1}" -e ORIGIN_ASSET_CACHE_MB="${ORIGIN_ASSET_CACHE_MB:-32}" \
+    -e SESSION_WARMUP="${SESSION_WARMUP:-0}" -e ORIGIN_ASSET_CACHE_MB="${ORIGIN_ASSET_CACHE_MB:-32}" \
     -e XFRAME_ALLOWED_ORIGINS=http://origin-b:8000 -e XFRAME_REFRESH_MS="${XFRAME_REFRESH_MS:-15000}" \
     -e ORIGIN_URL="http://127.0.0.1:8077/$page" \
     "$image" timeout 240 node demo/server.js >/dev/null
