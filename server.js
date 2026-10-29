@@ -113,10 +113,30 @@ if (warmPages) {
   for (const o of [ORIGIN_URL, ...(ALLOWED_ORIGINS || [])]) {
     try { warmPages.register(o, o); } catch (e) {}
   }
+  // 一键接入的新源即时 register；周期兜底补热
+  const dynTimer = setInterval(() => {
+    for (const o of dynamicOrigins) { try { warmPages.register(o, o + '/'); } catch (e) {} }
+  }, 30000);
+  if (dynTimer && typeof dynTimer.unref === 'function') dynTimer.unref();
 }
 // v0.32.2 消白闪：源站底色按源缓存——注入下发 index.html 首绘即源站色
 // （meta.bg 只救得了 meta 之后；HTML 自身首绘的白窗要靠注入消灭）
 const originBgCache = new Map(); // origin -> css color
+function pathname_api(req) { try { return new URL(req.url, 'http://x').pathname; } catch (e) { return ''; } }
+// v0.35 一键接入：动态源站注册表——POST /api/sites 即时放行新站点（热页/资产
+// 缓存/底色注入按源联动），无需重启改环境变量
+const dynamicOrigins = new Set();
+const liveAllowed = () => [...ALLOWED_ORIGINS, ...dynamicOrigins]; // selectOrigin 用 includes——必须数组
+const addDynamicOrigin = (origin) => {
+  try {
+    const u = new URL(origin);
+    if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password) return null;
+    const key = u.origin;
+    dynamicOrigins.add(key);
+    if (warmPages) { try { warmPages.register(key, key + '/'); } catch (e) {} }
+    return key;
+  } catch (e) { return null; }
+};
 
 // v0.32.2 消白闪：入口 HTML 注入源站底色（首绘即源站色；<head> 后插一行样式）
 let clientHtmlRaw = null;
@@ -125,7 +145,7 @@ function serveClientHtml(req, res) {
     if (clientHtmlRaw === null) clientHtmlRaw = fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8');
     // req.rbiOrigin 只在 WS upgrade 设置；GET 请求直接从受信头选源（多租户）
     let origin = ORIGIN_URL;
-    try { origin = new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, ALLOWED_ORIGINS)).origin; } catch (e) {}
+    try { origin = new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())).origin; } catch (e) {}
     const bg = originBgCache.get(origin);
     const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
     const html = bgSafe
@@ -260,7 +280,7 @@ function proxyAsset(req, res) {
   if (mo) {
     let org = null;
     try { org = new URL(Buffer.from(mo[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch (e) {}
-    if (!org || !/^https?:$/.test(org.protocol) || !ORIGIN_ALLOWED.has(org.origin)) { res.writeHead(403); res.end('asset origin'); return; }
+    if (!org || !/^https?:$/.test(org.protocol) || !(ORIGIN_ALLOWED.has(org.origin) || dynamicOrigins.has(org.origin))) { res.writeHead(403); res.end('asset origin'); return; }
     base = new URL(org.origin + '/');
     rest = mo[2] || '/';
   }
@@ -465,6 +485,30 @@ function handleRequest(req, res) {
     });
     return;
   }
+  // v0.35 一键接入管理端点：POST /api/sites {"origin":"http://x"} 即时接入（热页
+  // 预热/资产缓存/底色注入按源联动）；SITE_API_TOKEN 可选防护
+  if (pathname_api(req) === '/api/sites') {
+    const wantToken = process.env.SITE_API_TOKEN || '';
+    if (wantToken && req.headers['x-site-token'] !== wantToken) { res.writeHead(403); res.end('token'); return; }
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body || '{}');
+          const key = addDynamicOrigin(String(parsed.origin || ''));
+          if (!key) { res.writeHead(400); res.end('bad origin'); return; }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, origin: key, warm: !!warmPages }));
+          logger.log('[sites ] registered', key);
+        } catch (e) { res.writeHead(400); res.end('bad json'); }
+      });
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ origins: [...liveAllowed()] }));
+    return;
+  }
   if (req.url === '/favicon.ico') { res.writeHead(204); return res.end(); } // 网关壳无图标：204 消掉访客控制台每页一条的 404
   if (req.url && req.url.startsWith('/m/x/')) return proxyXframeAsset(req, res);
   if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
@@ -519,7 +563,7 @@ function handleUpgrade(req, socket, head) {
       return;
     }
   }
-  try { req.rbiOrigin = selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, ALLOWED_ORIGINS); }
+  try { req.rbiOrigin = selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed()); }
   catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 }
