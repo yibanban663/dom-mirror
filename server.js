@@ -150,10 +150,14 @@ function serveClientHtml(req, res) {
     const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
     let html = clientHtmlRaw;
     if (bgSafe) {
-      // html 标签 style 属性直写：随元素解析生效（比 head 内脚本更早一拍）；
-      // body.prod 为透明，透出本底色——中途不再有任何白盖层
+      // v0.35.2：注入必须同时压 html/body/#mirrorScroll——客户端壳自带
+      // body{background:var(--bg)=#0f1420 深色} 与 #mirrorScroll 内联 #fff，
+      // meta 到达（prod 类/背景修正）前的窗口里它们各自会盖出一记异色帧：
+      // :82（浅色源站）实测「白→黑→白」两跳，用户看到的就是「跳白两下」
       html = html.replace('<html', '<html style="background:' + bgSafe + '"');
-      html = html.replace('<head>', '<head><style id="xyBgPre">html{background:' + bgSafe + ' !important}</style>');
+      // .canvas-box 基础样式是 #000（像素画布容器）——meta 到达前它也是一块黑板；
+      // :82（浅色源站）实测白→黑→白两跳即此。一并纳入首绘底色
+      html = html.replace('<head>', '<head><style id="xyBgPre">html,body,#mirrorScroll,.canvas-box{background:' + bgSafe + ' !important}</style>');
     }
     const buf = Buffer.from(html, 'utf8');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': buf.length });
