@@ -778,6 +778,7 @@ async function runSession(ws, req, lifecycle) {
   let navOrigins = null; // v0.30 伪路由：requestOrigins 构建后回填（作用域桥接）
   let statLastChunks = 0;
   let canvasSigsReset = null; // 全量重同步后 canvas 捕获基准失效（画面已变）
+  let repairTimes = null; // v0.37 定点修复限频窗口（10s 滑动）
   // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
   // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
   const queue = [];
@@ -858,6 +859,34 @@ async function runSession(ws, req, lifecycle) {
             // 输入后不再做防抖全量重发：差分循环（140ms）+ 结构补丁已覆盖一切视觉
             // 跟进，而全量重建会吞掉重建窗口内的点击（实测登录按钮点击落在 700ms
             // 防抖重建里被静默丢弃 → 登录"点了没反应"）。结构漂移由元素数指纹兜底。
+            break;
+          }
+          case 'repair': {
+            // v0.37 定点修复：客户端补丁 id miss 上报缺失 id，服务端对缺失节点的
+            // 父元素序列化 inner 补丁原位重建——代替全量重同步（实测仪表盘 25s
+            // 122 次 miss→3 次全量重建：图表闪黑+每次 2MB；修复收敛到 O(子树)）。
+            // 限频：≤8 次/10s；full:true（父级过大）时客户端自行回落全量
+            const nowRp = Date.now();
+            repairTimes = (repairTimes || []).filter((t) => nowRp - t < 10000);
+            if (repairTimes.length >= 8) break;
+            const ids = Array.isArray(m.ids) ? m.ids.filter((n) => Number.isInteger(n)).slice(0, 12) : [];
+            if (!ids.length || !page || mode !== 'dom' || !domActive) break;
+            repairTimes.push(nowRp);
+            try {
+              const patches = await withTimeout(page.evaluate((list) => window.__xy.repairNodes(list), ids), 1500, 'repair').catch(() => null);
+              try { logger.log('[repair] ids=' + ids.length + ' -> ' + (patches ? patches.length + ' patch' : 'null')); } catch (e) {}
+              if (patches && patches.length) {
+                const full = patches.some((p2) => p2.full);
+                const real = patches.filter((p2) => !p2.full && p2.id !== undefined && typeof p2.inner === 'string');
+                if (real.length && ws.readyState === 1) {
+                  const pl = JSON.stringify({ type: 'dom-patches', patches: real });
+                  ws.send(pl);
+                  ws._bytes = (ws._bytes || 0) + pl.length;
+                  ws._chunks = (ws._chunks || 0) + 1;
+                }
+                if (full) startDomMirror().catch(() => {}); // 父级过大：定点不可行，回落全量
+              }
+            } catch (e) {}
             break;
           }
           case 'navigate': {
@@ -1501,6 +1530,9 @@ async function runSession(ws, req, lifecycle) {
           if (!live) continue;
           if (live.nodeType === 3) live = live.parentElement;
           if (!live || live.nodeType !== 1) continue;
+          // v0.37 flush 期连接校验：入队时还挂在树上、flush 时已离体的节点
+          //（图表库 dispose 竞态）镜像端必 miss——离体零视觉价值，丢弃
+          if (live.isConnected === false) continue;
           const cl = window.__xy.sanitizeClone(live);
           if (it.outer !== undefined) {
             const html = cl.outerHTML;
@@ -1641,17 +1673,36 @@ async function runSession(ws, req, lifecycle) {
           // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
           // （v0.14：键改为节点 id——影子内画布 path 可为 null）
           const sigKey = it.id !== undefined ? it.id : it.path;
-          if (!sigs.due(sigKey, nowMs)) continue;
+          // v0.37 hot（空白烘焙槽/预算热点）旁路退避：urgent 槽必须在下一拍拿到真值
+          if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
-          // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
-          // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
-          // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
-          const shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
-            format: 'png',
-            clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
-            captureBeyondViewport: true,
-          })), 3000, 'canvasShot').catch(() => null);
+          // v0.37 canvas tile 改画布缓冲直读（toDataURL）：截图 clip 依赖合成面，
+          // 视口外/内部滚动容器未合成区域截出来是空白（实测仪表盘图表下半在
+          // 内部滚动容器折叠线下，空白 tile 反把快照好帧覆盖回空白）。缓冲直读
+          // 与合成无关且为原生分辨率（不受 scale 1.5 上限）；失败（污染/WebGL
+          // 不可读）回落截图。elbit（DOM 区域）保持截图通道
+          let shot = null;
+          if (it.kind !== 'elbit' && it.id !== undefined) {
+            const dataUrl = await withTimeout(page.evaluate((idv) => {
+              try {
+                const c = window.__xy.find(idv);
+                if (!c || c.tagName !== 'CANVAS') return null;
+                return c.toDataURL('image/png');
+              } catch (e) { return null; }
+            }, it.id), 1500, 'canvasData').catch(() => null);
+            if (dataUrl && dataUrl.length > 40) shot = { data: dataUrl.slice(dataUrl.indexOf(',') + 1) };
+          }
+          if (!shot) {
+            // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
+            // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
+            // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
+            shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
+              format: 'png',
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
+              captureBeyondViewport: true,
+            })), 3000, 'canvasShot').catch(() => null);
+          }
           if (!shot) continue;
           captureTimes.push(Date.now());
           let sig = null;
@@ -1663,7 +1714,9 @@ async function runSession(ws, req, lifecycle) {
           } catch (e) {}
           if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) continue;
           if (ws.readyState === 1) {
-            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, url: 'data:image/png;base64,' + shot.data });
+            // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
+            //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:image/png;base64,' + shot.data });
             ws.send(pl);
             ws._bytes = (ws._bytes || 0) + pl.length;
             ws._chunks = (ws._chunks || 0) + 1;
