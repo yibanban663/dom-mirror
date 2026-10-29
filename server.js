@@ -948,6 +948,8 @@ async function runSession(ws, req, lifecycle) {
       sendJson({ type: 'location', url: page.url() });
       structBuf.clear(); lastPatchSent.clear();
       clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
+      if (typeof headChurnT === 'number' || headChurnT) { clearTimeout(headChurnT); headChurnT = null; }
+      lastHeadSig = null;
       await startDomMirror();
       sendJson({ type: 'sync-ready' });
     }).catch(() => ws.close(1011, 'resume failed'));
@@ -971,6 +973,16 @@ async function runSession(ws, req, lifecycle) {
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + (tag2 || 'op'))), ms)),
   ]);
   let lastFullDoneAt = 0, fullDebounceT = null, pendingFull = false;
+  // v0.32.4 防 head-churn 抖动：图表库（ECharts 等）周期性向 <head> 重注入相同样式，
+  // 曾每 ~2.5s 触发一次整页全量快照重建（:82 烽火台「乱抖」根因）。策略：
+  // 样式集合签名未变 → 丢弃；变了 → 全量但 15s 地板 + 尾部一次性兜底
+  let lastHeadSig = null, headChurnT = null;
+  const headSig = () => page.evaluate(() => {
+    try {
+      const st = [...document.head.querySelectorAll('style')];
+      return st.map(s => { const t = s.textContent || ''; return t.length + ':' + t.slice(0, 24) + '|' + t.slice(-24); }).join('~');
+    } catch (e) { return null; }
+  }).catch(() => null);
   function startDomMirror() {
     if (dead || ws.readyState !== 1) return Promise.resolve();
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
@@ -1049,7 +1061,23 @@ async function runSession(ws, req, lifecycle) {
           }
           if (!rest.length) return;
             if (rest.some(p => p && p.full)) {
-              logger.log('[dbg] full patch why:', patches.filter(p => p && p.full).map(p => p.why || '?').slice(0, 3).join(' | ').slice(0, 200));
+              const whys = patches.filter(p => p && p.full).map(p => p.why || '?');
+              const headOnly = whys.length > 0 && whys.every(w => /noPath:(HEAD|STYLE)/.test(w));
+              if (headOnly) {
+                // 同样式集合的纯 churn 直接丢弃；变了才全量（15s 地板，churn 周期
+                // 重试 + 尾部兜底保证终态一致；body 内容由补丁通道持续保鲜）
+                const sig = await headSig();
+                if (sig !== null) {
+                  if (sig === lastHeadSig) { logger.log('[dbg] head churn dropped (styles unchanged)'); return; }
+                  if (Date.now() - lastFullDoneAt < 15000) {
+                    if (!headChurnT) headChurnT = setTimeout(() => { headChurnT = null; startDomMirror().catch(() => {}); }, 15000 - (Date.now() - lastFullDoneAt) + 50);
+                    return;
+                  }
+                  lastHeadSig = sig;
+                }
+              } else {
+                logger.log('[dbg] full patch why:', whys.slice(0, 3).join(' | ').slice(0, 200));
+              }
               // 全量重同步也必须走瓦片化路径（明文快照在瓦片模式下是防御漏洞）
               await startDomMirror();
               return;
