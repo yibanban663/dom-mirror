@@ -42,19 +42,30 @@ test('active sessions cannot be taken over and resume is bound to scope', () => 
   session.close();
 });
 
-test('detached sessions occupy capacity until expiration, then cannot resume', async () => {
-  const registry = store({ limit: 1, graceMs: 20 });
+// v0.36 会话复用语义：grace（断线等待）会话不再占死上限——满额时逐最旧 grace
+// 让新访客进来（此前刷新/关页数次即 SESSION_LIMIT，线上实测 8 次耗尽）；被逐
+// 会话的令牌不可再恢复，正常过期路径保持原语义
+test('detached sessions are evictable at limit (v0.36), expired token cannot resume', async () => {
+  const registry = store({ limit: 1, graceMs: 30 });
   const socket = new Socket();
-  const { session } = registry.claim(undefined, 'origin-a', socket);
-  const closed = once(session, 'close');
+  const first = registry.claim(undefined, 'origin-a', socket).session;
   socket.close();
-  assert.throws(() => registry.claim(undefined, 'origin-a', new Socket()), /SESSION_LIMIT/);
+  assert.equal(first.socket, null);
+  // 满额但唯一占位者处于 grace：新会话接管，旧会话被逐
+  const second = registry.claim(undefined, 'origin-a', new Socket()).session;
+  assert.ok(second && second !== first);
+  assert.equal(first.closed, true);
+  assert.equal(registry.entries.size, 1);
+  assert.throws(() => registry.claim(first.token, 'origin-a', new Socket()), /SESSION_EXPIRED/);
+  // 正常过期：detach 后超过 grace 自动关闭，令牌失效
+  const closed = once(second, 'close');
+  second.socket.close();
   let deadline;
   try {
-    await Promise.race([closed, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('expiration timeout')), 1000); })]);
+    await Promise.race([closed, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('expiration timeout')), 2000); })]);
   } finally { clearTimeout(deadline); }
   assert.equal(registry.entries.size, 0);
-  assert.throws(() => registry.claim(session.token, 'origin-a', new Socket()), /SESSION_EXPIRED/);
+  assert.throws(() => registry.claim(second.token, 'origin-a', new Socket()), /SESSION_EXPIRED/);
 });
 
 test('release terminates only the attached session and runs cleanup once', () => {
