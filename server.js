@@ -704,29 +704,48 @@ async function runSession(ws, req, lifecycle) {
     if (!(config.sessionIdleEvictMs > 0) || dead) return;
     idleEvictT = setTimeout(() => { evictIdlePage().catch(() => {}); }, config.sessionIdleEvictMs);
   };
+  let evicting = false; // v0.39.1 逐出重入/看门狗状态
   const evictIdlePage = async () => {
     if (dead || pageEvicted || !page || ws.readyState !== 1) return;
+    if (evicting) { armIdleEvict(); return; }
     if (Date.now() - lastInputAt < config.sessionIdleEvictMs) { armIdleEvict(); return; }
     if (sessionDownloads.size > 0 || sessionUploads.hasPending()) { armIdleEvict(); return; } // 在途传输安全门
     if (domStarting) { armIdleEvict(); return; }
+    evicting = true;
+    const evUrl = page.url();
     try {
-      const url = page.url();
-      if (!url || url === 'about:blank') return;
-      let sx = 0, sy = 0;
-      try { const sc = await page.evaluate(() => [window.scrollX, window.scrollY]); sx = sc[0] | 0; sy = sc[1] | 0; } catch (e) {}
-      // 页面绑定的一切观察者随页关闭；会话级定时器保留（statTimer 有 null 页守卫）
-      if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
-      if (structTimer) { clearTimeout(structTimer); structTimer = null; }
-      structBuf.clear(); lastPatchSent.clear();
-      try { await cdp.detach(); } catch (e) {}
-      cdp = null;
-      const p = page; page = null;
-      await p.close().catch(() => {});
-      pageEvicted = { url, sx, sy };
-      logger.log('[idle  ] page evicted:', String(url).slice(0, 60));
+      // 整体 15s 看门狗：swap 抖动/内存高压下 evaluate·detach·close 任一悬挂
+      // 都会冻住逐出链（1000 会话实测两轮卡死）——超时强制置逐出态，页面句柄
+      // 遗留给会话收尾回收，绝不阻塞其他会话的逐出
+      await Promise.race([
+        (async () => {
+          if (!evUrl || evUrl === 'about:blank') return;
+          let sx = 0, sy = 0;
+          try { const sc = await Promise.race([page.evaluate(() => [window.scrollX, window.scrollY]), new Promise((r2) => setTimeout(() => r2(null), 2000))]); if (sc) { sx = sc[0] | 0; sy = sc[1] | 0; } } catch (e) {}
+          if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
+          if (structTimer) { clearTimeout(structTimer); structTimer = null; }
+          structBuf.clear(); lastPatchSent.clear();
+          try { await Promise.race([cdp.detach(), new Promise((r2) => setTimeout(r2, 5000))]); } catch (e) {}
+          cdp = null;
+          const p = page; page = null;
+          try { await Promise.race([p.close(), new Promise((r2) => setTimeout(r2, 5000))]); } catch (e) {}
+          pageEvicted = { url: evUrl, sx, sy };
+          logger.log('[idle  ] page evicted:', String(evUrl).slice(0, 60));
+        })(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('evict watchdog')), 15000)),
+      ]);
     } catch (e) {
-      logger.log('[idle  ] evict fail:', e && e.message);
-      armIdleEvict();
+      // 看门狗/异常兜底：强制完成逐出（幂等——正常路径已完成时跳过）
+      if (!pageEvicted) {
+        try { if (cdp) cdp.detach().catch(() => {}); } catch (e2) {}
+        cdp = null;
+        const p = page; page = null;
+        if (p) { try { p.close().catch(() => {}); } catch (e3) {} }
+        pageEvicted = { url: evUrl || 'about:blank', sx: 0, sy: 0 };
+        logger.log('[idle  ] evict forced:', String(evUrl).slice(0, 60), String(e && e.message).slice(0, 40));
+      }
+    } finally {
+      evicting = false;
     }
   };
   const revivePage = async () => {
@@ -737,7 +756,10 @@ async function runSession(ws, req, lifecycle) {
     if (!reviveSource) throw new Error('no revive source');
     page = reviveSource.context ? await reviveSource.context.newPage() : await reviveSource.browser.newPage();
     domExposed = false; // exposeFunction 绑定到页面实例，须对新页面重挂
-    if (attachPageRuntime) await attachPageRuntime();
+    if (attachPageRuntime) await Promise.race([
+      attachPageRuntime(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('attachPageRuntime timeout (revive)')), 15000)),
+    ]);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false }).catch(() => {});
     await page.goto(ev.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     try { await page.evaluate((x, y) => window.scrollTo(x, y), ev.sx, ev.sy); } catch (e) {}
@@ -2023,10 +2045,34 @@ async function runSession(ws, req, lifecycle) {
         if (poolHandle) { const bad = poolHandle.browser; await poolHandle.release().catch(() => {}); browserPool.evict(bad); poolHandle = null; }
         else browserPool.evictIdle();
         try {
-          ({ h: poolHandle, page } = await takePooled());
+          // v0.39.1 二次尝试放宽到 60s：内存高压下 20s 超时属常态（不是池坏死），
+          // 直接回落独立浏览器会绕过池超发上限形成第二股无界浏览器风暴
+          const h2 = await Promise.race([
+            (async () => { const hb = await browserPool.acquire(); const page = await hb.context.newPage(); return { h: hb, page }; })(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('pool acquire timeout (60s)')), 60000)),
+          ]);
+          ({ h: poolHandle, page } = h2);
         } catch (e2) {
-          logger.log('[pool  ] fallback to standalone browser:', e2 && e2.message);
-          if (poolHandle) { await poolHandle.release().catch(() => {}); poolHandle = null; }
+          if (config.browserPoolStrict) {
+            // v0.39.1 严格池：不回落独立浏览器（无界内存源，1000 会话实测基线
+            // 膨胀到 13 台的泄漏点）——继续等池释放，浏览器总数由 pool+超发
+            // 上限硬性封顶（内存有界优先于个别会话时延）
+            logger.log('[pool  ] strict: keep waiting for pool release');
+            ({ h: poolHandle, page } = await new Promise((res, rej) => {
+              const tWatch = setInterval(() => { if (dead) { clearInterval(tWatch); rej(new Error('session closed')); } }, 5000);
+              (async () => {
+                try {
+                  const hb = await browserPool.acquire();
+                  const page = await hb.context.newPage();
+                  clearInterval(tWatch);
+                  res({ h: hb, page });
+                } catch (e3) { clearInterval(tWatch); rej(e3); }
+              })();
+            }));
+          } else {
+            logger.log('[pool  ] fallback to standalone browser:', e2 && e2.message);
+            if (poolHandle) { await poolHandle.release().catch(() => {}); poolHandle = null; }
+          }
         }
       }
       if (poolHandle) {
@@ -2317,7 +2363,13 @@ async function runSession(ws, req, lifecycle) {
       } catch (e) {}
     });
     };
-    await attachPageRuntime();
+    // v0.39.1 装配超时：内存高压下 createCDPSession/setRequestInterception 可能
+    // 悬挂——未完成装配的会话持有页面却永不进入逐出管辖（1000 会话实测泄漏源）。
+    // 超时抛错走会话失败收口（页面释放），绝不无限挂起
+    await Promise.race([
+      attachPageRuntime(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('attachPageRuntime timeout')), 30000)),
+    ]);
 
     // 等客户端上报 DPR（超时回落 1）：服务端按访客 DPR 渲染 → 瓦片 1:1 显示 → 构造性一致
     const hello = await new Promise((res) => {

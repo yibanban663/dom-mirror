@@ -70,6 +70,7 @@ async function startDemo(createMirror = require('..').createMirror) {
       browserPoolHibernateMs: process.env.CHROME_HIBERNATE_SECS !== undefined ? Number(process.env.CHROME_HIBERNATE_SECS) * 1000 : 0,
       // v0.39 会话空闲逐出：SESSION_IDLE_EVICT_SECS 秒无输入的会话关页面（0=常驻）
       sessionIdleEvictMs: process.env.SESSION_IDLE_EVICT_SECS !== undefined ? Number(process.env.SESSION_IDLE_EVICT_SECS) * 1000 : 0,
+      browserPoolStrict: process.env.POOL_STRICT === '1',
       // v0.32 镜像复用：热页与源站资产缓存（演示/生产默认开；0 关）
       sessionWarmup: process.env.SESSION_WARMUP !== undefined ? Number(process.env.SESSION_WARMUP) : 1,
       sessionWarmupTtl: Number(process.env.SESSION_WARMUP_TTL) || 90000,
