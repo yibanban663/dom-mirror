@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assetUrl, selectOrigin, requestAllowed } = require('../lib/policy');
+const { assetUrl, selectOrigin, createRequestPolicy, requestAllowed } = require('../lib/policy');
 const base = new URL('https://origin.example/app/');
 
 test('asset proxy accepts same-origin presentation resources with query strings', () => {
@@ -35,4 +35,17 @@ test('server browser requests are limited to listed origins and in-page schemes'
     'http://169.254.169.254/latest', 'file:///etc/passwd', 'chrome://version', 'ftp://origin.example/', 'not a url']) {
     assert.equal(requestAllowed(value, origins), false, value);
   }
+});
+
+test('v0.38 wildcard suffix policy matches subdomains and apex of pinned protocol only', () => {
+  const policy = createRequestPolicy(['https://origin.example', 'https://*.cdn.example', 'https://*.bdstatic.com/']);
+  for (const value of ['https://cdn.example/a.js', 'https://a.cdn.example/x.png', 'https://a.b.cdn.example/y.css',
+    'https://bdstatic.com/z.png', 'https://pss.bdstatic.com/static/i.png']) {
+    assert.equal(requestAllowed(value, policy), true, value);
+  }
+  for (const value of ['http://a.cdn.example/', 'https://a.cdn.example:8443/', 'https://xcdn.example/',
+    'https://cdn.example.attacker.test/', 'https://a.cdn.example.evil.test/', 'ftp://cdn.example/x']) {
+    assert.equal(requestAllowed(value, policy), false, value);
+  }
+  assert.equal(requestAllowed('https://origin.example/app', policy), true);
 });

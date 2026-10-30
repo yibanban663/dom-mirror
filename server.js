@@ -17,7 +17,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer').default;
-const { assetUrl, selectOrigin, requestAllowed } = require('./lib/policy');
+const { assetUrl, selectOrigin, createRequestPolicy, requestAllowed } = require('./lib/policy');
 const { SessionStore } = require('./lib/sessions');
 const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
@@ -90,7 +90,7 @@ const sessionLaunch = () => puppeteer.launch({
   ...config.launchOptions,
 });
 const browserPool = config.browserPoolSize > 0
-  ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger })
+  ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger, maxTenants: config.browserPoolTenants })
   : null;
 // v0.32 镜像复用：热页池（单访客专用预热页，免冷启动）+ 源站静态资产跨会话共享缓存
 const { createWarmPageManager } = require('./lib/warm-pages');
@@ -1147,7 +1147,11 @@ async function runSession(ws, req, lifecycle) {
     return domStarting;
   }
   async function doStartDomMirror() {
-    await page.evaluate(sessHelpers);
+    // v0.38 首注入加超时+失败可见：此前裸 await——页面繁忙悬挂或注入源语法
+    // 坏（模板字面量转义事故实测）都被静默吞掉，会话从此零快照零补丁
+    await withTimeout(page.evaluate(sessHelpers), 8000, 'helpers').catch((e) => {
+      logger.log('[dom   ] helpers inject fail:', e && e.message);
+    });
     if (obfSess && mode === 'dom') {
       // 编码表注入源站页（sanitizeClone 序列化时置换文本码点）
       await page.evaluate((m) => { window.__xyObfMap = m; }, obfSess.plain).catch(() => {});
@@ -1992,7 +1996,9 @@ async function runSession(ws, req, lifecycle) {
     if (dead) return;
     // 请求白名单（默认拒绝）：服务端浏览器只访问会话源站与显式允许的源，访客无法
     // 借源站链接/跳转/表单把它当作内网跳板。puppeteer 拦截同时覆盖跨站 iframe（OOPIF）
-    const requestOrigins = new Set([new URL(sessionOrigin).origin, ...config.crossOriginFrameOrigins, ...config.requestOrigins]);
+    // v0.38 策略对象化：requestOrigins 支持 https://*.cdn.example 后缀通配——真实
+    // 站点资源普遍走独立 CDN 域，逐子域枚举不可行（百度 pss.bdstatic.com 实测全被拦）
+    const requestOrigins = createRequestPolicy([new URL(sessionOrigin).origin, ...config.crossOriginFrameOrigins, ...config.requestOrigins]);
     navOrigins = requestOrigins;
     if (typeof page.setRequestInterception === 'function') {
       await page.setRequestInterception(true);

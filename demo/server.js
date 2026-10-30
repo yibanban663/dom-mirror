@@ -62,8 +62,10 @@ async function startDemo(createMirror = require('..').createMirror) {
       canvasStream: process.env.CANVAS_STREAM !== '0',
       elbit: process.env.XY_ELBIT !== '0',
       chromiumSandbox: process.env.CHROMIUM_SANDBOX !== '0',
-      // v0.30：池随会话上限缩放（min 半数、至少 2）——burst 下排队窗口可控；测试环境 maxSessions 2-3 → 2 不变
-      browserPoolSize: process.env.BROWSER_POOL !== undefined ? Number(process.env.BROWSER_POOL) : Math.max(2, Math.ceil((Number(process.env.MAX_SESSIONS) || 3) / 2)),
+      // v0.38 租户制：并发会话共享常驻 Chromium（BrowserContext 隔离）——池默认
+      // 按"会话数/租户上限"缩放（至少 2 保冗余；8 会话×4 租户 → 2 台，此前 4 台）
+      browserPoolSize: process.env.BROWSER_POOL !== undefined ? Number(process.env.BROWSER_POOL) : Math.max(2, Math.ceil((Number(process.env.MAX_SESSIONS) || 3) / (Number(process.env.CHROME_TENANTS) || 4))),
+      browserPoolTenants: process.env.CHROME_TENANTS !== undefined ? Number(process.env.CHROME_TENANTS) : 4,
       // v0.32 镜像复用：热页与源站资产缓存（演示/生产默认开；0 关）
       sessionWarmup: process.env.SESSION_WARMUP !== undefined ? Number(process.env.SESSION_WARMUP) : 1,
       sessionWarmupTtl: Number(process.env.SESSION_WARMUP_TTL) || 90000,
