@@ -49,3 +49,19 @@ test('v0.38 wildcard suffix policy matches subdomains and apex of pinned protoco
   }
   assert.equal(requestAllowed('https://origin.example/app', policy), true);
 });
+
+test('v0.38.1 wildcard hardening: public-suffix and single-label bases are rejected, never widened', () => {
+  const p1 = createRequestPolicy(['https://*.com', 'https://*.cn', 'https://*.co.uk', 'https://*.uk', 'https://*.bdstatic.com']);
+  assert.equal(p1.rejected.length, 4, JSON.stringify(p1.rejected));
+  assert.equal(requestAllowed('https://any-site.com/x', p1), false);
+  assert.equal(requestAllowed('https://any-site.cn/x', p1), false);
+  assert.equal(requestAllowed('https://a.co.uk/x', p1), false);
+  assert.equal(requestAllowed('https://pss.bdstatic.com/x', p1), true);
+  const p2 = createRequestPolicy(['https://*.evilcom', 'https://*evil']); // 无点基座 / 无点伪通配（两者都拒绝）
+  assert.equal(p2.rejected.length, 2);
+  assert.equal(requestAllowed('https://a.evilcom/x', p2), false);
+  // 无点伪通配落精确集（惰性条目）：既不通配也绝不放宽
+  assert.equal(p2.suffix.size, 0);
+  assert.equal(requestAllowed('https://evil/x', p2), false);
+  assert.equal(requestAllowed('https://*evil/x', p2), false);
+});

@@ -25,7 +25,7 @@ async function fixture(t, getSessionIdentity) {
   await once(server, 'listening');
   const url = `ws://127.0.0.1:${server.address().port}/ws`;
   async function connect(cookie, hello = {}) {
-    const socket = new WebSocket(url, { headers: { Cookie: cookie, Origin: 'http://same-origin.test',
+    const socket = new WebSocket(url, { headers: { Cookie: cookie, Origin: 'http://' + new URL(url).host,
       'x-user-id': 'tenant-one/alice' } });
     t.after(() => socket.terminate());
     await once(socket, 'open');
