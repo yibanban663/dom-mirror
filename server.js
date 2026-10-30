@@ -90,7 +90,7 @@ const sessionLaunch = () => puppeteer.launch({
   ...config.launchOptions,
 });
 const browserPool = config.browserPoolSize > 0
-  ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger, maxTenants: config.browserPoolTenants })
+  ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger, maxTenants: config.browserPoolTenants, idleHibernateMs: config.browserPoolHibernateMs })
   : null;
 // v0.32 镜像复用：热页池（单访客专用预热页，免冷启动）+ 源站静态资产跨会话共享缓存
 const { createWarmPageManager } = require('./lib/warm-pages');
