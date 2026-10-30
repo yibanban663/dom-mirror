@@ -604,6 +604,23 @@ function handleUpgrade(req, socket, head) {
   }
   try { req.rbiOrigin = selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed()); }
   catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  // v0.38.1 WAF 防线：浏览器跨站 WS 劫持（CSRF/ws-cross-origin）——直连时
+  // Origin 头必须等于本服务源（浏览器不可伪造 Origin）。经 ingress 代理的
+  // 合法流量（带可信 x-rbi-origin 标记）跳过：代理链下浏览器 Origin(:81)与
+  // 引擎 Host(内网)天然不同。无 Origin 的非浏览器客户端属网络层暴露面：
+  // 引擎端口只应部署在 ingress 之后的内网
+  const wsOrigin = req.headers.origin;
+  if (wsOrigin && !req.headers['x-rbi-origin']) {
+    const host = req.headers.host;
+    let ok = false;
+    try { ok = host && new URL(wsOrigin).host === String(host).toLowerCase(); } catch (e) {}
+    if (!ok) {
+      // 引擎直挂（无 ingress）且站点与网关同部署时，浏览器 Origin 可能是配置
+      // 源站之一——合法源站集合放行（攻击者域不在集合内，CSRF 防线不变）
+      try { const o = new URL(wsOrigin).origin; ok = ORIGIN_ALLOWED.has(o) || dynamicOrigins.has(o); } catch (e) {}
+    }
+    if (!ok) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 }
 
@@ -1280,6 +1297,7 @@ async function runSession(ws, req, lifecycle) {
       if (window.__xy && window.__xy.observeIframe) window.__xyObserveIframe = window.__xy.observeIframe;
       if (window.__xyObs) window.__xyObs.disconnect();
       window.__xyObs = new MutationObserver((recs) => {
+        try { if (window.__xyBlobTouched) window.__xyBlobTouched(recs); } catch (e) {}
         const out = [];
         for (const r of recs) { try { const p2 = window.__xy.patchOf(r); if (p2) out.push(p2); } catch (e) {} }
         if (out.length) window.__xyPatch(out);
@@ -1520,8 +1538,16 @@ async function runSession(ws, req, lifecycle) {
       items.push({ key: p.key, path: pp, outer: p.outer !== undefined ? 1 : undefined, inner: p.outer !== undefined ? undefined : 1 });
     }
     if (!items.length) return;
-    const out = await withTimeout(page.evaluate((list) => {
+    const out = await withTimeout(page.evaluate(async (list) => {
       const out2 = [];
+      // v0.38.1 补丁通道 blob 内联：快照后新建的 blob 引用走补丁透传到访客端
+      // 必然加载失败（异步 toBlob 晚于首帧快照，secprobe 实测）。序列化前解析
+      // ——同步预检零选择器命中即零开销；命中才跑（≤400ms race，预算上限同快照）
+      try {
+        if (document.body && document.body.querySelector('[src^="blob:"], [href^="blob:"], [poster^="blob:"]')) {
+          await Promise.race([window.__xyResolveBlobs(), new Promise((r3) => setTimeout(r3, 400))]);
+        }
+      } catch (e) {}
       // v0.23 窗口平移检测：inner 补丁先与上次下发的子元素序列比对——虚拟滚动
       // 整窗重建的形态是 old.slice(k) ≡ new 前段（下移，删头+尾部新增）或反向
       // （上移）。命中则发 O(增量) 的 delHead+append / prepend+delTail，不命中
@@ -1998,7 +2024,10 @@ async function runSession(ws, req, lifecycle) {
     // 借源站链接/跳转/表单把它当作内网跳板。puppeteer 拦截同时覆盖跨站 iframe（OOPIF）
     // v0.38 策略对象化：requestOrigins 支持 https://*.cdn.example 后缀通配——真实
     // 站点资源普遍走独立 CDN 域，逐子域枚举不可行（百度 pss.bdstatic.com 实测全被拦）
+    // v0.38.1 WAF 红线：公共后缀/单 label 通配基座被策略层拒绝——此处告警输出，
+    // 拒绝条目永不放宽为任何匹配
     const requestOrigins = createRequestPolicy([new URL(sessionOrigin).origin, ...config.crossOriginFrameOrigins, ...config.requestOrigins]);
+    if (requestOrigins.rejected.length) logger.log('[policy] REJECTED wildcard entries (public-suffix/invalid base):', requestOrigins.rejected.join(' '));
     navOrigins = requestOrigins;
     if (typeof page.setRequestInterception === 'function') {
       await page.setRequestInterception(true);
