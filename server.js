@@ -690,6 +690,61 @@ async function runSession(ws, req, lifecycle) {
     for (const tid of sessionUploads.expire()) sendJson({ type: 'upload-end', tid, ok: false, error: 'upload expired' });
   }, Math.min(config.upload.idleTimeoutMs, 1000));
   const sessionDownloads = new Map(); // guid -> {name,received}
+  // v0.39 会话空闲逐出：无输入超阈值的会话关闭其页面（渲染进程是内存大头），
+  // WS 与 BrowserContext 存储（cookie/localStorage）保留——下一命令透明复活。
+  // 真实生产 CCU 的空闲偏置（同时活跃 ~5-10%）由此从"每用户一渲染进程"变成
+  // 内存上只承载活跃少数；空闲会话只剩 WS 连接 + 会话槽（KB 级）
+  let pageEvicted = null; // { url, sx, sy }
+  let reviveSource = null; // { context } | { browser }：获取页面工厂（poolHandle/b 在内层块作用域，此处桥接）
+  let idleEvictT = null;
+  let navChain = Promise.resolve();
+  let attachPageRuntime = null; // 首次装配后赋值（revive 复用同一装配序列）
+  const armIdleEvict = () => {
+    if (idleEvictT) clearTimeout(idleEvictT);
+    if (!(config.sessionIdleEvictMs > 0) || dead) return;
+    idleEvictT = setTimeout(() => { evictIdlePage().catch(() => {}); }, config.sessionIdleEvictMs);
+  };
+  const evictIdlePage = async () => {
+    if (dead || pageEvicted || !page || ws.readyState !== 1) return;
+    if (Date.now() - lastInputAt < config.sessionIdleEvictMs) { armIdleEvict(); return; }
+    if (sessionDownloads.size > 0 || sessionUploads.hasPending()) { armIdleEvict(); return; } // 在途传输安全门
+    if (domStarting) { armIdleEvict(); return; }
+    try {
+      const url = page.url();
+      if (!url || url === 'about:blank') return;
+      let sx = 0, sy = 0;
+      try { const sc = await page.evaluate(() => [window.scrollX, window.scrollY]); sx = sc[0] | 0; sy = sc[1] | 0; } catch (e) {}
+      // 页面绑定的一切观察者随页关闭；会话级定时器保留（statTimer 有 null 页守卫）
+      if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
+      if (structTimer) { clearTimeout(structTimer); structTimer = null; }
+      structBuf.clear(); lastPatchSent.clear();
+      try { await cdp.detach(); } catch (e) {}
+      cdp = null;
+      const p = page; page = null;
+      await p.close().catch(() => {});
+      pageEvicted = { url, sx, sy };
+      logger.log('[idle  ] page evicted:', String(url).slice(0, 60));
+    } catch (e) {
+      logger.log('[idle  ] evict fail:', e && e.message);
+      armIdleEvict();
+    }
+  };
+  const revivePage = async () => {
+    if (!pageEvicted || dead) return;
+    const ev = pageEvicted; pageEvicted = null;
+    const t0 = Date.now();
+    // 同一 BrowserContext 内重建页面——cookie/localStorage 原样存活（登录态不掉）
+    if (!reviveSource) throw new Error('no revive source');
+    page = reviveSource.context ? await reviveSource.context.newPage() : await reviveSource.browser.newPage();
+    domExposed = false; // exposeFunction 绑定到页面实例，须对新页面重挂
+    if (attachPageRuntime) await attachPageRuntime();
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false }).catch(() => {});
+    await page.goto(ev.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+    try { await page.evaluate((x, y) => window.scrollTo(x, y), ev.sx, ev.sy); } catch (e) {}
+    if (mode === 'dom' || mode === 'frame') await startDomMirror().catch(() => {});
+    logger.log('[idle  ] revived in', Date.now() - t0, 'ms ->', String(ev.url).slice(0, 60));
+    armIdleEvict();
+  };
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
@@ -710,6 +765,7 @@ async function runSession(ws, req, lifecycle) {
     if (cleanupPromise) return cleanupPromise;
     dead = true;
     cancelHello();
+    if (idleEvictT) { clearTimeout(idleEvictT); idleEvictT = null; } // v0.39 逐出定时器
     timers.clear();
     cleanupPromise = (async () => {
       sessions--;
@@ -801,6 +857,11 @@ async function runSession(ws, req, lifecycle) {
   const queue = [];
   let dispatchReady = false;
   const handleCommand = async (m) => {
+    // v0.39 空闲逐出后的透明复活：除 ping 外的任何命令先复活（客户端周期
+    // ping 每 10s 一次——若触发复活则逐出永不生效）
+    if (pageEvicted && m && m.type !== 'ping') {
+      try { await revivePage(); } catch (e) { logger.log('[idle  ] revive fail:', e && e.message); }
+    }
     switch (m.type) {
           case 'ping': {
             sendJson({ type: 'pong', t: m.t });
@@ -1082,11 +1143,12 @@ async function runSession(ws, req, lifecycle) {
   let cmdChain = Promise.resolve();
   const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
   ws.on('message', (raw) => { lastAliveAt = Date.now(); if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
-  const noteInput = () => { lastInputAt = Date.now(); };
+  const noteInput = () => { lastInputAt = Date.now(); armIdleEvict(); };
   ws.on('resume', () => {
     if (!dispatchReady) return; // 初始化中的会话仍由首次快照完成同步
     cmdChain = cmdChain.then(async () => {
       if (dead || ws.readyState !== 1) return;
+      if (pageEvicted) { try { await revivePage(); } catch (e) { logger.log('[idle  ] revive fail:', e && e.message); } }
       if (domStarting) await domStarting;
       { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
         sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: false, bg: bgNow }); }
@@ -1129,7 +1191,7 @@ async function runSession(ws, req, lifecycle) {
     } catch (e) { return null; }
   }).catch(() => null);
   function startDomMirror() {
-    if (dead || ws.readyState !== 1) return Promise.resolve();
+    if (dead || ws.readyState !== 1 || !page) return Promise.resolve();
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
     // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白。
     // 被吞触发必须补发（pendingFull）：full 补丁（如 head 注入懒加载样式表的
@@ -1523,6 +1585,7 @@ async function runSession(ws, req, lifecycle) {
   // tileize（文本→带服务端像素背景的等大占位，元素锚定）后以 inner/outer 下发。
   // 客户端替换后瓦片随镜像文档流排版——无坐标、无图层、无帧率，零明文。
   async function tilesPatches(patches) {
+    if (!page) return; // v0.39 页面被空闲逐出：补丁序列化挂起（复活后全量重同步）
     if (patches.some(p => p && p.full)) { await startDomMirror(); return; }
     // 祖先后代去重：祖先 innerHTML 已含后代最终态；按深度排序祖先优先，
     // 后到的祖先会移除已收入的其后代（深度沿用 path 计算；id 版本 path 恒存在）
@@ -1991,7 +2054,12 @@ async function runSession(ws, req, lifecycle) {
       ws.close(1011, 'browser closed');
     });
     if (!page) page = poolHandle ? await poolHandle.context.newPage() : await b.newPage();
+    reviveSource = poolHandle ? { context: poolHandle.context } : { browser: b }; // v0.39 复活用页面工厂
     if (dead) { await page.close(); return; }
+    // v0.39 页面运行时装配提取为可重入函数：空闲逐出后的复活须对新页面
+    // 重挂同一序列（CDP 会话/请求拦截/监听器/下载行为/指纹统计）。
+    // statTimer 幂等（会话级一个）；requestOrigins 每次按会话源重建（幂等）
+    attachPageRuntime = async () => {
     // v0.27 closed shadow 捕获：attachShadow 补丁在页面任何脚本之前安装
     //（evaluateOnNewDocument），parse 期创建的 closed root 也进注册表——此前
     // helpers 在 networkidle0 后注入，注入前创建的 closed root 永远拿不到引用。
@@ -2096,8 +2164,9 @@ async function runSession(ws, req, lifecycle) {
     // 下载通道（v0.13）：源站下载落地会话临时目录，完成后按 ≤48KiB 分块回传并
     // 立即删除服务端文件。文件名 basename 收口 + resolve 目录包含校验（防逃逸）。
     try {
+      if (browserCdpDetached) { try { await browserCdpDetached(); } catch (e0) {} }
       const browserCdp = await sessionBrowser.target().createCDPSession();
-      sessionDownloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-dl-'));
+      if (!sessionDownloadDir) sessionDownloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-dl-'));
       // v0.30：池化时按 browserContextId 限定下载目录——同浏览器多会话互不串扰
       const dlOpts = { behavior: 'allow', downloadPath: sessionDownloadDir, eventsEnabled: true };
       if (poolHandle && poolHandle.context && poolHandle.context.id) dlOpts.browserContextId = poolHandle.context.id;
@@ -2168,8 +2237,9 @@ async function runSession(ws, req, lifecycle) {
       } catch (e) { /* session may be closing */ }
     });
 
-    statTimer = setInterval(() => {
+    if (!statTimer) statTimer = setInterval(() => {
       if (dead || ws.readyState !== 1) return;
+      if (!page) { sendJson({ type: 'sstats', fps: 0, mr: 0, inLat: inputLatMs, mode, els: 0 }); return; } // v0.39 逐出期
       const now = Date.now();
       frameTimes = frameTimes.filter(t => now - t < 1000);
       const mr = (ws._chunks || 0) - statLastChunks; statLastChunks = ws._chunks || 0;
@@ -2246,7 +2316,8 @@ async function runSession(ws, req, lifecycle) {
         });
       } catch (e) {}
     });
-    let navChain = Promise.resolve();
+    };
+    await attachPageRuntime();
 
     // 等客户端上报 DPR（超时回落 1）：服务端按访客 DPR 渲染 → 瓦片 1:1 显示 → 构造性一致
     const hello = await new Promise((res) => {
@@ -2299,6 +2370,7 @@ async function runSession(ws, req, lifecycle) {
     dispatchReady = true;
     for (const raw of queue.splice(0)) enqueue(raw);
     sendJson({ type: 'sync-ready' });
+    armIdleEvict(); // v0.39 首帧就绪即开始计空闲（noteInput 每次交互重置）
     // v0.32.2 消白闪：sync-ready 后重采样底色——meta 期 SPA 可能未挂载只采到
     // body 浅色（:81 实测米白）；此刻快照已落 MAIN 必在，修正注入缓存并推送
     timers.setTimeout(async () => {
