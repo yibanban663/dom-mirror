@@ -11,6 +11,7 @@
  * 链路：客户端浏览器 <--WS--> 宿主接入 --CDP--> 无头Chromium --HTTP--> 配置源站
  */
 const fs = require('fs');
+const zlib = require('zlib');
 const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
@@ -180,18 +181,43 @@ function serveClientHtml(req, res) {
   } else {
     html = html.replace('<head>', '<head><script>if(!/[?&]xydebug/.test(location.search)){for(const k of ["log","info","debug","trace"]){console[k]=function(){}}}</script>');
   }
-    const buf = Buffer.from(html, 'utf8');
+    // v0.41 提速：gzip（90KB HTML → ~20KB，导航白窗与 DCL 双降）——90KB 明文
+    // 实测占 DCL 250ms 的相当份额；Accept-Encoding 不含 gzip 的客户端原样回退
+    // v0.42 信息泄漏：壳页注释里的版本演进史（v0.14~v0.35.1 实测 6 处）中性化
+    html = html.replace(/v0\.\d+(?:\.\d+)?/g, '');
+    const raw = Buffer.from(html, 'utf8');
+    const wantsGzip = /gzip/i.test(String(req.headers['accept-encoding'] || ''));
+    if (wantsGzip && raw.length > 1024) {
+      const gz = zlib.gzipSync(raw, { level: 6 });
+      if (gz.length < raw.length) {
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Content-Encoding': 'gzip',
+          'Vary': 'Accept-Encoding',
+          'Content-Length': gz.length,
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+          'X-Frame-Options': 'SAMEORIGIN',
+          'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+          'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
+        });
+        res.end(req.method === 'HEAD' ? undefined : gz);
+        return;
+      }
+    }
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
-      'Content-Length': buf.length,
+      'Content-Length': raw.length,
       // v0.36 WAF 加固：安全响应头
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'SAMEORIGIN',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
     });
-    res.end(req.method === 'HEAD' ? undefined : buf);
+    res.end(req.method === 'HEAD' ? undefined : raw);
   } catch (e) {
     try { console.error('[bgInject] fail:', e && e.message); } catch (e2) {}
     res.writeHead(500); res.end();
@@ -541,7 +567,14 @@ function handleRequest(req, res) {
     return;
   }
   if (pathname_api(req) === '/api/sites') {
+    // v0.42 默认禁用：一键接入是运维动作不是公开能力——未配置 SITE_API_TOKEN
+    // 时整体 403（扫描实测：无鉴权可注册任意源+泄露内网源站拓扑）
     const wantToken = process.env.SITE_API_TOKEN || '';
+    if (!wantToken) {
+      res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, error: 'site api disabled (set SITE_API_TOKEN)' }));
+      return;
+    }
     if (wantToken && req.headers['x-site-token'] !== wantToken) { res.writeHead(403); res.end('token'); return; }
     if (req.method === 'POST') {
       let body = '';
@@ -634,8 +667,24 @@ function handleUpgrade(req, socket, head) {
     if (!ring) { ring = []; wsRateLimiter.set(ip, ring); }
     while (ring.length && now - ring[0] > 60000) ring.shift();
     if (ring.length >= config.sessionRatePerMin) {
+      try { logger.log('[ws    ] rate-limited (per-ip)', ip); } catch (e) {}
       socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return;
+    }
+    // v0.42 全局兜底：DD proxy 多副本（4×endpoint）轮询转发时源 IP 被分摊，
+    // per-IP 阈值永不触发（扫描实测 100 连/4.2s 全 101）。全局滑窗不看来源，
+    // 单网关总新建速率封顶（默认 240/min=正常峰值 4 倍余量）
+    if (config.sessionGlobalRatePerMin > 0) {
+      const gring = wsRateLimiter.get('__global__');
+      if (gring) {
+        while (gring.length && now - gring[0] > 60000) gring.shift();
+        if (gring.length >= config.sessionGlobalRatePerMin) {
+          try { logger.log('[ws    ] rate-limited (global)', gring.length); } catch (e) {}
+          socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
+        gring.push(now);
+      } else wsRateLimiter.set('__global__', [now]);
     }
     ring.push(now);
     if (wsRateLimiter.size > 4096) { // 有界：清最旧条目防内存膨胀
