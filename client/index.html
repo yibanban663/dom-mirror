@@ -457,9 +457,30 @@
   // shadow 模板（closed 组件补丁）在节点插入文档时不会被处理（快照路径经
   // mirrorRoot.setHTMLUnsafe 可处理，实测补丁路径闭盒丢失）。div.setHTMLUnsafe
   // 在解析期即挂影子根，随节点移动保留
+  // v0.40 F4 纵深防御：惰性 template.content 预清洗——on*/srcdoc/formaction
+  // 连同嵌套 template 内容（声明式 shadow 载体）全部剥离。服务端 sanitizeClone
+  // 是第一道（实测 9 载体零穿透），本层保证未来任何序列化路径漏扫时镜像源
+  // 仍不执行（审计的架构性批评：setHTMLUnsafe 语义=信任输入）
+  const scrubHtml = (str) => {
+    try {
+      const pre = document.createElement('template');
+      pre.innerHTML = str; // 惰性：不执行脚本/不挂影子/不派发事件
+      const scrub = (root) => {
+        for (const el of root.querySelectorAll('*')) {
+          for (const a of [...el.attributes]) {
+            if (/^on/i.test(a.name) || a.name === 'formaction') el.removeAttribute(a.name); // srcdoc 不剥：引擎同源 iframe 载体（内容服务端已净化）
+          }
+          if (el.tagName === 'TEMPLATE' && el.content) scrub(el.content);
+        }
+      };
+      scrub(pre.content);
+      return pre.innerHTML;
+    } catch (e) { return str; }
+  };
   const parseHtml = (str) => {
     const d = document.createElement('div');
-    if (typeof d.setHTMLUnsafe === 'function') d.setHTMLUnsafe(str); else d.innerHTML = str;
+    const clean = scrubHtml(str);
+    if (typeof d.setHTMLUnsafe === 'function') d.setHTMLUnsafe(clean); else d.innerHTML = clean;
     const nodes = [...d.childNodes];
     for (const n of nodes) d.removeChild(n);
     return nodes;
@@ -492,8 +513,10 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const mirrorHtml = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     // v0.14：innerHTML 已不解析声明式 Shadow DOM（Chrome 提示需 setHTMLUnsafe）；
     // 影子树由 <template shadowrootmode> 重建。旧浏览器回退 innerHTML（无影子镜像）
-    if (typeof mirrorRoot.setHTMLUnsafe === 'function') mirrorRoot.setHTMLUnsafe(mirrorHtml);
-    else mirrorRoot.innerHTML = mirrorHtml;
+    // v0.40 F4 纵深：快照整页同样过 parseHtml 的惰性预清洗（服务端 sanitize 为第一道）
+    const safeHtml = scrubHtml(mirrorHtml);
+    if (typeof mirrorRoot.setHTMLUnsafe === 'function') mirrorRoot.setHTMLUnsafe(safeHtml);
+    else mirrorRoot.innerHTML = safeHtml;
     mirrorBody = mirrorRoot.querySelector('.xy-body');
     // v0.20：源站 body 的可继承计算样式钉到镜像根——裸元素不再继承客户端外壳
     // 的字体/颜色（body{} 选择器映射只覆盖源站显式设置的属性）
@@ -1236,7 +1259,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           // frame 模式：body 级补丁会连瓦片图层一起换掉——先摘下再挂回
           const savedLayer = frameMode ? (mirrorBody ? mirrorBody.querySelector('.xy-tiles') : null) : null;
           for (const c of [...el.children]) unregisterSubtree(c);
-          if (typeof el.setHTMLUnsafe === 'function') el.setHTMLUnsafe(p.inner); else el.innerHTML = p.inner;
+          if (typeof el.setHTMLUnsafe === 'function') el.setHTMLUnsafe(scrubHtml(p.inner)); else el.innerHTML = scrubHtml(p.inner);
           // v0.28 elbit：宿主获得真实内容后清除位图叠加与 min 尺寸（真实内容自行撑盒）
           if (el.getAttribute && el.getAttribute('data-xy-elbit') === '1' && el.children.length) {
             el.style.backgroundImage = '';

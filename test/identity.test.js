@@ -61,7 +61,9 @@ test('trusted host identity binds resume across users and tenants without trusti
   }
   const resumed = await connect('ticket-a', { resume: token });
   assert.equal(resumed.message.resumed, true);
-  assert.equal(resumed.message.token, token);
+  // v0.40 F2：resume 即轮换——下发新令牌，旧令牌立即失效（一次性）
+  assert.notEqual(resumed.message.token, token);
+  assert.ok(resumed.message.token.length >= 32);
   assert.equal(browsers.length, 1, 'rejected claims and resume must not launch another browser');
 });
 

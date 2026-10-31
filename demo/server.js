@@ -71,6 +71,10 @@ async function startDemo(createMirror = require('..').createMirror) {
       // v0.39 会话空闲逐出：SESSION_IDLE_EVICT_SECS 秒无输入的会话关页面（0=常驻）
       sessionIdleEvictMs: process.env.SESSION_IDLE_EVICT_SECS !== undefined ? Number(process.env.SESSION_IDLE_EVICT_SECS) * 1000 : 0,
       browserPoolStrict: process.env.POOL_STRICT === '1',
+      // v0.40 审计加固：F1 鉴权令牌与限流 / F3 公共镜像源清单 / F7 调试门
+      sessionAuthToken: process.env.SESSION_AUTH_TOKEN || '',
+      sessionRatePerMin: process.env.SESSION_RATE_PER_MIN !== undefined ? Number(process.env.SESSION_RATE_PER_MIN) : 60,
+      mirrorPublicOrigins: (process.env.MIRROR_PUBLIC_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
       // v0.32 镜像复用：热页与源站资产缓存（演示/生产默认开；0 关）
       sessionWarmup: process.env.SESSION_WARMUP !== undefined ? Number(process.env.SESSION_WARMUP) : 1,
       sessionWarmupTtl: Number(process.env.SESSION_WARMUP_TTL) || 90000,
