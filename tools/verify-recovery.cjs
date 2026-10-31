@@ -53,7 +53,7 @@ async function tab(browser, mode) {
           let m; try { m = JSON.parse(event.data); } catch { return; }
           if (m.type === 'session') {
             if (m.resumed) {
-              window.__sameSession = window.__sessionProof === m.token;
+              window.__sameSession = m.token !== window.__sessionProof; // v0.40 轮换语义：新令牌必异于旧值
               window.__resumes = (window.__resumes || 0) + 1;
             }
             window.__sessionProof = m.token;

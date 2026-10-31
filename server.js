@@ -174,7 +174,12 @@ function serveClientHtml(req, res) {
     // v0.36 WAF 加固：标题不泄露引擎身份（会话 meta 到达后换成业务页标题）；
     // 控制台静默（内部日志不外泄；?xydebug 供排障）
     html = html.replace(/<title>[^<]*<\/title>/, '<title></title>');
+    // v0.40 F7：调试输出只在 XY_DEBUG=1 的部署可用（审计：?xydebug 公开调试面）
+  if (process.env.XY_DEBUG !== '1') {
+    html = html.replace('<head>', '<head><script>for(const k of ["log","info","debug","trace"]){console[k]=function(){}}</script>');
+  } else {
     html = html.replace('<head>', '<head><script>if(!/[?&]xydebug/.test(location.search)){for(const k of ["log","info","debug","trace"]){console[k]=function(){}}}</script>');
+  }
     const buf = Buffer.from(html, 'utf8');
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
@@ -509,6 +514,15 @@ function handleRequest(req, res) {
   // v0.21 RUM 尾包：pagehide 时 sendBeacon('/rum')（text/plain，同源免预检）。
   // 只落日志聚合，不解析内容、无跨源暴露
   if (req.method === 'POST' && String(req.url).split('?')[0] === '/rum') {
+    // v0.40 F6：rum 信标只收同源（浏览器必带 Origin/Referer 之一且匹配 Host；
+    // 裸 curl 灌数据 403）。审计实测：无鉴权收任意数据（204）
+    const host = String(req.headers.host || '').toLowerCase();
+    const org = String(req.headers.origin || '');
+    const ref = String(req.headers.referer || '');
+    let sameOrigin = false;
+    try { if (org && new URL(org).host.toLowerCase() === host) sameOrigin = true; } catch (e) {}
+    try { if (!sameOrigin && ref && new URL(ref).host.toLowerCase() === host) sameOrigin = true; } catch (e) {}
+    if (!sameOrigin) { res.writeHead(403, { 'cache-control': 'no-store' }); res.end(); return; }
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 8192) { body = body.slice(0, 8192); req.destroy(); } });
     req.on('end', () => {
@@ -588,6 +602,47 @@ function handleUpgrade(req, socket, head) {
   try { pathname = new URL(req.url, 'http://x').pathname; }
   catch { socket.destroy(); return; }
   if (pathname !== '/ws') { socket.destroy(); return; }
+  // v0.40 F1：WS 升级鉴权（配置 sessionAuthToken 时强制）——x-rbi-gateway-token
+  // 头（可信代理注入）/ Authorization Bearer / cookie rbi_auth / ?tok= 任一匹配。
+  // 审计实测：无凭证裸连即得会话+完整快照+交互能力，maxSessions 还可被占满 DoS
+  if (config.sessionAuthToken) {
+    const want = config.sessionAuthToken;
+    let ok = false;
+    const h = req.headers;
+    if (h['x-rbi-gateway-token'] === want) ok = true;
+    else {
+      const auth = h.authorization || '';
+      if (/^Bearer\s+/i.test(auth) && auth.replace(/^Bearer\s+/i, '').trim() === want) ok = true;
+      else {
+        try {
+          const cookies = String(h.cookie || '');
+          const m = /(?:^|;\s*)rbi_auth=([^;]+)/.exec(cookies);
+          if (m && decodeURIComponent(m[1]) === want) ok = true;
+        } catch (e) {}
+        if (!ok) {
+          try { const q = new URL(req.url, 'http://x'); if (q.searchParams.get('tok') === want) ok = true; } catch (e) {}
+        }
+      }
+    }
+    if (!ok) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  }
+  // v0.40 F1-DoS：每源 IP 新建会话限流（滑窗分钟；resume 的既有会话不占预算）
+  if (config.sessionRatePerMin > 0) {
+    const ip = (req.socket && req.socket.remoteAddress) || '?';
+    const now = Date.now();
+    let ring = wsRateLimiter.get(ip);
+    if (!ring) { ring = []; wsRateLimiter.set(ip, ring); }
+    while (ring.length && now - ring[0] > 60000) ring.shift();
+    if (ring.length >= config.sessionRatePerMin) {
+      socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+    ring.push(now);
+    if (wsRateLimiter.size > 4096) { // 有界：清最旧条目防内存膨胀
+      const k0 = wsRateLimiter.keys().next().value;
+      wsRateLimiter.delete(k0);
+    }
+  }
   if (config.getSessionIdentity) {
     try {
       const identity = config.getSessionIdentity(req);
@@ -603,13 +658,21 @@ function handleUpgrade(req, socket, head) {
     }
   }
   try { req.rbiOrigin = selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed()); }
-  catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  catch { try { logger.log('[ws    ] x-rbi-origin not allowed:', String(req.headers['x-rbi-origin']).slice(0, 60)); } catch (e) {} socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
   // v0.38.1 WAF 防线：浏览器跨站 WS 劫持（CSRF/ws-cross-origin）——直连时
   // Origin 头必须等于本服务源（浏览器不可伪造 Origin）。经 ingress 代理的
   // 合法流量（带可信 x-rbi-origin 标记）跳过：代理链下浏览器 Origin(:81)与
   // 引擎 Host(内网)天然不同。无 Origin 的非浏览器客户端属网络层暴露面：
   // 引擎端口只应部署在 ingress 之后的内网
   const wsOrigin = req.headers.origin;
+  if (wsOrigin && req.headers['x-rbi-origin'] && config.mirrorPublicOrigins.length) {
+    // v0.40 F3：可信代理路径下的浏览器 Origin 校验——公共镜像源清单（访客真实
+    // 访问的源，如 http://gw:81）。此前代理注入 x-rbi-origin 会连 Origin 一起
+    // 放行（CSWSH 面：加鉴权后任何站可打跨站 WS）。清单空=维持旧行为
+    let okP = false;
+    try { okP = config.mirrorPublicOrigins.includes(new URL(wsOrigin).origin); } catch (e) {}
+    if (!okP) { try { logger.log('[ws    ] origin not in public mirror origins:', String(wsOrigin).slice(0, 60)); } catch (e) {} socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  }
   if (wsOrigin && !req.headers['x-rbi-origin']) {
     const host = req.headers.host;
     let ok = false;
@@ -625,6 +688,7 @@ function handleUpgrade(req, socket, head) {
 }
 
 // ---------- 会话 ----------
+const wsRateLimiter = new Map(); // v0.40 F1：每 IP 会话创建滑窗（ip→时间戳环）
 const sessionStore = new SessionStore({ limit: MAX_SESSIONS, graceMs: SESSION_GRACE_MS });
 const sessionLifecycles = new WeakMap();
 const socketIdentities = new WeakMap();
@@ -657,7 +721,10 @@ wss.on('connection', (socket, req) => {
     catch (error) { reject(error.message); return; }
     const { session, resumed } = claimed;
     if (!resumed) wss.emit('session', session, req);
-    session.send(JSON.stringify({ type: 'session', token: session.token, resumed, graceMs: SESSION_GRACE_MS }));
+    // v0.40 F2：resume 令牌一次性轮换——旧值（可能已被 XSS 窃取）在认领瞬间
+    // 失效，新值仅下发给当前连接；客户端 session 消息处理器原位更新 sessionStorage
+    const issuedToken = resumed ? session.rotateToken() : session.token;
+    session.send(JSON.stringify({ type: 'session', token: issuedToken, resumed, graceMs: SESSION_GRACE_MS }));
     session.emit('message', raw);
     if (resumed) session.emit('resume');
   });
@@ -1063,7 +1130,15 @@ async function runSession(ws, req, lifecycle) {
             // 镜像文件上传（v0.13）：客户端 File → WS 分块 → 会话临时目录 →
             // puppeteer uploadFile（DOM.setFileInputFiles）→ 远端 change
             const tid = String(m.tid || '');
-            const name = path.basename(String(m.name || ''));
+            // v0.40 F5：文件名含路径分隔符显式拒绝（此前 basename 静默收口——
+            // 安全上等效，但对审计/客户端契约不透明；穿越尝试应当被看见）
+            const rawName = String(m.name || '');
+            if (rawName && (rawName.includes('/') || rawName.includes('\\') || rawName !== path.basename(rawName))) {
+              sendJson({ type: 'upload-accept', tid, ok: false, error: 'invalid filename' });
+              try { logger.log('[up    ] rejected traversal filename:', JSON.stringify(rawName.slice(0, 60))); } catch (e) {}
+              break;
+            }
+            const name = path.basename(rawName);
             const size = m.size;
             const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1] || '';
             if (!tid || !name || !ext || !UPLOAD_EXTS.has(ext.toLowerCase())) {

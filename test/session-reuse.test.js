@@ -53,6 +53,6 @@ test('resume 认领同一会话槽（刷新复用）', () => {
   first.session.socket.emitClose();
   const again = store.claim(first.session.token, 'same', mockSocket());
   assert.equal(again.resumed, true);
-  assert.equal(again.session.token, first.session.token);
+  assert.equal(again.session.token, first.session.token); // store 层不轮换（轮换是 server 会话消息下发层的职责，见 identity.test）
   assert.equal(store.entries.size, 1);
 });
