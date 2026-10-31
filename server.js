@@ -1936,10 +1936,23 @@ async function runSession(ws, req, lifecycle) {
           let shot = null;
           let usedData = false;
           if (viaData) {
+            // v0.43 tile 通道同样合成 CSS 底色（透明底 canvas 的 toDataURL 透明
+            // 像素会在客户端 img 上透出白底——与源站视觉不一致）
             const dataUrl = await withTimeout(page.evaluate((idv) => {
               try {
                 const c = window.__xy.find(idv);
                 if (!c || c.tagName !== 'CANVAS' || c.__xyCtxGL) return null;
+                const cs = getComputedStyle(c);
+                const bg = cs.backgroundColor;
+                if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+                  const oc = document.createElement('canvas');
+                  oc.width = c.width || 300; oc.height = c.height || 150;
+                  const octx = oc.getContext('2d');
+                  octx.fillStyle = bg;
+                  octx.fillRect(0, 0, oc.width, oc.height);
+                  octx.drawImage(c, 0, 0);
+                  return oc.toDataURL('image/png');
+                }
                 return c.toDataURL('image/png');
               } catch (e) { return null; }
             }, it.id), 1500, 'canvasData').catch(() => null);
