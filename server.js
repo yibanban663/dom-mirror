@@ -597,7 +597,16 @@ function handleRequest(req, res) {
   }
   if (req.url === '/favicon.ico') { res.writeHead(204); return res.end(); } // 网关壳无图标：204 消掉访客控制台每页一条的 404
   if (req.url && req.url.startsWith('/m/x/')) return proxyXframeAsset(req, res);
-  if (req.url && req.url.startsWith('/m/')) return proxyAsset(req, res);
+  // v0.44 P4：资产代理不转发 API 文档路径
+  if (req.url && req.url.startsWith('/m/')) {
+    try {
+      const mp = decodeURIComponent(req.url.split('?')[0]).toLowerCase();
+      if (/\.(?:openapi|swagger)\.(?:json|yaml)$/.test(mp) || mp.includes('/docs') || mp.includes('/redoc') || mp.includes('/swagger')) {
+        res.writeHead(403, { 'cache-control': 'no-store' }); res.end(); return;
+      }
+    } catch (e) {}
+    return proxyAsset(req, res);
+  }
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
     // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
     // CORS：源站页面（服务端 Chrome 内）注入的 @font-face 会跨源加载这两个文件
@@ -629,6 +638,15 @@ function handleRequest(req, res) {
 // （阈值 512B，小帧不压省 CPU）；浏览器 WS 客户端普遍支持，握手透明协商
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: { threshold: 512 } });
 const identities = new WeakMap();
+// v0.44 P3：location 消息只带 path+query——源站 IP/主机名不下发给访客
+//（审计实测：内网拓扑通过地址栏泄漏）
+function mirrorSafeUrl(fullUrl) {
+  try {
+    const u = new URL(fullUrl);
+    return u.pathname + (u.search || '');
+  } catch (e) { return String(fullUrl).slice(0, 200); }
+}
+
 function handleUpgrade(req, socket, head) {
   if (closed) { socket.destroy(); return; }
   let pathname = '';
@@ -1117,7 +1135,7 @@ async function runSession(ws, req, lifecycle) {
               if (!['http:', 'https:'].includes(parsed.protocol)) { sendJson({ type: 'nav-blocked', msg: '仅支持 http/https 地址' }); break; }
               if (!navOrigins || !requestAllowed(parsed.href, navOrigins)) { sendJson({ type: 'nav-blocked', msg: '目标地址不在允许范围内' }); break; }
               await page.goto(parsed.href, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-              sendJson({ type: 'location', url: page.url() });
+              sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) });
             } catch (e) { sendJson({ type: 'nav-blocked', msg: '导航失败: ' + e.message }); }
             break;
           }
@@ -1132,7 +1150,7 @@ async function runSession(ws, req, lifecycle) {
                 const back = m.dir === 'forward' ? page.goBack : page.goForward;
                 await back.call(page, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
               }
-              sendJson({ type: 'location', url: page.url() });
+              sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) });
             } catch (e) {}
             break;
           }
@@ -1298,7 +1316,7 @@ async function runSession(ws, req, lifecycle) {
       if (domStarting) await domStarting;
       { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
         sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: false, bg: bgNow }); }
-      sendJson({ type: 'location', url: page.url() });
+      sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) });
       structBuf.clear(); lastPatchSent.clear();
       clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
       if (typeof headChurnT === 'number' || headChurnT) { clearTimeout(headChurnT); headChurnT = null; }
@@ -2325,6 +2343,16 @@ async function runSession(ws, req, lifecycle) {
           }
           r.continue().catch(() => {}); return;
         }
+        // v0.44 P4：源站敏感路径在 RBI 层一律拦截（即使已登录会话）——
+        // API 文档/swagger 是数据泄露面（审计实测从镜像通道拿到 openapi.json）
+        try {
+          const uPath = new URL(r.url()).pathname.toLowerCase();
+          if (/\.(?:openapi|swagger)\.(?:json|yaml)$/.test(uPath) || uPath === '/docs' || uPath === '/redoc' || uPath === '/swagger' || uPath.startsWith('/docs/') || uPath.startsWith('/redoc/')) {
+            r.abort('blockedbyclient').catch(() => {});
+            try { logger.log('[policy] api-docs blocked:', uPath.slice(0, 40)); } catch (e) {}
+            return;
+          }
+        } catch (e) {}
         logger.log('[policy] blocked', r.resourceType(), r.url().slice(0, 90));
         // 主框架导航用 aborted：取消而不提交错误页，页面停留原处；子框架与子资源用
         // blockedbyclient（iframe 落到跨源错误页，镜像按跨源占位处理）
@@ -2482,7 +2510,7 @@ async function runSession(ws, req, lifecycle) {
     page.on('framenavigated', (frame) => {
       try {
         // v0.30 pseudo-route
-        if (frame === page.mainFrame() && ws.readyState === 1) { try { sendJson({ type: 'location', url: frame.url() }); } catch (e2) {} }
+        if (frame === page.mainFrame() && ws.readyState === 1) { try { sendJson({ type: 'location', url: mirrorSafeUrl(frame.url()) }); } catch (e2) {} }
         if (frame !== page.mainFrame()) return;
         if (!domActive || ws.readyState !== 1) return;
         navChain = navChain.then(async () => {
