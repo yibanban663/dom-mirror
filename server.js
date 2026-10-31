@@ -601,7 +601,7 @@ function handleRequest(req, res) {
   if (req.url && req.url.startsWith('/m/')) {
     try {
       const mp = decodeURIComponent(req.url.split('?')[0]).toLowerCase();
-      if (/\.(?:openapi|swagger)\.(?:json|yaml)$/.test(mp) || mp.includes('/docs') || mp.includes('/redoc') || mp.includes('/swagger')) {
+      if (/(?:^|[\\/])(?:openapi|swagger)\.(?:json|yaml)$/i.test(mp) || mp.includes('/docs') || mp.includes('/redoc') || mp.includes('/swagger')) {
         res.writeHead(403, { 'cache-control': 'no-store' }); res.end(); return;
       }
     } catch (e) {}
@@ -1133,6 +1133,14 @@ async function runSession(ws, req, lifecycle) {
               if (!/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith('/') && !u.startsWith('//') && /^[^/\s]+\.[^/\s]+/.test(u)) u = 'http://' + u;
               const parsed = new URL(u, page.url());
               if (!['http:', 'https:'].includes(parsed.protocol)) { sendJson({ type: 'nav-blocked', msg: '仅支持 http/https 地址' }); break; }
+              // v0.45 P4：navigate 通道同样拦截 API 文档路径
+              try {
+                const np = parsed.pathname.toLowerCase();
+                if (/(?:^|[\\/])(?:openapi|swagger)\.(?:json|yaml)$/i.test(np) || np === '/docs' || np === '/redoc' || np === '/swagger' || np.startsWith('/docs/') || np.startsWith('/redoc/')) {
+                  sendJson({ type: 'nav-blocked', msg: 'API 文档不可经镜像访问' });
+                  break;
+                }
+              } catch (e) {}
               if (!navOrigins || !requestAllowed(parsed.href, navOrigins)) { sendJson({ type: 'nav-blocked', msg: '目标地址不在允许范围内' }); break; }
               await page.goto(parsed.href, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
               sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) });
@@ -2314,6 +2322,18 @@ async function runSession(ws, req, lifecycle) {
         }
       });
       page.on('request', (r) => {
+        // v0.45 P4 修复：API 文档拦截必须在 requestAllowed 之前——
+        // 白名单源的请求走 requestAllowed→continue→return 先退出，
+        // 此前的检查在 else 分支等于只拦非白名单源（对已登录会话完全无效，
+        // 子智能体实测 /docs /openapi.json 全放行）
+        try {
+          const uPath = new URL(r.url()).pathname.toLowerCase();
+          if (/(?:^|[\\/])(?:openapi|swagger)\.(?:json|yaml)$/i.test(uPath) || uPath === '/docs' || uPath === '/redoc' || uPath === '/swagger' || uPath.startsWith('/docs/') || uPath.startsWith('/redoc/')) {
+            r.abort(r.isNavigationRequest() && r.frame() === page.mainFrame() ? 'aborted' : 'blockedbyclient').catch(() => {});
+            try { logger.log('[policy] api-docs blocked:', uPath.slice(0, 40)); } catch (e) {}
+            return;
+          }
+        } catch (e) {}
         if (requestAllowed(r.url(), requestOrigins)) {
           // v0.32 镜像复用：源站静态资产跨会话共享缓存命中——本地回填免回源
           // 带 Cookie 的请求（登录后鉴权资产）一律绕过缓存直连：网关侧抓取不带
@@ -2343,16 +2363,6 @@ async function runSession(ws, req, lifecycle) {
           }
           r.continue().catch(() => {}); return;
         }
-        // v0.44 P4：源站敏感路径在 RBI 层一律拦截（即使已登录会话）——
-        // API 文档/swagger 是数据泄露面（审计实测从镜像通道拿到 openapi.json）
-        try {
-          const uPath = new URL(r.url()).pathname.toLowerCase();
-          if (/\.(?:openapi|swagger)\.(?:json|yaml)$/.test(uPath) || uPath === '/docs' || uPath === '/redoc' || uPath === '/swagger' || uPath.startsWith('/docs/') || uPath.startsWith('/redoc/')) {
-            r.abort('blockedbyclient').catch(() => {});
-            try { logger.log('[policy] api-docs blocked:', uPath.slice(0, 40)); } catch (e) {}
-            return;
-          }
-        } catch (e) {}
         logger.log('[policy] blocked', r.resourceType(), r.url().slice(0, 90));
         // 主框架导航用 aborted：取消而不提交错误页，页面停留原处；子框架与子资源用
         // blockedbyclient（iframe 落到跨源错误页，镜像按跨源占位处理）
