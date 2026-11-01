@@ -517,12 +517,17 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const safeHtml = scrubHtml(mirrorHtml);
     if (typeof mirrorRoot.setHTMLUnsafe === 'function') mirrorRoot.setHTMLUnsafe(safeHtml);
     else mirrorRoot.innerHTML = safeHtml;
+
+
+
     mirrorBody = mirrorRoot.querySelector('.xy-body');
     // v0.20：源站 body 的可继承计算样式钉到镜像根——裸元素不再继承客户端外壳
     // 的字体/颜色（body{} 选择器映射只覆盖源站显式设置的属性）
     if (bodyStyle && mirrorBody) { try { mirrorBody.style.cssText += ';' + bodyStyle; } catch (e) {} }
     bodyId = (typeof newBodyId === 'number' && Number.isFinite(newBodyId)) ? newBodyId : 1;
     mirrorIds.clear();
+    // v0.47 原子渲染收尾：全部内容（HTML+CSS+图标+位图）就绪，一次性显示
+
     canvasStreams.clear();
     registerSubtree(mirrorBody);
     // 防抓取混淆字体（关键兼容）：@font-face 写在 shadow root 样式里在部分 Chromium
@@ -1581,6 +1586,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               if (css) lastCss = css;
               buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId, j.bodyStyle);
+
               rum.snaps++;
               rumApplied(); // v0.21 RUM：快照应用=交互到视觉链路闭环
               snapshotReady = true;
