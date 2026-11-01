@@ -1738,6 +1738,15 @@ async function runSession(ws, req, lifecycle) {
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
+    // v0.47 零延迟 flush：快照期间 observer 累积的变更立即序列化下发——
+    // 补丁在同一个 WS tick 背靠背到达（客户端先处理快照再处理补丁，中间
+    // 不再有 150ms 空窗）。消除"深色空壳→内容渐现"的分批出现
+    if (structBuf.size > 0) {
+      const batch = [...structBuf.entries()].map(([key, kind2]) => ({ key, [kind2]: 1 }));
+      structBuf.clear();
+      if (structTimer) { clearTimeout(structTimer); structTimer = null; }
+      tilesPatches(batch).catch(() => {});
+    }
     logger.log('[dom   ] mirror started');
     lastCssSig = null; // 快照即最新基线，下一拍重定（含懒加载样式表）
     // v3：dom 模式无帧流（客户端本地渲染，更新全部事件驱动——补丁/滚动同步/
