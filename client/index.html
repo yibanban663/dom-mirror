@@ -510,6 +510,25 @@
     return nodes;
   };
 
+// v0.60：文档滚动器样式外提。源站 html/body 上的滚动条定制（scrollbar-width/
+// scrollbar-color/overscroll-behavior）经选择器映射后落在 .xy-body 上——但 DOM
+// 模式下 .xy-body 自动高度、不是滚动容器，规则整体失效；真正的滚动器是 shadow
+// 外的 #mirrorScroll。不外提时用户浏览器里源站细滚动条/定制配色 vs 虚影默认宽
+// 滚动条（实测受保护站 bundle：body{overflow-y:auto;overscroll-behavior:contain;
+// scrollbar-width:thin}，shadow 内规则够不到外层滚动器）。从 .xy-body 计算样式
+// 取值写到 #mirrorScroll，对任何站点通用；'auto' 也照写（与源站计算值恒等）。
+function syncDocScrollerStyle() {
+  try {
+    const ms = document.getElementById('mirrorScroll');
+    if (!ms || !mirrorBody) return;
+    const cs = getComputedStyle(mirrorBody);
+    if (cs.scrollbarWidth) ms.style.setProperty('scrollbar-width', cs.scrollbarWidth, 'important');
+    if (cs.scrollbarColor) ms.style.setProperty('scrollbar-color', cs.scrollbarColor, 'important');
+    const ob = cs.overscrollBehavior || cs.overscrollBehaviorY;
+    if (ob) ms.style.setProperty('overscroll-behavior', ob, 'important');
+  } catch (e) {}
+}
+
 function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const host = document.getElementById('mirrorHost');
     if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
@@ -554,6 +573,8 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
 
     canvasStreams.clear();
     registerSubtree(mirrorBody);
+    // v0.60：快照落位即同步文档滚动器样式（内联 <style> 已生效；晚到 CSS 由 meta 周期兜底）
+    syncDocScrollerStyle();
     // 防抓取混淆字体（关键兼容）：@font-face 写在 shadow root 样式里在部分 Chromium
     // （Windows 实测）不生效——字体栈落到本地"Microsoft YaHei"，PUA 码点无字形 → 全页
     // 豆腐块。同一组 @font-face 必须额外注入文档级（document.head），文档级字体对所有
@@ -1517,6 +1538,8 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
                 if (msEl) msEl.style.setProperty('background', j.bg, 'important');
               } catch (e) {}
             }
+            // v0.60：滚动条定制随 meta 周期重取——晚加载的源站 CSS/主题切换会改文档滚动器样式
+            syncDocScrollerStyle();
             m('oTitle').textContent = j.title || '-';
             // v0.36：生产模式下浏览器标题跟随业务页（不暴露引擎身份）
             if (j.prod && j.title) { try { document.title = j.title; } catch (e) {} }
@@ -1882,6 +1905,8 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           if (j.type === 'doc-class' && mirrorBody) {
             // 主题/状态类切换：直改镜像根类名（轻量，不重建）
             mirrorBody.className = 'xy-body ' + (j.cls || '');
+            // v0.60：暗色主题等类切换常伴随滚动条配色变化，随之重取
+            syncDocScrollerStyle();
           }
           if (j.type === 'dom-props') {
             // v0.17：程序化表单态（源站 JS 直改 checked/value，MutationObserver 盲区，
