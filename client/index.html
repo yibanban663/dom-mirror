@@ -1659,6 +1659,35 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             m('mIdle').textContent = 'mirror';
           }
           if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); rum.patches += (j.patches || []).length; applyPatches(j.patches); rumApplied(); }
+          if (j.type === 'pixel-skin') {
+            // v0.48 像素蒙皮：服务端截图覆盖镜像 DOM 之上——文字视觉 100%（服务端
+            // Linux 光栅化位图），DOM 层在下面正常处理交互（pointer-events:none）
+            noteBytes(ev.data.length || ev.data.size || 0);
+            noteFrame(0);
+            try {
+              let skin = mirrorRoot.querySelector('#xySkin');
+              if (!skin) {
+                skin = document.createElement('img');
+                skin.id = 'xySkin';
+                skin.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:9999;pointer-events:none;';
+                mirrorRoot.appendChild(skin);
+                // v0.48 交互自适应：用户开始打字/点击时自动移除蒙皮
+                const fadeOut = () => {
+                  if (skin && skin.style.opacity !== '0') {
+                    skin.style.transition = 'opacity .3s';
+                    skin.style.opacity = '0';
+                    setTimeout(() => { if (skin && skin.parentElement) skin.remove(); skin = null; }, 350);
+                    document.removeEventListener('keydown', fadeOut, true);
+                    document.removeEventListener('pointerdown', fadeOut, true);
+                  }
+                };
+                document.addEventListener('keydown', fadeOut, true);
+                document.addEventListener('pointerdown', fadeOut, true);
+              }
+              if (skin) skin.src = j.url;
+              rumApplied();
+            } catch (e) {}
+          }
           if (j.type === 'canvas-tile') {
             // v3：canvas 元素按需捕获（有变化才推）——换掉镜像里的占位 img；
             // v0.28 elbit（声明式 closed 宿主）：宿主保留为原元素（挂载点可

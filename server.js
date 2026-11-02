@@ -1738,6 +1738,23 @@ async function runSession(ws, req, lifecycle) {
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
+    // v0.48 像素蒙皮：快照后立即截全页图发给客户端叠加在镜像 DOM 之上——
+    // 文字是服务端 Linux Chromium 光栅化的位图，访客端不再自行渲染文字
+    // → 视觉 100% 还原。DOM 层 pointer-events 正常处理交互（打字/点击/
+    // 悬停），蒙皮 pointer-events:none 不挡事件。默认 XY_PIXEL_SKIN=1 开启
+    if (process.env.XY_PIXEL_SKIN === '1' && mode === 'dom' && page) {
+      try {
+        const skin = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
+          format: 'jpeg', quality: 80,
+          clip: { x: 0, y: 0, width: viewW, height: viewH, scale: 1 },
+        })), 3000, 'pixelSkin').catch(() => null);
+        if (skin && ws.readyState === 1) {
+          const skinPl = JSON.stringify({ type: 'pixel-skin', url: 'data:image/jpeg;base64,' + skin.data, w: viewW, h: viewH });
+          ws.send(skinPl);
+          ws._bytes = (ws._bytes || 0) + skinPl.length;
+        }
+      } catch (e) {}
+    }
     // v0.47 零延迟 flush：快照期间 observer 累积的变更立即序列化下发——
     // 补丁在同一个 WS tick 背靠背到达（客户端先处理快照再处理补丁，中间
     // 不再有 150ms 空窗）。消除"深色空壳→内容渐现"的分批出现
@@ -1912,8 +1929,31 @@ async function runSession(ws, req, lifecycle) {
   // GL 下的 WebGL）零流量。v0.22 自适应节奏：可见动画画布升到 ~8fps 快档
   // （120ms tick），静止画布指数退避不变；rAF 门改相邻 tick 差分（无 260ms
   // 阻塞），捕获列表 600ms 缓存，每秒捕获总数预算 12 封顶 CPU
+  let skinTimer = null;
+  let skinLastData = null;
   function startCanvasWatch() {
     if (canvasTimer) return;
+    // v0.48 像素蒙皮刷新：每 2 秒截全页图，与上次不同才发（静止页面零流量）
+    if (process.env.XY_PIXEL_SKIN === '1') {
+      if (skinTimer) clearInterval(skinTimer);
+      skinTimer = setInterval(async () => {
+        if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
+        try {
+          const skin = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
+            format: 'jpeg', quality: 80,
+            clip: { x: 0, y: 0, width: viewW, height: viewH, scale: 1 },
+          })), 3000, 'skinTick').catch(() => null);
+          if (!skin) return;
+          const key = skin.data.length; // 长度作为快速变化检测
+          if (skinLastData && Math.abs(key - skinLastData) < 100) return; // 未变化
+          skinLastData = key;
+          const skinPl = JSON.stringify({ type: 'pixel-skin', url: 'data:image/jpeg;base64,' + skin.data, w: viewW, h: viewH });
+          ws.send(skinPl);
+          ws._bytes = (ws._bytes || 0) + skinPl.length;
+        } catch (e) {}
+      }, 2000);
+      if (skinTimer && typeof skinTimer.unref === 'function') skinTimer.unref();
+    }
     const sigs = createCanvasSigs();
     canvasSigsReset = sigs.clear;
     // v0.37 缓冲直读失真检测：WebGL 族（无 preserveDrawingBuffer）toDataURL 恒为
