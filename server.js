@@ -2123,8 +2123,11 @@ async function runSession(ws, req, lifecycle) {
             // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
             // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
             // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
+            // v0.59 回退 PNG：JPEG/80 对图表/文字有可见块状噪声（GL 态势图与 elbit
+            // closed-shadow 瓦片共用此通道，登录后页面图表区域与源站产生色差——
+            // 保真优先；流量优化由 v0.58 canvas-ops 泄漏修复承担（实测 -50%）
             shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
-              format: 'jpeg', quality: 80, // v0.57 流量：canvas 截图通道 JPEG 化（beacon 实测 11MB/10s 的主来源）
+              format: 'png',
               clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
               captureBeyondViewport: true,
             })), 3000, 'canvasShot').catch(() => null);

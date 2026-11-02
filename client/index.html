@@ -1511,6 +1511,10 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
                 document.body.style.setProperty('background', j.bg, 'important');
                 const mb = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.getElementById('mirrorBody');
                 if (mb) mb.style.setProperty('background', j.bg, 'important');
+                // v0.59：滚动容器一并修正——其内联 #fff 在内容不满屏/非白底源站
+                // 的大片留白区露出（实测 static 图表页右侧/底部源站米白 vs 镜像纯白）
+                const msEl = document.getElementById('mirrorScroll');
+                if (msEl) msEl.style.setProperty('background', j.bg, 'important');
               } catch (e) {}
             }
             m('oTitle').textContent = j.title || '-';
