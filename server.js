@@ -2048,6 +2048,7 @@ async function runSession(ws, req, lifecycle) {
     canvasTimer = setInterval(async () => {
       if (canvasBusy) return;
       if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
+      if (Date.now() - lastInputAt < 150) return; // v0.57 输入避让：键入/点击的补丁优先于画布捕获
       canvasBusy = true;
       try {
         const now = Date.now();
@@ -2105,19 +2106,24 @@ async function runSession(ws, req, lifecycle) {
                   octx.fillStyle = bg;
                   octx.fillRect(0, 0, oc.width, oc.height);
                   octx.drawImage(c, 0, 0);
-                  return oc.toDataURL('image/png');
+                  return oc.toDataURL('image/jpeg', 0.82); // v0.57 流量：合成底色面无透明依赖，JPEG 82% 视觉无损、体积约 -70%
                 }
                 return c.toDataURL('image/png');
               } catch (e) { return null; }
             }, it.id), 1500, 'canvasData').catch(() => null);
-            if (dataUrl && dataUrl.length > 40) { shot = { data: dataUrl.slice(dataUrl.indexOf(',') + 1) }; usedData = true; }
+            if (dataUrl && dataUrl.length > 40) {
+              // v0.57：直读产物 mime 两态（透明底 PNG / 合成底色 JPEG）——从 dataUrl
+              // 前缀提取真实 mime，服务端拼 data URL 才能正确解码
+              shot = { data: dataUrl.slice(dataUrl.indexOf(',') + 1), mime: dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/png' };
+              usedData = true;
+            }
           }
           if (!shot) {
             // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
             // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
             // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
             shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
-              format: 'png',
+              format: 'jpeg', quality: 80, // v0.57 流量：canvas 截图通道 JPEG 化（beacon 实测 11MB/10s 的主来源）
               clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
               captureBeyondViewport: true,
             })), 3000, 'canvasShot').catch(() => null);
@@ -2145,7 +2151,7 @@ async function runSession(ws, req, lifecycle) {
           if (ws.readyState === 1) {
             // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
             //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id
-            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:image/png;base64,' + shot.data });
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || (usedData ? 'image/png' : 'image/jpeg'))) + ';base64,' + shot.data });
             ws.send(pl);
             ws._bytes = (ws._bytes || 0) + pl.length;
             ws._chunks = (ws._chunks || 0) + 1;
