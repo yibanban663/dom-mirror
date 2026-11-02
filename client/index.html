@@ -183,12 +183,23 @@
   const m = id => document.getElementById(id);
 
   function setStatus(txt, on) { statusEl.textContent = txt; statusEl.className = 'status' + (on ? ' on' : ''); }
+  let noticeTimer = null, everOnline = false;
   function availability(online, text) {
     connected = online;
     document.getElementById('mirrorScroll').inert = !online;
     cv.inert = !online;
-    m('connectionNotice').hidden = online;
-    m('connectionText').textContent = text || '';
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    if (online) everOnline = true;
+    // v0.51 无感：prod 首连延迟 1.5s 才显示提示——秒连场景客户全程不见
+    // "正在连接/恢复会话"字样；断线（曾在线）仍立即提示，客户需要知道
+    const show = () => { m('connectionNotice').hidden = online; m('connectionText').textContent = text || ''; };
+    if (!online && document.body.classList.contains('prod') && !everOnline) {
+      // 首连先藏（HTML 初始无 hidden 属性），1.5s 未连上才显示
+      m('connectionNotice').hidden = true;
+      noticeTimer = setTimeout(show, 1500);
+    } else {
+      show();
+    }
     if (online) m('newSession').hidden = true;
   }
 
@@ -1347,7 +1358,8 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
   function connect() {
     clearTimeout(retryTimer);
     m('newSession').hidden = true;
-    availability(false, resumeToken ? '正在恢复会话，请稍候…' : '正在连接…');
+    // v0.51 无感：prod 壳下文案中性化——"会话/恢复"是 RBI 术语，客户不可见
+    availability(false, document.body.classList.contains('prod') ? '正在加载…' : (resumeToken ? '正在恢复会话，请稍候…' : '正在连接…'));
     setStatus('连接中…', false);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${proto}://${location.host}/ws`);
@@ -1902,6 +1914,16 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           if (j.type === 'error') {
             lastErr = j.msg; setStatus('错误: ' + j.msg, false);
             if (j.terminal) {
+              // v0.50 resume 降级：令牌失效（引擎重启/过期被回收）时清令牌并自动
+              // 全新重连一次。不清令牌的话刷新永远带着死令牌，页面卡"已断开"，
+              // 用户以为服务故障——实际只需一次无 resume 的全新握手。
+              if (resumeToken) {
+                setResume(null);
+                retryAllowed = true;
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(connect, 800);
+                return;
+              }
               retryAllowed = false;
               clearTimeout(retryTimer);
               availability(false, j.msg);
