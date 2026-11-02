@@ -1337,7 +1337,15 @@ async function runSession(ws, req, lifecycle) {
   const noteInput = () => { lastInputAt = Date.now(); armIdleEvict(); };
   ws.on('close', () => { if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; } });
   ws.on('resume', () => {
-    if (!dispatchReady) return; // 初始化中的会话仍由首次快照完成同步
+    if (!dispatchReady || dead) {
+      // v0.53 半初始化/已死会话不可恢复：runSession 在装配期被 15s 活性回收后，
+      // Session 对象仍在 grace 窗口内可被 claim——此时 resume 若静默 return，
+      // 客户端收过 'session' 消息后永远等不到 meta/快照/重试（实测页面卡死）。
+      // 显式回 terminal 错误：客户端降级逻辑清令牌，换全新会话
+      try { ws.send(JSON.stringify({ type: 'error', code: 'SESSION_EXPIRED', terminal: true, msg: '会话已过期或不可恢复，请核对上次提交结果后重新开始' })); } catch (e) {}
+      try { ws.close(1008); } catch (e2) {}
+      return;
+    }
     cmdChain = cmdChain.then(async () => {
       if (dead || ws.readyState !== 1) return;
       const wasEvicted = pageEvicted; // v0.52：evict 后 revive 的 page 上下文全新，不可重放
@@ -1781,8 +1789,15 @@ async function runSession(ws, req, lifecycle) {
     // resume 退化为全量——功能无损，仅少一次加速
     if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; }
     if (payload.length <= 2 * 1024 * 1024 && snapReplayBytes + payload.length <= SNAP_REPLAY_BUDGET) {
-      const sig = await quickDomSig(page);
-      if (sig) { snapReplay = { payload, sig }; snapReplayBytes += payload.length; }
+      // v0.53：重放帧必须自带 css——resume 的客户端是新文档（lastCss=null），
+      // cssSame 压缩掉的 css 若缺席，客户端 buildMirror(css=null) 直接失败
+      try {
+        const cacheObj = JSON.parse(payload);
+        cacheObj.css = cssFixed; delete cacheObj.cssSame;
+        const fullPayload = JSON.stringify(cacheObj);
+        const sig = await quickDomSig(page);
+        if (sig && fullPayload.length <= 2 * 1024 * 1024) { snapReplay = { payload: fullPayload, sig }; snapReplayBytes += fullPayload.length; }
+      } catch (e) {}
     }
     // v0.48 像素蒙皮：快照后立即截全页图发给客户端叠加在镜像 DOM 之上——
     // 文字是服务端 Linux Chromium 光栅化的位图，访客端不再自行渲染文字
