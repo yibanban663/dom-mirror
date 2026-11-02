@@ -2094,6 +2094,7 @@ async function runSession(ws, req, lifecycle) {
             // v0.43 tile 通道同样合成 CSS 底色（透明底 canvas 的 toDataURL 透明
             // 像素会在客户端 img 上透出白底——与源站视觉不一致）
             const dataUrl = await withTimeout(page.evaluate((idv) => {
+              const suspPrev = window.__xyOpsSuspend; window.__xyOpsSuspend = true; // v0.58 捕获期挂起指令采集
               try {
                 const c = window.__xy.find(idv);
                 if (!c || c.tagName !== 'CANVAS' || c.__xyCtxGL) return null;
@@ -2106,10 +2107,10 @@ async function runSession(ws, req, lifecycle) {
                   octx.fillStyle = bg;
                   octx.fillRect(0, 0, oc.width, oc.height);
                   octx.drawImage(c, 0, 0);
-                  return oc.toDataURL('image/jpeg', 0.82); // v0.57 流量：合成底色面无透明依赖，JPEG 82% 视觉无损、体积约 -70%
+                  return oc.toDataURL('image/png'); // v0.58：直读回退 PNG——色块类图形 JPEG 反超（对照实测 +15%），复杂图走截图通道 JPEG
                 }
                 return c.toDataURL('image/png');
-              } catch (e) { return null; }
+              } catch (e) { return null; } finally { window.__xyOpsSuspend = suspPrev; }
             }, it.id), 1500, 'canvasData').catch(() => null);
             if (dataUrl && dataUrl.length > 40) {
               // v0.57：直读产物 mime 两态（透明底 PNG / 合成底色 JPEG）——从 dataUrl
