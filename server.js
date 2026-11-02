@@ -930,6 +930,7 @@ async function runSession(ws, req, lifecycle) {
   let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
   let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
   let driftStreak = 0, lastDriftHeal = 0; // v0.18 分歧自愈：连续漂移计数与限频
+  let lastSnapServerEls = null, driftHealFails = 0, driftMuteUntil = 0; // v0.56：快照口径基准 + 自愈熔断
   let xframeSecret = null; // v0.25 跨源 iframe 资产代理的会话作用域密钥
   let xframeBusy = false;
   let xframeTimer = null; // v0.26 跨源 iframe 周期刷新（变化推 outer 补丁）
@@ -1049,17 +1050,28 @@ async function runSession(ws, req, lifecycle) {
             // 把"镜像悄悄坏了"变成"自愈+可观测"（sstats 前打一行日志）
             if (m.fp !== undefined && Number.isFinite(m.fp) && mode === 'dom' && domActive && !dead) {
               try {
-                const srvFp = await page.evaluate(() => document.body.getElementsByTagName('*').length - document.body.querySelectorAll('script, [data-xy-space]').length);
+                const liveFp = await page.evaluate(() => document.body.getElementsByTagName('*').length - document.body.querySelectorAll('script, noscript, template, [data-xy-space]').length);
+                // v0.56 口径：实时数与快照基准差在 5% 内（轮询正常演进）用快照基准；
+                // 大跳变（导航/大块渲染）仍用实时数
+                const srvFp = (lastSnapServerEls !== null && Math.abs(liveFp - lastSnapServerEls) <= liveFp * 0.05) ? lastSnapServerEls : liveFp;
                 const drift = Math.abs(srvFp - m.fp);
                 if (drift > Math.max(2, srvFp * 0.02)) {
                   driftStreak++;
                   if (driftStreak >= 2 && Date.now() - lastDriftHeal > 10000) {
+                    // v0.56 熔断：短窗内多次自愈未收敛 = 系统性口径差（快照就不含
+                    // 那部分元素）。此时重拍永远无法收敛，只会把页面打成 10s 一次
+                    // 整树重建（beacon 实测 snaps 每 10s +1，完全不可用）——静默
+                    // 5 分钟，补丁通道继续保鲜内容
+                    if (driftHealFails >= 3 && Date.now() < driftMuteUntil) { driftStreak = 0; break; }
+                    if (Date.now() - lastDriftHeal < 120000) driftHealFails++;
+                    else driftHealFails = 1;
                     lastDriftHeal = Date.now();
                     driftStreak = 0;
-                    logger.log(`[drift ] self-heal: server=${srvFp} mirror=${m.fp} delta=${drift}`);
+                    if (driftHealFails >= 3) driftMuteUntil = Date.now() + 300000;
+                    logger.log(`[drift ] self-heal: server=${srvFp}(live=${liveFp},snapBase=${lastSnapServerEls}) mirror=${m.fp} delta=${drift} attempt=${driftHealFails}${driftHealFails >= 3 ? ' MUTED 5min' : ''}`);
                     startDomMirror().catch(() => {});
                   }
-                } else driftStreak = 0;
+                } else { driftStreak = 0; if (drift <= 2) driftHealFails = 0; }
               } catch (e) {}
             }
             break;
@@ -1790,6 +1802,10 @@ async function runSession(ws, req, lifecycle) {
     // resume 退化为全量——功能无损，仅少一次加速
     if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; }
     { const sigR = await quickDomSig(page); if (sigR) lastSnapDomSig = sigR; } // v0.55 门控基线（无条件记录）
+    // v0.56 drift 基准：记录快照完成时刻的服务端元素数——漂移检测以此为口径。
+    // 此前用实时数：beacon 页 2s 轮询让 DOM 持续演进，快照永远落后 → 假漂移
+    // 151 元素 → 10s 一次自愈重拍 → 无限重建循环（页面完全不可用）
+    try { lastSnapServerEls = await page.evaluate(() => document.body.getElementsByTagName('*').length - document.body.querySelectorAll('script, noscript, template, [data-xy-space]').length); } catch (e2) {}
     if (payload.length <= 2 * 1024 * 1024 && snapReplayBytes + payload.length <= SNAP_REPLAY_BUDGET) {
       // v0.53：重放帧必须自带 css——resume 的客户端是新文档（lastCss=null），
       // cssSame 压缩掉的 css 若缺席，客户端 buildMirror(css=null) 直接失败
