@@ -1684,7 +1684,13 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
                 document.addEventListener('keydown', fadeOut, true);
                 document.addEventListener('pointerdown', fadeOut, true);
               }
-              if (skin) skin.src = j.url;
+              if (skin) {
+                // v0.49 防白闪：img 在 JPEG 解码完成前隐藏（空白 img 是白底
+                // → 第二次白闪的根因），加载完成后一次性显示
+                skin.style.visibility = 'hidden';
+                skin.onload = () => { skin.style.visibility = 'visible'; };
+                skin.src = j.url;
+              }
               rumApplied();
             } catch (e) {}
           }
