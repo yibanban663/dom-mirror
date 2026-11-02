@@ -153,6 +153,19 @@ function stripClientComments(html) {
   }).join('\n');
   return out;
 }
+// v0.52 快照重放：F5/断线 resume 时 page 静止则原样重放上次快照帧——
+// 跳过 snapshotReal 全量（beacon 页实测 247KB CSS 收集 + 全 DOM 序列化 1-3s），
+// 刷新白窗从「全量快照耗时」降到一次 RTT。全局预算防 1000 会话各持大帧
+const SNAP_REPLAY_BUDGET = 256 * 1024 * 1024;
+let snapReplayBytes = 0;
+function quickDomSig(p) {
+  return p.evaluate(() => ({
+    url: location.pathname + location.search,
+    els: document.querySelectorAll('*').length,
+    len: (document.documentElement.outerHTML || '').length,
+  })).catch(() => null);
+}
+
 function serveClientHtml(req, res) {
   try {
     if (clientHtmlRaw === null) clientHtmlRaw = stripClientComments(fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8'));
@@ -1317,14 +1330,17 @@ async function runSession(ws, req, lifecycle) {
       await handleCommand(m);
     } catch (e) { sendJson({ type: 'error', msg: '事件处理异常: ' + e.message }); }
   };
+  let snapReplay = null; // v0.52 快照重放缓存（本会话最近一次全量帧+DOM签名）
   let cmdChain = Promise.resolve();
   const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
   ws.on('message', (raw) => { lastAliveAt = Date.now(); if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
   const noteInput = () => { lastInputAt = Date.now(); armIdleEvict(); };
+  ws.on('close', () => { if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; } });
   ws.on('resume', () => {
     if (!dispatchReady) return; // 初始化中的会话仍由首次快照完成同步
     cmdChain = cmdChain.then(async () => {
       if (dead || ws.readyState !== 1) return;
+      const wasEvicted = pageEvicted; // v0.52：evict 后 revive 的 page 上下文全新，不可重放
       if (pageEvicted) { try { await revivePage(); } catch (e) { logger.log('[idle  ] revive fail:', e && e.message); } }
       if (domStarting) await domStarting;
       { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
@@ -1334,7 +1350,24 @@ async function runSession(ws, req, lifecycle) {
       clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
       if (typeof headChurnT === 'number' || headChurnT) { clearTimeout(headChurnT); headChurnT = null; }
       lastHeadSig = null;
-      await startDomMirror();
+      // v0.52 快照重放：page 未被回收且 DOM 签名与缓存快照一致（静止页 F5 的
+      // 常态）→ 原样重放缓存帧，跳过全量快照。签名含 url/元素数/文档长度，
+      // 任一变化（导航/动态内容）自动落回全量路径，正确性不受影响
+      let replayed = false;
+      if (!wasEvicted && snapReplay && page) {
+        const sig2 = await quickDomSig(page);
+        if (sig2 && snapReplay.sig
+            && sig2.url === snapReplay.sig.url
+            && sig2.els === snapReplay.sig.els
+            && sig2.len === snapReplay.sig.len) {
+          ws.send(snapReplay.payload);
+          ws._bytes = (ws._bytes || 0) + snapReplay.payload.length;
+          ws._chunks = (ws._chunks || 0) + 1;
+          replayed = true;
+          logger.log('[snap ] replay', Math.round(snapReplay.payload.length / 1024) + 'KB (F5 fast path)');
+        }
+      }
+      if (!replayed) await startDomMirror();
       sendJson({ type: 'sync-ready' });
     }).catch(() => ws.close(1011, 'resume failed'));
   });
@@ -1743,6 +1776,14 @@ async function runSession(ws, req, lifecycle) {
     ws.send(payload);
     ws._bytes = (ws._bytes || 0) + payload.length;
     ws._chunks = (ws._chunks || 0) + 1;
+    // v0.52 重放缓存：留一份供 F5/断线 resume 快速重放。先归还本会话旧帧
+    // 占用的预算，再在全局预算内缓存；超预算（其他会话占满）则放弃缓存，
+    // resume 退化为全量——功能无损，仅少一次加速
+    if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; }
+    if (payload.length <= 2 * 1024 * 1024 && snapReplayBytes + payload.length <= SNAP_REPLAY_BUDGET) {
+      const sig = await quickDomSig(page);
+      if (sig) { snapReplay = { payload, sig }; snapReplayBytes += payload.length; }
+    }
     // v0.48 像素蒙皮：快照后立即截全页图发给客户端叠加在镜像 DOM 之上——
     // 文字是服务端 Linux Chromium 光栅化的位图，访客端不再自行渲染文字
     // → 视觉 100% 还原。DOM 层 pointer-events 正常处理交互（打字/点击/
