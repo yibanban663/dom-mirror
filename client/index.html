@@ -942,6 +942,29 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         const path = (typeof e.composedPath === 'function') ? e.composedPath() : null;
         const t0 = (path && path.length) ? path[0] : e.target;
         const inField = !!(t0 && t0.matches && (t0.matches('input, textarea, select') || t0.isContentEditable || (t0.closest && t0.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))));
+        // v0.62：Tab 焦点齐步——此前 Tab 转发服务端（服务端焦点前进）但本地
+        // preventDefault 把焦点留在原字段，两端分歧：后续打字进错字段（实测纯键盘
+        // 登录 3/3 静默失败：用户名被拼上密码、密码恒空）。值同步按 id 定位（v0.12），
+        // 客户端焦点即输入归属——Tab 时本地把 shadow 焦点移到下一/上一可聚焦元素
+        //（约束在镜像内，防跑出到外壳隐形控件），服务端照旧收 Tab 键事件，两端同步。
+        if (isDown && k === 'Tab' && inField && t0 && t0.getRootNode && t0.getRootNode() !== document) {
+          e.__xyKeyFwd = true;
+          rumInputSent();
+          send({ type: 'key', action: 'down', key: 'Tab' });
+          e.preventDefault();
+          try {
+            const rn = t0.getRootNode();
+            const sc = (rn && rn.querySelectorAll) ? rn : mirrorRoot;
+            const vis = (el) => { try { return el.offsetParent !== null || el.getClientRects().length > 0; } catch (err) { return false; } };
+            const fset = [...sc.querySelectorAll('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')].filter(vis);
+            const fi = fset.indexOf(t0);
+            let next = null;
+            if (e.shiftKey) next = fi > 0 ? fset[fi - 1] : fset[fset.length - 1];
+            else next = (fi >= 0 && fi < fset.length - 1) ? fset[fi + 1] : fset[0];
+            if (next && next !== t0) next.focus();
+          } catch (err) {}
+          return;
+        }
         if (special) {
           if (isDown && k === 'Enter' && inField) {
             // Enter 通常是提交/发送：服务端会清空字段。忘掉本地已键入值并清空本地值，
