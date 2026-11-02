@@ -162,6 +162,11 @@ function serveClientHtml(req, res) {
     const bg = originBgCache.get(origin);
     const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
     let html = clientHtmlRaw;
+    // v0.51 无感模式：embedded 呈现预置 body.prod——此前 prod 类要等 WS meta
+    // 到达才追加，首屏 demo 壳（标题/指标/自检面板）闪现后才隐藏，客户可感知
+    if (config.presentation === 'embedded') {
+      html = html.replace('<body', '<body class="prod"');
+    }
     if (bgSafe) {
       // v0.35.2：注入必须同时压 html/body/#mirrorScroll——客户端壳自带
       // body{background:var(--bg)=#0f1420 深色} 与 #mirrorScroll 内联 #fff，
