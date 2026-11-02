@@ -350,6 +350,11 @@
   }
   let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
   let lastCss = null; // v0.17 带宽：最近快照 css（服务端 cssSame 时不重发，客户端用缓存）
+  // v0.53 F5 零空窗：快照状态提升到模块域——首帧缓存渲染要在 connect 前置位
+  // lastSnapKey，后续同内容快照命中去重跳过重建（否则入口动画重放=刷新闪一下）
+  let snapshotReady = false, syncReady = false, snapshotSerial = 0, lastSnapKey = null;
+  let lastSnapData = null, lastSnapSaveAt = 0;
+  let syncWatchdog = null; // v0.53：'session' 后同步看门狗（静默卡死兜底）
   let lastFpResync = 0; // 结构指纹重同步限频
   let pendingFocusPatches = [];
   let lastServerHoles = null, holeRafOn = false; // 服务端穿孔区（rAF 持续重申，免疫瓦片覆盖时序） // 聚焦输入期间挂起的补丁（失焦后统一应用）
@@ -387,6 +392,11 @@
   };
   window.addEventListener('pagehide', () => {
     try { navigator.sendBeacon('/rum', JSON.stringify(rumReport())); } catch (e) {}
+  });
+  // v0.53 F5 缓存：卸载前把节流窗口内的最新快照落盘
+  window.addEventListener('pagehide', () => {
+    if (!lastSnapData) return;
+    try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
   });
   // 投机本地回显的当前孔（位图原件保存在 __xyLocalHole.saved，本地即时复原）
   function closeLocalHole() {
@@ -1364,7 +1374,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${proto}://${location.host}/ws`);
     ws = socket;
-    let snapshotReady = false, syncReady = false, snapshotSerial = 0, lastSnapKey = null;
+    snapshotReady = false; syncReady = false; // v0.53：状态在模块域，逐连接复位
     const activate = () => {
       if (!snapshotReady || !syncReady || !retryAllowed || ws !== socket || socket.readyState !== 1) return;
       availability(true); retryDelay = 500; setStatus('会话在线', true);
@@ -1420,6 +1430,22 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           if (j.type === 'session') {
             setResume(j.token);
             if (j.resumed) { lastTyped.clear(); pendingFocusPatches = []; }
+            // v0.54 同步看门狗（仅 resumed）：resume 命中半初始化会话时服务端
+            // 可能静默（v0.54 起显式回错，此为纵深兜底）——8s 无快照则清令牌
+            // 换全新会话。全新会话不武装：其装配（warm take+attach+快照）高负载
+            // 下可超 8s，误杀会造成「连接→装配→被杀→重连」循环（每次重连整页
+            // 重建=页面反复闪），且服务端装配自带 30s 超时兜底
+            if (j.resumed) {
+              if (syncWatchdog) clearTimeout(syncWatchdog);
+              syncWatchdog = setTimeout(() => {
+                if (ws !== socket || socket.readyState !== 1 || snapshotReady) return;
+                setResume(null);
+                retryAllowed = true;
+                try { socket.close(); } catch (e2) {}
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(connect, 300);
+              }, 8000);
+            }
           }
           // v0.13 文件传输：上传握手应答/完成通知，下载装配与保存
           if (j.type === 'upload-accept') {
@@ -1563,6 +1589,13 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
                 setTimeout(() => { rs.__xySync = false; }, 80);
               }
               if (j.title != null && document.title !== j.title) document.title = j.title;
+              // v0.54：去重路径同样要完成同步闭环——内容已在屏（缓存首帧渲染），
+              // 置 ready 并 activate。此前 return 时 snapshotReady 恒 false：状态
+              // 永远卡「连接中」，resumed 看门狗把活连接误杀 → 重连循环（整页
+              // 重建反复播放入场动画 = 页面不停闪）
+              snapshotReady = true;
+              if (syncWatchdog) { clearTimeout(syncWatchdog); syncWatchdog = null; }
+              activate();
               return;
             }
             if (!j.frame) lastSnapKey = snapKey;
@@ -1602,8 +1635,17 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               rum.snaps++;
               rumApplied(); // v0.21 RUM：快照应用=交互到视觉链路闭环
               snapshotReady = true;
+              if (syncWatchdog) { clearTimeout(syncWatchdog); syncWatchdog = null; }
               activate();
               lastSnapAppliedAt = Date.now();
+              // v0.53 F5 缓存：节流 1.5s 存最后快照；pagehide 兜底即时存。
+              // 刷新时新文档首帧同步重建，消除「旧页销毁→WS 快照到达」的纯底色空窗
+              lastSnapData = { path: location.pathname + location.search, key: snapKey, css, html: j.html, docClass: j.docClass || '', docAttrs: j.docAttrs || '', bodyId: j.bodyId, bodyStyle: j.bodyStyle || '', title: j.title, sx: j.sx || 0, sy: j.sy || 0 };
+              const nowSnapSave = Date.now();
+              if (nowSnapSave - lastSnapSaveAt > 1500) {
+                lastSnapSaveAt = nowSnapSave;
+                try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
+              }
               const restoredScroll = document.getElementById('mirrorScroll');
               restoredScroll.__xySync = true;
               restoredScroll.scrollLeft = j.sx || 0; restoredScroll.scrollTop = j.sy || 0;
@@ -1953,6 +1995,21 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
       }
     };
   }
+  // v0.53 F5 零空窗：prod + 同路径 → 首帧同步重建上次快照（先于 WS 握手）。
+  // lastSnapKey 同步置位：后续服务端同内容快照命中去重，不重建→入口动画不重放
+  try {
+    const cachedSnap = JSON.parse(sessionStorage.getItem('xySnapCache') || 'null');
+    if (cachedSnap && cachedSnap.css && cachedSnap.html
+        && cachedSnap.path === location.pathname + location.search
+        && document.body.classList.contains('prod')) {
+      lastCss = cachedSnap.css;
+      lastSnapKey = cachedSnap.key;
+      snapshotReady = true; // 缓存内容已上屏，首帧即视为同步就绪（快照确认到达时走去重闭环）
+      setMode('dom');
+      buildMirror(cachedSnap.css, cachedSnap.html, cachedSnap.docClass, cachedSnap.docAttrs, cachedSnap.bodyId, cachedSnap.bodyStyle);
+      if (cachedSnap.title) document.title = cachedSnap.title;
+    }
+  } catch (e) {}
   connect();
 
   setInterval(() => {
