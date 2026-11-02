@@ -1331,6 +1331,7 @@ async function runSession(ws, req, lifecycle) {
     } catch (e) { sendJson({ type: 'error', msg: '事件处理异常: ' + e.message }); }
   };
   let snapReplay = null; // v0.52 快照重放缓存（本会话最近一次全量帧+DOM签名）
+  let lastSnapDomSig = null; // v0.55 导航重拍链门控：最近一次全量快照完成时的 DOM 签名
   let cmdChain = Promise.resolve();
   const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
   ws.on('message', (raw) => { lastAliveAt = Date.now(); if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
@@ -1788,6 +1789,7 @@ async function runSession(ws, req, lifecycle) {
     // 占用的预算，再在全局预算内缓存；超预算（其他会话占满）则放弃缓存，
     // resume 退化为全量——功能无损，仅少一次加速
     if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; }
+    { const sigR = await quickDomSig(page); if (sigR) lastSnapDomSig = sigR; } // v0.55 门控基线（无条件记录）
     if (payload.length <= 2 * 1024 * 1024 && snapReplayBytes + payload.length <= SNAP_REPLAY_BUDGET) {
       // v0.53：重放帧必须自带 css——resume 的客户端是新文档（lastCss=null），
       // cssSame 压缩掉的 css 若缺席，客户端 buildMirror(css=null) 直接失败
@@ -2637,9 +2639,20 @@ async function runSession(ws, req, lifecycle) {
           try {
             await page.evaluate(sessHelpers).catch(() => {});
             if (mode === 'dom' || mode === 'frame') await startDomMirror();
+            // v0.55 消"闪三次"：+600/+1500 兜底重拍此前无条件执行——动态页三次
+            // 快照内容渐进不同（去重失效）→ 整树重建 3 次 = 页面闪 3 下。
+            // 门控：DOM 签名（url/元素数/文档长度）与最近一次快照一致 = 页面
+            // 静止，跳过重拍；变了才重拍（真有渐进渲染，重建合理）
             for (const d of [600, 1500]) {
-              setTimeout(() => {
+              setTimeout(async () => {
                 if (dead || !domActive || ws.readyState !== 1) return;
+                try {
+                  const sig = await quickDomSig(page);
+                  if (sig && lastSnapDomSig
+                      && sig.url === lastSnapDomSig.url
+                      && sig.els === lastSnapDomSig.els
+                      && sig.len === lastSnapDomSig.len) return;
+                } catch (e2) {}
                 startDomMirror().catch(() => {});
               }, d);
             }

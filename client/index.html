@@ -23,8 +23,11 @@
      首绘一致）；源站底色由网关注入（缓存热后首绘即正确色）/meta.bg 接管。
      曾因壳深色底在白与浅色源站页之间插进一帧 #0f1420 黑闪（:82 实测） */
   body.prod { background: transparent; } /* 透出 html 注入底色；底色未注入时为浏览器默认白 */
-  body.prod #navWrap { position: fixed; top:0; left:0; right:0; z-index:90; transform: translateY(-100%); transition: transform .18s ease; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
-  body.prod #navWrap:hover, body.prod #navHot:hover ~ #navWrap { transform: none; }
+  /* v0.55：藏屏外时不得带阴影——box-shadow 随元素移出屏外仍向下投影 ~12px，
+     在浅色源站顶部压出 4% 黑暗条（实测右侧米白区全宽条带，像素 diff 3% 的主来源）。
+     阴影改为唤出态才加 */
+  body.prod #navWrap { position: fixed; top:0; left:0; right:0; z-index:90; transform: translateY(-100%); transition: transform .18s ease, box-shadow .18s ease; box-shadow: none; }
+  body.prod #navWrap:hover, body.prod #navHot:hover ~ #navWrap { transform: none; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
   body.prod #navHot { position: fixed; top:0; left:0; right:0; height: 9px; z-index:89; }
   body.prod #mirrorScroll { width: 100vw !important; height: 100vh !important; }
   /* v0.35.1 三闪修复：镜像容器内联 #fff 在 prod 全屏下是一块白板——在 html 注入
