@@ -524,6 +524,10 @@ function syncDocScrollerStyle() {
     const cs = getComputedStyle(mirrorBody);
     if (cs.scrollbarWidth) ms.style.setProperty('scrollbar-width', cs.scrollbarWidth, 'important');
     if (cs.scrollbarColor) ms.style.setProperty('scrollbar-color', cs.scrollbarColor, 'important');
+    // v0.61：color-scheme 决定滚动条明暗底色（实测灵袭 bundle :root{color-scheme:light}
+    // + [data-theme=dark] 暗色变体）。不外提时暗色主题下源站=暗色滚动条、虚影=亮色。
+    // shadow 内表单控件不受影响（origin 规则已在 shadow 内生效并覆盖继承值）。
+    if (cs.colorScheme) ms.style.setProperty('color-scheme', cs.colorScheme, 'important');
     const ob = cs.overscrollBehavior || cs.overscrollBehaviorY;
     if (ob) ms.style.setProperty('overscroll-behavior', ob, 'important');
   } catch (e) {}
