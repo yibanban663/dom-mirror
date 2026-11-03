@@ -2045,6 +2045,12 @@ async function runSession(ws, req, lifecycle) {
     let rafLast = { n: -1, at: 0 };
     let listCache = { at: 0, list: null };
     const captureTimes = [];
+    // v0.63 瓦片字节预算：滚动 60s 窗口内 canvas-tile 线上字节超预算时按画布
+    // 节流（每画布 1.5s 惩罚窗，窗口回落即自动恢复）。动画 WebGL 大画布在
+    // DPR>1 时实测 76MB/min，占满访客链路 → 输入延迟 P95 达 1s（beacon 态势图）
+    const tileBytes = [];
+    const budgetHold = new Map();
+    const TILE_BUDGET = (parseInt(process.env.XY_TILE_BUDGET_MB || '18', 10) || 18) * 1048576;
     canvasTimer = setInterval(async () => {
       if (canvasBusy) return;
       if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
@@ -2079,6 +2085,19 @@ async function runSession(ws, req, lifecycle) {
           if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
+          // v0.63 字节预算门：超限时每画布至少间隔 1.5s（urgent 静态变更最多延迟
+          // 一个惩罚窗，动画画布自动降档；窗口 60s 回落即恢复原节奏）
+          {
+            const nb = Date.now();
+            while (tileBytes.length && nb - tileBytes[0].t > 60000) tileBytes.shift();
+            let tsum = 0; for (const tb of tileBytes) tsum += tb.b;
+            if (tsum >= TILE_BUDGET) {
+              const hold = budgetHold.get(sigKey) || 0;
+              if (nb < hold) continue;
+              budgetHold.set(sigKey, nb + 1500);
+              continue;
+            }
+          }
           // v0.37 canvas tile 默认画布缓冲直读（toDataURL）：截图 clip 依赖合成面，
           // 视口外/内部滚动容器未合成区域截出来是空白（实测仪表盘图表下半在
           // 内部滚动容器折叠线下，空白 tile 反把快照好帧覆盖回空白）。缓冲直读
@@ -2128,7 +2147,7 @@ async function runSession(ws, req, lifecycle) {
             // 保真优先；流量优化由 v0.58 canvas-ops 泄漏修复承担（实测 -50%）
             shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
               format: 'png',
-              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(DPR, 1.5) },
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) },
               captureBeyondViewport: true,
             })), 3000, 'canvasShot').catch(() => null);
           }
@@ -2155,10 +2174,11 @@ async function runSession(ws, req, lifecycle) {
           if (ws.readyState === 1) {
             // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
             //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id
-            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || (usedData ? 'image/png' : 'image/jpeg'))) + ';base64,' + shot.data });
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || 'image/png')) + ';base64,' + shot.data });
             ws.send(pl);
             ws._bytes = (ws._bytes || 0) + pl.length;
             ws._chunks = (ws._chunks || 0) + 1;
+            tileBytes.push({ t: Date.now(), b: pl.length }); // v0.63 计入字节预算窗口
           }
         }
       } catch (e) {} finally { canvasBusy = false; }
