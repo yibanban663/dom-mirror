@@ -2051,6 +2051,66 @@ async function runSession(ws, req, lifecycle) {
     const tileBytes = [];
     const budgetHold = new Map();
     const TILE_BUDGET = (parseInt(process.env.XY_TILE_BUDGET_MB || '18', 10) || 18) * 1048576;
+    // v0.64 动画画布快速通道：连续 2 拍内容变化 + rAF 活跃 = 动画中。
+    // 截图通道切半分辨率 JPEG（瓦片 ~25-60KB，同字节预算内帧率 x5+）；
+    // 静态画布与 2D 直读（透明叠加层）保持全分辨率 PNG，保真优先。
+    // 实测 beacon 态势图：300KB PNG 瓦片在 18MB/min 预算下仅 ~0.9fps，地球呈
+    // 冻结-跳变；JPEG@q50/0.5x 后预算内可达 ~5-7fps（慢速旋转视觉连续）。
+    const animStreak = new Map();
+    const ANIM_SCALE = Math.min(1, Math.max(0.25, parseFloat(process.env.XY_TILE_ANIM_SCALE || '0.5') || 0.5));
+    const ANIM_QUALITY = Math.min(95, Math.max(20, parseInt(process.env.XY_TILE_ANIM_QUALITY || '50', 10) || 50));
+    // v0.65 动画帧流：存在动画画布时启动 CDP startScreencast（浏览器侧 JPEG 编码、
+    // 无逐拍截图往返），服务端裁剪到画布区域作为瓦片下发——同浏览器截图互斥与
+    // 串行捕获环 ~600ms/轮的限制不再约束动画帧率。流激活期间上层动画叠加画布
+    // 置 1px 透明占位（合成流已含其像素），停流后常规瓦片通道自动恢复真值。
+    const ANIM_FPS = Math.min(30, Math.max(2, parseInt(process.env.XY_TILE_ANIM_FPS || '8', 10) || 8));
+    let scOn = false, scLastSend = 0, scTarget = null, scBlank = new Set(), scLastAnimAt = 0, scGen = 0;
+    const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    let scHandler = null;
+    async function scStop() {
+      if (!scOn) return;
+      scOn = false; scTarget = null; scBlank = new Set();
+      try { if (scHandler) cdp.off('Page.screencastFrame', scHandler); scHandler = null; } catch (e) {}
+      try { await cdp.send('Page.stopScreencast'); } catch (e) {}
+      try { sigs.clear(); } catch (e) {} // 停流后首拍强制真值
+    }
+    function scStart(target, blanks) {
+      try {
+        const myGen = ++scGen;
+        scHandler = async (ev) => {
+          if (myGen !== scGen) return; // v0.65 代际防重：旧流 handler 一律失效
+          try { cdp.send('Page.screencastFrameAck', { sessionId: ev.sessionId }).catch(() => {}); } catch (e) {}
+          if (!scOn || !scTarget || ws.readyState !== 1) return;
+          const nowF = Date.now();
+          if (nowF - scLastSend < Math.floor(1000 / ANIM_FPS)) return;
+          scLastSend = nowF;
+          try {
+            const buf = Buffer.from(ev.data, 'base64');
+            const meta = sharp ? await sharp(buf).metadata() : null;
+            if (!meta || !meta.width || !meta.height) return;
+            const scaleX = meta.width / Math.max(1, viewW), scaleY = meta.height / Math.max(1, viewH);
+            // 无滚动页 offset=0；有滚动时区域可能偏移——裁剪钳制到帧内，停流自愈
+            let cl = Math.max(0, Math.round(scTarget.x * scaleX));
+            let ct = Math.max(0, Math.round(scTarget.y * scaleY));
+            let cw = Math.min(meta.width - cl, Math.max(2, Math.round(scTarget.w * scaleX)));
+            let ch = Math.min(meta.height - ct, Math.max(2, Math.round(scTarget.h * scaleY)));
+            if (cw < 2 || ch < 2) return;
+            const out = await sharp(buf).extract({ left: cl, top: ct, width: cw, height: ch }).jpeg({ quality: ANIM_QUALITY }).toBuffer();
+            const b64 = out.toString('base64');
+            const pl = JSON.stringify({ type: 'canvas-tile', id: scTarget.id, path: scTarget.path, x: Math.round(scTarget.x), y: Math.round(scTarget.y), w: Math.round(scTarget.w), h: Math.round(scTarget.h), url: 'data:image/jpeg;base64,' + b64 });
+            if (ws.readyState === 1) { ws.send(pl); ws._bytes = (ws._bytes || 0) + pl.length; ws._chunks = (ws._chunks || 0) + 1; tileBytes.push({ t: Date.now(), b: pl.length }); }
+            while (tileBytes.length && Date.now() - tileBytes[0].t > 60000) tileBytes.shift();
+          } catch (e) {}
+        };
+        cdp.on('Page.screencastFrame', scHandler);
+        cdp.send('Page.startScreencast', { format: 'jpeg', quality: ANIM_QUALITY, maxWidth: Math.max(160, Math.round(viewW * Math.min(DPR, 1.5) * ANIM_SCALE)), maxHeight: Math.max(120, Math.round(viewH * Math.min(DPR, 1.5) * ANIM_SCALE)), everyNthFrame: 4 }).catch(async () => { await scStop(); });
+        scOn = true; scTarget = target; scBlank = new Set(blanks);
+        for (const b of scBlank) { // 叠加画布置透明占位（合成流已含其像素）
+          const pl = JSON.stringify({ type: 'canvas-tile', id: b.id, path: b.path, x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h), url: BLANK_PNG });
+          if (ws.readyState === 1) { ws.send(pl); ws._bytes = (ws._bytes || 0) + pl.length; }
+        }
+      } catch (e) { try { scStop(); } catch (e2) {} }
+    }
     canvasTimer = setInterval(async () => {
       if (canvasBusy) return;
       if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
@@ -2075,6 +2135,18 @@ async function runSession(ws, req, lifecycle) {
         let rafActive = false;
         if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.hot)) return; }
         else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
+        // v0.65 动画集合（含 streak 判定）——用于帧流目标与占位集
+        const animItems = list.filter((it) => it.kind !== 'elbit' && rafActive && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2);
+        if (animItems.length) {
+          scLastAnimAt = Date.now();
+          if (!scOn) {
+            const target = animItems[0]; // 列表序=DOM 序，取最底动画层承载合成流
+            const blanks = animItems.slice(1);
+            scStart(target, blanks);
+          }
+        } else if (scOn && Date.now() - scLastAnimAt > 2500) {
+          scStop(); // 动画停 2.5s：停流，常规瓦片通道恢复真值
+        }
         const nowMs = Date.now();
         while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
         for (const it of list) {
@@ -2082,6 +2154,8 @@ async function runSession(ws, req, lifecycle) {
           // （v0.14：键改为节点 id——影子内画布 path 可为 null）
           const sigKey = it.id !== undefined ? it.id : it.path;
           // v0.37 hot（空白烘焙槽/预算热点）旁路退避：urgent 槽必须在下一拍拿到真值
+          if (scOn && scTarget && sigKey === scTarget.id) continue; // v0.65 帧流承载
+          if (scOn && [...scBlank].some((b) => b.id === sigKey)) continue; // v0.65 透明占位中
           if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= 12) break;
@@ -2109,10 +2183,12 @@ async function runSession(ws, req, lifecycle) {
           const viaData = it.kind !== 'elbit' && it.id !== undefined && !glSticky.has(sigKey);
           let shot = null;
           let usedData = false;
+          // v0.64 动画快速通道判定（streak 来自此前各拍；截图后 sig record 再更新）
+          const animFast = it.kind !== 'elbit' && rafActive && (animStreak.get(sigKey) || 0) >= 2;
           if (viaData) {
             // v0.43 tile 通道同样合成 CSS 底色（透明底 canvas 的 toDataURL 透明
             // 像素会在客户端 img 上透出白底——与源站视觉不一致）
-            const dataUrl = await withTimeout(page.evaluate((idv) => {
+            const dataUrl = await withTimeout(page.evaluate((idv, fast, dscale) => {
               const suspPrev = window.__xyOpsSuspend; window.__xyOpsSuspend = true; // v0.58 捕获期挂起指令采集
               try {
                 const c = window.__xy.find(idv);
@@ -2128,9 +2204,24 @@ async function runSession(ws, req, lifecycle) {
                   octx.drawImage(c, 0, 0);
                   return oc.toDataURL('image/png'); // v0.58：直读回退 PNG——色块类图形 JPEG 反超（对照实测 +15%），复杂图走截图通道 JPEG
                 }
+                // v0.64b 动画 2D 叠加层：透明底不能上 JPEG（会黑底），改为半分辨率
+                // 离屏降采样 PNG——保 alpha 且字节 ~1/4、编码与 sig 同步变廉，
+                // 捕获环串行节奏下的实际帧率显著提升（beacon 弧线层实测）
+                if (fast && c.width >= 400) {
+                  try {
+                    const sc = document.createElement('canvas');
+                    const sw = Math.max(1, Math.round((c.width || 300) * dscale));
+                    const sh = Math.max(1, Math.round((c.height || 150) * dscale));
+                    sc.width = sw; sc.height = sh;
+                    const sctx = sc.getContext('2d');
+                    sctx.imageSmoothingEnabled = true;
+                    sctx.drawImage(c, 0, 0, sw, sh);
+                    return sc.toDataURL('image/png');
+                  } catch (e2) { /* 降采样失败回退全分辨率 */ }
+                }
                 return c.toDataURL('image/png');
               } catch (e) { return null; } finally { window.__xyOpsSuspend = suspPrev; }
-            }, it.id), 1500, 'canvasData').catch(() => null);
+            }, it.id, animFast, ANIM_SCALE), 1500, 'canvasData').catch(() => null);
             if (dataUrl && dataUrl.length > 40) {
               // v0.57：直读产物 mime 两态（透明底 PNG / 合成底色 JPEG）——从 dataUrl
               // 前缀提取真实 mime，服务端拼 data URL 才能正确解码
@@ -2146,8 +2237,9 @@ async function runSession(ws, req, lifecycle) {
             // closed-shadow 瓦片共用此通道，登录后页面图表区域与源站产生色差——
             // 保真优先；流量优化由 v0.58 canvas-ops 泄漏修复承担（实测 -50%）
             shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
-              format: 'png',
-              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) },
+              format: animFast ? 'jpeg' : 'png',
+              ...(animFast ? { quality: ANIM_QUALITY } : {}),
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * (animFast ? ANIM_SCALE : 1) },
               captureBeyondViewport: true,
             })), 3000, 'canvasShot').catch(() => null);
           }
@@ -2161,6 +2253,7 @@ async function runSession(ws, req, lifecycle) {
             } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
           } catch (e) {}
           if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) {
+            animStreak.delete(sigKey); // v0.64 静止即退出动画通道
             // 直读失真收敛：rAF 在动但直读内容连续不变 → 切截图通道
             if (usedData) {
               const n = (dataUrlBlank.get(sigKey) || 0) + 1;
@@ -2170,11 +2263,12 @@ async function runSession(ws, req, lifecycle) {
             continue;
           }
           if (usedData) dataUrlBlank.delete(sigKey);
+          animStreak.set(sigKey, (animStreak.get(sigKey) || 0) + 1); // v0.64 连续变化计数
           if (process.env.XY_DBG_TILE) { try { logger.log('[dbgtile] id=' + sigKey + ' kind=' + (it.kind || 'canvas') + ' via=' + (usedData ? 'data' : 'shot') + ' len=' + (shot ? shot.data.length : 'null')); } catch (e) {} }
           if (ws.readyState === 1) {
             // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
             //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id
-            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || 'image/png')) + ';base64,' + shot.data });
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || (animFast ? 'image/jpeg' : 'image/png'))) + ';base64,' + shot.data });
             ws.send(pl);
             ws._bytes = (ws._bytes || 0) + pl.length;
             ws._chunks = (ws._chunks || 0) + 1;
@@ -2187,6 +2281,7 @@ async function runSession(ws, req, lifecycle) {
 
   async function stopDomMirror() {
     domActive = false;
+    try { scStop(); } catch (e) {} // v0.65 会话停时停帧流
     try { await page.evaluate(() => { if (window.__xyObs) { window.__xyObs.disconnect(); window.__xyObs = null; } }); } catch {}
   }
 
