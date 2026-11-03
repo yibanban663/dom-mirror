@@ -696,13 +696,15 @@ function handleUpgrade(req, socket, head) {
     if (!ok) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
   }
   // v0.40 F1-DoS：每源 IP 新建会话限流（滑窗分钟；resume 的既有会话不占预算）
-  if (config.sessionRatePerMin > 0) {
+  // 全局兜底独立于 per-IP 开关：per-IP=0（不限）时 global 仍须生效——两者在
+  // options 注释中各自声明语义（"0=不限制"/"0=关"），嵌套会让全局被连坐关闭
+  if (config.sessionRatePerMin > 0 || config.sessionGlobalRatePerMin > 0) {
     const ip = (req.socket && req.socket.remoteAddress) || '?';
     const now = Date.now();
     let ring = wsRateLimiter.get(ip);
     if (!ring) { ring = []; wsRateLimiter.set(ip, ring); }
     while (ring.length && now - ring[0] > 60000) ring.shift();
-    if (ring.length >= config.sessionRatePerMin) {
+    if (config.sessionRatePerMin > 0 && ring.length >= config.sessionRatePerMin) {
       try { logger.log('[ws    ] rate-limited (per-ip)', ip); } catch (e) {}
       socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return;
@@ -724,7 +726,10 @@ function handleUpgrade(req, socket, head) {
     }
     ring.push(now);
     if (wsRateLimiter.size > 4096) { // 有界：清最旧条目防内存膨胀
-      const k0 = wsRateLimiter.keys().next().value;
+      let k0 = wsRateLimiter.keys().next().value;
+      // __global__ 是全局限流唯一计数载体（建于首个连接，插入序最旧之列）：
+      // 驱逐它 = 全局窗口静默清零，窗口内全局限流形同虚设——跳过并驱逐下一个
+      if (k0 === '__global__') k0 = [...wsRateLimiter.keys()][1];
       wsRateLimiter.delete(k0);
     }
   }
@@ -1720,21 +1725,26 @@ async function runSession(ws, req, lifecycle) {
     // 变化条目推宿主 outer 补丁（客户端整替 iframe，srcdoc 随新内容到达）
     try { await prepareXframes(false); } catch (e) {}
     if (!xframeTimer) {
-      xframeTimer = setInterval(async () => {
-        if (mode !== 'dom' || !domActive || dead || !page || ws.readyState !== 1) return;
-        try {
-          const changed = await prepareXframes(true);
-          if (!changed || !changed.length) return;
-          const patches = await withTimeout(page.evaluate((urls) => {
-            const out = [];
-            for (const f of document.body.querySelectorAll('iframe')) {
-              if (urls.includes(f.src)) out.push({ id: window.__xy.idOf(f), outer: window.__xy.sanitizeClone(f).outerHTML });
-            }
-            return out;
-          }, changed), 5000, 'xframePush').catch(() => null);
-          if (patches && patches.length && ws.readyState === 1) sendJson({ type: 'dom-patches', patches });
-        } catch (e) {}
-      }, Number(process.env.XFRAME_REFRESH_MS || 15000));
+      // 显式解析（此前 '0' 被 || 吞成 15000，setInterval(fn,0) 还会退化为疯转）：
+      // 0=禁用周期刷新，非法/缺省 15000
+      const xframeRefreshMs = Number(process.env.XFRAME_REFRESH_MS ?? 15000);
+      if (Number.isFinite(xframeRefreshMs) && xframeRefreshMs > 0) {
+        xframeTimer = setInterval(async () => {
+          if (mode !== 'dom' || !domActive || dead || !page || ws.readyState !== 1) return;
+          try {
+            const changed = await prepareXframes(true);
+            if (!changed || !changed.length) return;
+            const patches = await withTimeout(page.evaluate((urls) => {
+              const out = [];
+              for (const f of document.body.querySelectorAll('iframe')) {
+                if (urls.includes(f.src)) out.push({ id: window.__xy.idOf(f), outer: window.__xy.sanitizeClone(f).outerHTML });
+              }
+              return out;
+            }, changed), 5000, 'xframePush').catch(() => null);
+            if (patches && patches.length && ws.readyState === 1) sendJson({ type: 'dom-patches', patches });
+          } catch (e) {}
+        }, xframeRefreshMs);
+      }
     }
     // v4：dom 快照零截图（文本/输入框外观由客户端原生渲染，字体由源站 CSS 自带）。
     // frame 模式仍需整页截图作条带底板。
@@ -2050,7 +2060,10 @@ async function runSession(ws, req, lifecycle) {
     // DPR>1 时实测 76MB/min，占满访客链路 → 输入延迟 P95 达 1s（beacon 态势图）
     const tileBytes = [];
     const budgetHold = new Map();
-    const TILE_BUDGET = (parseInt(process.env.XY_TILE_BUDGET_MB || '18', 10) || 18) * 1048576;
+    // 显式解析（此前 || 链把合法 '0' 吞成默认 18）：0=禁用字节预算门（与
+    // canvasOpsBudget '0=不限' 同语义），非法/缺省回退 18
+    const TILE_BUDGET_MB = parseInt(process.env.XY_TILE_BUDGET_MB ?? '', 10);
+    const TILE_BUDGET = (Number.isFinite(TILE_BUDGET_MB) && TILE_BUDGET_MB >= 0 ? TILE_BUDGET_MB : 18) * 1048576;
     canvasTimer = setInterval(async () => {
       if (canvasBusy) return;
       if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
@@ -2091,7 +2104,7 @@ async function runSession(ws, req, lifecycle) {
             const nb = Date.now();
             while (tileBytes.length && nb - tileBytes[0].t > 60000) tileBytes.shift();
             let tsum = 0; for (const tb of tileBytes) tsum += tb.b;
-            if (tsum >= TILE_BUDGET) {
+            if (TILE_BUDGET > 0 && tsum >= TILE_BUDGET) {
               const hold = budgetHold.get(sigKey) || 0;
               if (nb < hold) continue;
               budgetHold.set(sigKey, nb + 1500);
