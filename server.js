@@ -128,6 +128,22 @@ function pathname_api(req) { try { return new URL(req.url, 'http://x').pathname;
 // 缓存/底色注入按源联动），无需重启改环境变量
 const dynamicOrigins = new Set();
 const liveAllowed = () => [...ALLOWED_ORIGINS, ...dynamicOrigins]; // selectOrigin 用 includes——必须数组
+// v0.66 回源 vhost 改写：ORIGIN_HOST_REWRITE="10.1.1.13:30080=>www.yuzhian.com.cn,..."
+// 用于按 Host 分发的回源（k8s ingress/nginx 虚机）：会话浏览器按 IP 访问会落默认 404。
+const originHostRewrite = new Map(String(process.env.ORIGIN_HOST_REWRITE || '').split(',').map(x => x.trim()).filter(Boolean).map(x => { const i = x.indexOf('=>'); return i > 0 ? [x.slice(0, i).trim(), x.slice(i + 2).trim()] : null; }).filter(Boolean));
+// v0.66 会话源站 vhost 规范化：白名单按原始形态校验（RBI_ALLOWED_ORIGINS 配回源地址），
+// 通过后导航/资产/会话内部一致改用 vhost 形态（容器 --add-host 把 vhost 解析到回源 IP），
+// Host 头天然正确——请求拦截覆盖 Host 对主导航不生效，暖池预热同样受益于此路径。
+function normalizeSessionOrigin(o) {
+  try {
+    const u = new URL(o);
+    const vh = originHostRewrite.get(u.host);
+    if (!vh) return o;
+    u.hostname = vh;
+    u.host = vh + (u.port ? ':' + u.port : '');
+    return u.origin;
+  } catch (e) { return o; }
+}
 const addDynamicOrigin = (origin) => {
   try {
     const u = new URL(origin);
@@ -171,7 +187,7 @@ function serveClientHtml(req, res) {
     if (clientHtmlRaw === null) clientHtmlRaw = stripClientComments(fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8'));
     // req.rbiOrigin 只在 WS upgrade 设置；GET 请求直接从受信头选源（多租户）
     let origin = ORIGIN_URL;
-    try { origin = new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())).origin; } catch (e) {}
+    try { origin = normalizeSessionOrigin(new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())).origin); } catch (e) {}
     const bg = originBgCache.get(origin);
     const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
     let html = clientHtmlRaw;
@@ -742,7 +758,7 @@ function handleUpgrade(req, socket, head) {
       return;
     }
   }
-  try { req.rbiOrigin = selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed()); }
+  try { req.rbiOrigin = normalizeSessionOrigin(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())); }
   catch { try { logger.log('[ws    ] x-rbi-origin not allowed:', String(req.headers['x-rbi-origin']).slice(0, 60)); } catch (e) {} socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
   // v0.38.1 WAF 防线：浏览器跨站 WS 劫持（CSRF/ws-cross-origin）——直连时
   // Origin 头必须等于本服务源（浏览器不可伪造 Origin）。经 ingress 代理的
@@ -2588,6 +2604,11 @@ async function runSession(ws, req, lifecycle) {
           }
         } catch (e) {}
         if (requestAllowed(r.url(), requestOrigins)) {
+          // v0.66 vhost 回源改写：白名单命中且配置了映射 → 以真实站点 Host 转发
+          try {
+            const rwH = originHostRewrite.get(new URL(r.url()).host);
+            if (rwH) { r.continue({ headers: Object.assign({}, r.headers(), { Host: rwH }) }).catch(() => {}); return; }
+          } catch (e) {}
           // v0.32 镜像复用：源站静态资产跨会话共享缓存命中——本地回填免回源
           // 带 Cookie 的请求（登录后鉴权资产）一律绕过缓存直连：网关侧抓取不带
           // 凭据，源站可能回 200 登录页 HTML——当 JS 回给浏览器即中毒（Vikunja
