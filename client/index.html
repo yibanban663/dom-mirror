@@ -558,6 +558,20 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
       if (fid !== null || fp !== null) keepFocus = { id: fid, path: fp, val: ae.isContentEditable ? null : ae.value, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
     }
     const mirrorHtml = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
+    // v0.71 @property 提升注册：CSS Houdini @property 在 shadow 作用域不被 Chromium
+    // 注册（tailwind v4 全站使用）——未注册的自定义属性无初始值，var() 链在
+    // computed-value 时失效：bg-gradient-to-r 的 --tw-gradient-stops 整条断链
+    // → linear-gradient(none) → 渐变标题/按钮隐形（SoulBind :82 实测）。
+    // 把 shadow 内样式中的 @property 规则复制一份到文档层 <style> 注册。
+    try {
+      const props = css2.match(/@property\s+--[\w-]+\s*\{[^}]*\}/g) || [];
+      if (props.length) {
+        let hoist = document.getElementById('xy-atprops');
+        if (!hoist) { hoist = document.createElement('style'); hoist.id = 'xy-atprops'; document.head.appendChild(hoist); }
+        const txt = props.join('\n');
+        if (hoist.textContent !== txt) hoist.textContent = txt;
+      }
+    } catch (e2) {}
     // v0.14：innerHTML 已不解析声明式 Shadow DOM（Chrome 提示需 setHTMLUnsafe）；
     // 影子树由 <template shadowrootmode> 重建。旧浏览器回退 innerHTML（无影子镜像）
     // v0.40 F4 纵深：快照整页同样过 parseHtml 的惰性预清洗（服务端 sanitize 为第一道）
