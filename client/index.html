@@ -1593,7 +1593,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             // 服务端页面自身滚动（锚点/JS/内部滚动区联动）→ 跟随到镜像容器
             if (j.sx !== undefined) {
               const ms = document.getElementById('mirrorScroll');
-              if (ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) {
+              if (!(ms && ms.__xyLocalAt && Date.now() - ms.__xyLocalAt < 450) && ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) { // v0.67 本地滚动活跃期忽略滞后回声
                 ms.__xySync = true;
                 ms.scrollLeft = j.sx; ms.scrollTop = j.sy;
                 setTimeout(() => { ms.__xySync = false; }, 80);
@@ -1881,12 +1881,12 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             // 服务端页面滚动（锚点/JS 自动滚动/内部滚动联动）→ 镜像跟随
             try {
               const ms = document.getElementById('mirrorScroll');
-              if (ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) {
+              if (!(ms && ms.__xyLocalAt && Date.now() - ms.__xyLocalAt < 450) && ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) { // v0.67 本地滚动活跃期忽略滞后回声
                 ms.__xySync = true;
                 ms.scrollLeft = j.sx; ms.scrollTop = j.sy;
                 setTimeout(() => { ms.__xySync = false; }, 80);
               }
-              if (Array.isArray(j.scrolls)) {
+              if (!(ms && ms.__xyLocalAt && Date.now() - ms.__xyLocalAt < 450) && Array.isArray(j.scrolls)) { // v0.67 同上
                 for (const s of j.scrolls) {
                   try {
                     const { el, top, left } = scrollEntry(s);
@@ -2171,6 +2171,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const reportScroll = () => { rumInputSent(); send({ type: 'scroll', x: Math.round(ms.scrollLeft), y: Math.round(ms.scrollTop) }); };
     ms.addEventListener('scroll', () => {
       if (ms.__xySync) return; // 服务端反向同步触发的滚动不再回传（防回环）
+      ms.__xyLocalAt = Date.now(); // v0.67 本地滚动活跃标记
       const now = Date.now();
       if (trailT) clearTimeout(trailT);
       trailT = setTimeout(reportScroll, 90); // 尾随补报：手势最后一段不会被 40ms 节流吞掉
