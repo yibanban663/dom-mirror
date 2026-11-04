@@ -554,9 +554,16 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
       const fid = idOfMirror(ae);
       const fp = fid !== null ? null : pathOfMirror(ae);
+      // v0.74 描述符兜底：受控输入每键重渲染会换节点（React/Vue 重挂载，uid/id
+      // 全变）→ 新树里 id/path 双失配。placeholder/name 维度找回同位字段
+      const desc = (!ae.isContentEditable && ae.getAttribute) ? { tag: ae.tagName, name: ae.getAttribute('name') || '', ph: ae.getAttribute('placeholder') || '', type: (ae.getAttribute('type') || '').toLowerCase() } : null;
       // 本地值同样保留：快照可能早于服务端处理完最后几个按键（与 dom-props 跳过焦点元素同一策略）
-      if (fid !== null || fp !== null) keepFocus = { id: fid, path: fp, val: ae.isContentEditable ? null : ae.value, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
+      if (fid !== null || fp !== null || desc) keepFocus = { id: fid, path: fp, desc, val: ae.isContentEditable ? null : ae.value, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
     }
+    // v0.74 全量重建使挂起补丁全部过期（快照权威且更新）——此前重建销毁焦点
+    // 元素触发 focusout 批量应用，把打字中途挂起的陈旧补丁盖回新树（草稿
+    // 截断竞态实测根因：服务端值完整、客户端停在半截）
+    pendingFocusPatches = [];
     const mirrorHtml = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     // v0.71 @property 提升注册：CSS Houdini @property 在 shadow 作用域不被 Chromium
     // 注册（tailwind v4 全站使用）——未注册的自定义属性无初始值，var() 链在
@@ -1103,13 +1110,29 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     // 还原重建前的焦点（打字→重同步→回车链路不断）
     if (keepFocus) {
       try {
-        const el = mirrorFind(keepFocus.id !== null ? keepFocus.id : keepFocus.path);
+        let el = mirrorFind(keepFocus.id !== null ? keepFocus.id : keepFocus.path);
+        if (!el && keepFocus.desc) {
+          // v0.74 id/path 双失配（受控输入重挂载）→ placeholder/name 描述符找回；
+          // 唯一命中才用（多同名字段不猜）
+          try {
+            const d = keepFocus.desc;
+            const sels = [];
+            if (d.ph) sels.push(d.tag + '[placeholder=' + JSON.stringify(d.ph) + ']');
+            if (d.name) sels.push(d.tag + '[name=' + JSON.stringify(d.name) + ']');
+            for (const s of sels) {
+              const cands = mirrorBody ? [...mirrorBody.querySelectorAll(s)] : [];
+              if (cands.length === 1) { el = cands[0]; break; }
+            }
+          } catch (e2) {}
+        }
         if (el && el.focus) {
           el.focus();
           if (keepFocus.val !== null && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value !== keepFocus.val) el.value = keepFocus.val;
           if (keepFocus.sel && el.setSelectionRange && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value.length) {
             el.setSelectionRange(Math.min(keepFocus.sel[0], el.value.length), Math.min(keepFocus.sel[1], el.value.length));
           }
+          // v0.74 兜底命中的是新节点：lastTyped 迁移到新 id，后续失焦恢复不丢
+          try { const nid = idOfMirror(el); if (nid !== null && keepFocus.val !== null) lastTyped.set(nid, keepFocus.val); } catch (e3) {}
         }
       } catch (e) {}
     }
@@ -2036,7 +2059,11 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               // v0.50 resume 降级：令牌失效（引擎重启/过期被回收）时清令牌并自动
               // 全新重连一次。不清令牌的话刷新永远带着死令牌，页面卡"已断开"，
               // 用户以为服务故障——实际只需一次无 resume 的全新握手。
-              if (resumeToken) {
+              // v0.74 收窄：降级仅限"本视图从未上线"（F5 冷载死令牌场景）。
+              // 已上线会话的过期必须显式「重新开始」——静默变新会话会让访客
+              // 误以为仍是原会话（草稿/登录态凭空消失），expiry 契约由此保证
+              //（v0.50 起按钮永不出现，identity/revocation/recovery 四套件红）
+              if (resumeToken && !everOnline) {
                 setResume(null);
                 retryAllowed = true;
                 clearTimeout(retryTimer);

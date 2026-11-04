@@ -161,17 +161,43 @@ const addDynamicOrigin = (origin) => {
 
 // v0.32.2 消白闪：入口 HTML 注入源站底色（首绘即源站色；<head> 后插一行样式）
 let clientHtmlRaw = null;
-// v0.36 防泄漏：下发前剥注释（整行 // 与 /* */ 续行、HTML 注释整段）——
+// v0.36 防泄漏：下发前剥注释（整行 // 与 /* */ 块、HTML 注释整段）——
 // 引擎内部版本史/设计注释不该暴露给访客；并注入控制台静默（?xydebug 开启）
+// v0.74 改状态机剥除：此前按行首标记过滤，多行 /* */ 的"非 * 开头续行"
+// （v0.55 CSS 中文注释实测）残留为裸文本——CSS 解析器把裸文本与下一条
+// 规则的选择器合并为非法选择器整条丢弃（body.prod #navWrap 失效 → prod
+// 工具栏不浮层化、被镜像层盖住，gen_nav 地址栏跳转点击全落空）。逐块
+// 扫 /* 开闭 + 行内完整对剥除 + 行首 // 保持原语义；客户端已核实无字符串
+// 内嵌 /* 风险（仅 4 处完整内联对）
 function stripClientComments(html) {
   let out = html.replace(/<!--[\s\S]*?-->/g, '');
   // 引擎身份串不外泄（指纹化目标）：标题/页头等处的产品名统一中性化
   out = out.replace(/dom-mirror/gi, 'mirror');
-  out = out.split('\n').filter((line) => {
-    const t = line.trim();
-    return !(t.startsWith('//') || t.startsWith('/*') || t === '*' || t.startsWith('* ') || t.startsWith('*/'));
-  }).join('\n');
-  return out;
+  const kept = [];
+  let inBlock = false;
+  for (const line of out.split('\n')) {
+    if (inBlock) {
+      const c = line.indexOf('*/');
+      if (c < 0) continue; // 块内整行丢弃
+      inBlock = false;
+      const rest = line.slice(c + 2);
+      if (rest.trim() && !rest.trim().startsWith('//')) kept.push(rest); // 块尾同行残余代码保留
+      continue;
+    }
+    let s = line;
+    for (;;) {
+      const o2 = s.indexOf('/*');
+      if (o2 < 0) break;
+      const c2 = s.indexOf('*/', o2 + 2);
+      if (c2 >= 0) { s = s.slice(0, o2) + ' ' + s.slice(c2 + 2); continue; } // 行内完整对
+      s = s.slice(0, o2); // 跨行块：保留 /* 前代码，进入块模式
+      inBlock = true;
+      break;
+    }
+    if (s.trim().startsWith('//')) continue; // 行首 // 整行
+    kept.push(s);
+  }
+  return kept.join('\n');
 }
 // v0.52 快照重放：F5/断线 resume 时 page 静止则原样重放上次快照帧——
 // 跳过 snapshotReal 全量（beacon 页实测 247KB CSS 收集 + 全 DOM 序列化 1-3s），
@@ -179,11 +205,23 @@ function stripClientComments(html) {
 const SNAP_REPLAY_BUDGET = 256 * 1024 * 1024;
 let snapReplayBytes = 0;
 function quickDomSig(p) {
-  return p.evaluate(() => ({
-    url: location.pathname + location.search,
-    els: document.querySelectorAll('*').length,
-    len: (document.documentElement.outerHTML || '').length,
-  })).catch(() => null);
+  return p.evaluate(() => {
+    // v0.74 表单值指纹：.value 经原型 setter 写入不产生任何 DOM 变更（子文本/
+    // 属性都不动），url/els/len 对打字完全无感——resume 的 F5 快照重放曾据此把
+    // 打字中途的陈旧快照当"静止页"原样重放（Vikunja 草稿恢复实测：会话页
+    // .value 完整 25 字符、重放 payload 停在 10 字符）。指纹只串联各控件值
+    // 长度（不含明文），任何字段增删改都使指纹变化。
+    let vals = '';
+    try {
+      for (const el of document.body.querySelectorAll('input, textarea, select')) vals += String((el.value || '')).length + '.';
+    } catch (e2) { vals = 'E'; }
+    return {
+      url: location.pathname + location.search,
+      els: document.querySelectorAll('*').length,
+      len: (document.documentElement.outerHTML || '').length,
+      vals,
+    };
+  }).catch(() => null);
 }
 
 function serveClientHtml(req, res) {
@@ -1418,7 +1456,8 @@ async function runSession(ws, req, lifecycle) {
         if (sig2 && snapReplay.sig
             && sig2.url === snapReplay.sig.url
             && sig2.els === snapReplay.sig.els
-            && sig2.len === snapReplay.sig.len) {
+            && sig2.len === snapReplay.sig.len
+            && sig2.vals === snapReplay.sig.vals) { // v0.74 值指纹不符禁重放
           ws.send(snapReplay.payload);
           ws._bytes = (ws._bytes || 0) + snapReplay.payload.length;
           ws._chunks = (ws._chunks || 0) + 1;
@@ -1426,7 +1465,11 @@ async function runSession(ws, req, lifecycle) {
           logger.log('[snap ] replay', Math.round(snapReplay.payload.length / 1024) + 'KB (F5 fast path)');
         }
       }
-      if (!replayed) await startDomMirror();
+      // v0.74 resume 稳定期：断线重连瞬间，新 socket 的排队消息（hello 重派/
+      // ping）与会话侧定时器（导航重拍链/瓦片循环）在快照发起点交错——Vikunja
+      // frame 模式实测毫秒级竞态（打字后重连偶发陈旧半截草稿下发；在决策点
+      // 插入一次 evaluate 往返即稳定通过=窗口极窄）。此处显式让出一拍再重拍
+      if (!replayed) { await new Promise((r2) => setTimeout(r2, 25)); await startDomMirror(); }
       sendJson({ type: 'sync-ready' });
     }).catch(() => ws.close(1011, 'resume failed'));
   });
@@ -2890,7 +2933,8 @@ async function runSession(ws, req, lifecycle) {
                   if (sig && lastSnapDomSig
                       && sig.url === lastSnapDomSig.url
                       && sig.els === lastSnapDomSig.els
-                      && sig.len === lastSnapDomSig.len) return;
+                      && sig.len === lastSnapDomSig.len
+                      && sig.vals === lastSnapDomSig.vals) return; // v0.74 值变化不算静止
                 } catch (e2) {}
                 startDomMirror().catch(() => {});
               }, d);
@@ -2954,6 +2998,10 @@ async function runSession(ws, req, lifecycle) {
     { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
       sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: !!warmEntry, bg: bgNow });
       }
+    // v0.74 首连即发 location：客户端工具栏 unhide（prod 顶部唤出热区）与伪地址
+    // 栏同步都挂在 location 处理器上——此前仅导航/恢复路径发送，纯浏览会话的
+    // 工具栏永远 hidden、hover 唤出失效（gen_nav 实测 navGo 点击落空）
+    try { sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) }); } catch (e) {}
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
 
     dispatchReady = true;

@@ -59,7 +59,12 @@ const source = http.createServer(async (req, res) => {
     const page = await client.newPage();
     await page.evaluateOnNewDocument(require('./profile-client.cjs'));
     await page.goto(url);
-    await page.waitForFunction(() => document.querySelector('#connectionNotice').hidden, { timeout: 30000 });
+    // v0.74：v0.50 起客户无感启动（prod/embedded 预置 body.prod + 首连提示延迟
+    // 1.5s）——#connectionNotice 在启动期即 hidden，仅等 hidden 会过早放行
+    //（镜像未建成就点击 #command）。就绪屏障改为 hidden 且镜像含 fixture 输入
+    await page.waitForFunction(() => document.querySelector('#connectionNotice').hidden
+      && !!(document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot
+        && document.querySelector('#mirrorHost').shadowRoot.querySelector('#command')), { timeout: 30000 });
     await page.click('#mirrorHost >>> #command'); await page.type('#mirrorHost >>> #command', 'probe');
     report.initialPixel = await page.evaluate(() => [...document.querySelector('#mirrorHost').shadowRoot
       .querySelector('canvas.xy-tiles').getContext('2d').getImageData(1260, 20, 1, 1).data]);
