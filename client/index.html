@@ -1564,6 +1564,10 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             }
           }
           if (j.type === 'sync-ready') { syncReady = true; activate(); }
+          if (j.type === 'title') {
+            // v0.72 SPA 路由切换后的标题跟随（服务端 1s 轮询，变化才推）
+            try { if (j.title != null && document.title !== j.title) document.title = j.title; m('oTitle').textContent = j.title; } catch (e) {}
+          }
           if (j.type === 'meta') {
             window.__xyWarmMeta = !!j.warm; // v0.32 热页命中（验收观测点）
             // v0.32.2 消白闪：快照落位前先铺源站底色
