@@ -136,7 +136,11 @@ async function main() {
     results.D_snapshots = d.snaps;
     results.D_rebuilds = d.rebuilds;
     results.D_alive = !!d.stillThere;
-    results.D_dedupe = d.snaps >= 2 && d.rebuilds <= 1 && d.stillThere;
+    // v0.55 起 +600/+1500 兜底重拍有门控：DOM 签名（url/els/len）未变的同页导航
+    // 跳过重拍（消"闪三次"）。相同导航现仅 1 次即时重拍快照。去重不变量改为：
+    // 至少 1 次导航重拍（镜像不冻结）+ 重建<=1（无视觉抖动）+ 内容存活。
+    // 客户端 lastSnapKey 去重（v0.54）仍为第二道防线，由 rebuilds<=1 覆盖。
+    results.D_dedupe = d.snaps >= 1 && d.rebuilds <= 1 && d.stillThere;
   } catch (error) {
     results.D_error = error.message;
   } finally {
