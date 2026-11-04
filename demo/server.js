@@ -50,9 +50,9 @@ async function startDemo(createMirror = require('..').createMirror) {
       height: Number(process.env.VIEW_H ?? 800),
       maxSessions: Number(process.env.MAX_SESSIONS ?? 3),
       sessionGraceMs: Number(process.env.SESSION_GRACE_MS ?? 60000),
-      allowedOrigins: (process.env.RBI_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
-      crossOriginFrameOrigins: (process.env.XFRAME_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
-      requestOrigins: (process.env.REQUEST_ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
+      allowedOrigins: (process.env.RBI_ALLOWED_ORIGINS || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
+      crossOriginFrameOrigins: (process.env.XFRAME_ALLOWED_ORIGINS || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
+      requestOrigins: (process.env.REQUEST_ALLOWED_ORIGINS || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
       defaultMode: process.env.DEFAULT_MODE || 'dom',
       presentation: process.env.PROD_PRESENTATION === '1' ? 'embedded' : 'demo',
       // v0.36.2：混淆改为显式开启（OBFUSCATE=1）。此前默认开——池缺省时自动降级
@@ -75,14 +75,14 @@ async function startDemo(createMirror = require('..').createMirror) {
       sessionAuthToken: process.env.SESSION_AUTH_TOKEN || '',
       sessionRatePerMin: process.env.SESSION_RATE_PER_MIN !== undefined ? Number(process.env.SESSION_RATE_PER_MIN) : 60,
       sessionGlobalRatePerMin: process.env.SESSION_GLOBAL_RATE_PER_MIN !== undefined ? Number(process.env.SESSION_GLOBAL_RATE_PER_MIN) : 240,
-      mirrorPublicOrigins: (process.env.MIRROR_PUBLIC_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
+      mirrorPublicOrigins: (process.env.MIRROR_PUBLIC_ORIGINS || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
       // v0.32 镜像复用：热页与源站资产缓存（演示/生产默认开；0 关）
       sessionWarmup: process.env.SESSION_WARMUP !== undefined ? Number(process.env.SESSION_WARMUP) : 1,
       sessionWarmupTtl: Number(process.env.SESSION_WARMUP_TTL) || 90000,
       originAssetCacheMb: process.env.ORIGIN_ASSET_CACHE_MB !== undefined ? Number(process.env.ORIGIN_ASSET_CACHE_MB) : 32,
       originAssetCacheTtl: Number(process.env.ORIGIN_ASSET_CACHE_TTL) || 120000,
       sessionGraceMs: Number(process.env.SESSION_GRACE_MS) || 60000,
-      maskInputTypes: (process.env.MASK_INPUT_TYPES || '').split(',').map(v => v.trim()).filter(Boolean),
+      maskInputTypes: (process.env.MASK_INPUT_TYPES || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
     });
     const server = http.createServer(mirror.handleRequest);
     servers.push(server);
