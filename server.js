@@ -2082,6 +2082,9 @@ async function runSession(ws, req, lifecycle) {
     let rafLast = { n: -1, at: 0 };
     let listCache = { at: 0, list: null };
     const captureTimes = [];
+    // v0.70 全局捕获预算（次/秒，默认 12）：多画布页面（5+ 图表）相互挤占时的
+    // 总闸门。XY_TILE_CAPTURE_PER_SEC，1-120，非法回退 12。
+    const CAPTURE_PER_SEC = Math.min(120, Math.max(1, parseInt(process.env.XY_TILE_CAPTURE_PER_SEC ?? '12', 10) || 12));
     // v0.63 瓦片字节预算：滚动 60s 窗口内 canvas-tile 线上字节超预算时按画布
     // 节流（每画布 1.5s 惩罚窗，窗口回落即自动恢复）。动画 WebGL 大画布在
     // DPR>1 时实测 76MB/min，占满访客链路 → 输入延迟 P95 达 1s（beacon 态势图）
@@ -2105,6 +2108,9 @@ async function runSession(ws, req, lifecycle) {
     // 串行捕获环 ~600ms/轮的限制不再约束动画帧率。流激活期间上层动画叠加画布
     // 置 1px 透明占位（合成流已含其像素），停流后常规瓦片通道自动恢复真值。
     const ANIM_FPS = Math.min(30, Math.max(2, parseInt(process.env.XY_TILE_ANIM_FPS || '8', 10) || 8));
+    // v0.70 帧流源采样 everyNthFrame（默认 4：60fps 源 → 15fps 事件流，再由
+    // ANIM_FPS 节流下发）。高刷/省 CPU 场景可调。XY_TILE_ANIM_EVERY_NTH，1-30。
+    const ANIM_EVERY_NTH = Math.min(30, Math.max(1, parseInt(process.env.XY_TILE_ANIM_EVERY_NTH ?? '4', 10) || 4));
     let scOn = false, scLastSend = 0, scTarget = null, scBlank = new Set(), scLastAnimAt = 0, scGen = 0;
     const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
     let scHandler = null;
@@ -2144,7 +2150,7 @@ async function runSession(ws, req, lifecycle) {
           } catch (e) {}
         };
         cdp.on('Page.screencastFrame', scHandler);
-        cdp.send('Page.startScreencast', { format: 'jpeg', quality: ANIM_QUALITY, maxWidth: Math.max(160, Math.round(viewW * Math.min(DPR, 1.5) * ANIM_SCALE)), maxHeight: Math.max(120, Math.round(viewH * Math.min(DPR, 1.5) * ANIM_SCALE)), everyNthFrame: 4 }).catch(async () => { await scStop(); });
+        cdp.send('Page.startScreencast', { format: 'jpeg', quality: ANIM_QUALITY, maxWidth: Math.max(160, Math.round(viewW * Math.min(DPR, 1.5) * ANIM_SCALE)), maxHeight: Math.max(120, Math.round(viewH * Math.min(DPR, 1.5) * ANIM_SCALE)), everyNthFrame: ANIM_EVERY_NTH }).catch(async () => { await scStop(); });
         scOn = true; scTarget = target; scBlank = new Set(blanks);
         for (const b of scBlank) { // 叠加画布置透明占位（合成流已含其像素）
           const pl = JSON.stringify({ type: 'canvas-tile', id: b.id, path: b.path, x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h), url: BLANK_PNG });
@@ -2199,7 +2205,7 @@ async function runSession(ws, req, lifecycle) {
           if (scOn && [...scBlank].some((b) => b.id === sigKey)) continue; // v0.65 透明占位中
           if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
-          if (captureTimes.length >= 12) break;
+          if (captureTimes.length >= CAPTURE_PER_SEC) break; // v0.70 env 化
           // v0.63 字节预算门：超限时每画布至少间隔 1.5s（urgent 静态变更最多延迟
           // 一个惩罚窗，动画画布自动降档；窗口 60s 回落即恢复原节奏）
           {
