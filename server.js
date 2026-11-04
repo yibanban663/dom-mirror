@@ -52,7 +52,11 @@ const CHROME_ARGS = [
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
-  '--disable-features=CalculateNativeWinOcclusion',
+  // v0.72 HTTPS-First 探测禁用：全新（无访问历史）浏览器首访 http-only vhost 时
+  // Chromium 自动把导航升级到 https 试探，被拒后整次导航失败（ERR_BLOCKED_BY_CLIENT，
+  // yz 源站直开实测）。热页池的访问历史掩盖了冷启动场景——禁用后行为确定性
+  // 不依赖池状态；显式 https 链接不受影响
+  '--disable-features=CalculateNativeWinOcclusion,HttpsUpgrades,HttpsFirstBalancedMode,HttpsFirstModeV2ForEngagedSites',
 ];
 let closed = false;
 let closePromise;
@@ -907,6 +911,7 @@ async function runSession(ws, req, lifecycle) {
           let sx = 0, sy = 0;
           try { const sc = await Promise.race([page.evaluate(() => [window.scrollX, window.scrollY]), new Promise((r2) => setTimeout(() => r2(null), 2000))]); if (sc) { sx = sc[0] | 0; sy = sc[1] | 0; } } catch (e) {}
           if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
+          if (titleTimer) { clearInterval(titleTimer); titleTimer = null; } // v0.72
           if (structTimer) { clearTimeout(structTimer); structTimer = null; }
           structBuf.clear(); lastPatchSent.clear();
           try { await Promise.race([cdp.detach(), new Promise((r2) => setTimeout(r2, 5000))]); } catch (e) {}
@@ -1052,6 +1057,7 @@ async function runSession(ws, req, lifecycle) {
   let diffTimer = null, diffBusy = false, diffTick = 0;
   // v3 dom 模式：canvas 元素按需捕获 / 结构补丁合并窗 / 滚动同步去重
   let canvasTimer = null;
+  let titleTimer = null; // v0.72 title 持续同步（SPA 路由切换跟随）
   let structTimer = null; const structBuf = new Map();
   const lastPatchSent = new Map();
   let lastScrollKey = '';
@@ -2101,6 +2107,7 @@ async function runSession(ws, req, lifecycle) {
     // 实测 beacon 态势图：300KB PNG 瓦片在 18MB/min 预算下仅 ~0.9fps，地球呈
     // 冻结-跳变；JPEG@q50/0.5x 后预算内可达 ~5-7fps（慢速旋转视觉连续）。
     const animStreak = new Map();
+    const vidLast = new Map(); // v0.72 video 帧节流（sigKey→上次捕获时刻）
     const ANIM_SCALE = Math.min(1, Math.max(0.25, parseFloat(process.env.XY_TILE_ANIM_SCALE || '0.5') || 0.5));
     const ANIM_QUALITY = Math.min(95, Math.max(20, parseInt(process.env.XY_TILE_ANIM_QUALITY || '50', 10) || 50));
     // v0.65 动画帧流：存在动画画布时启动 CDP startScreencast（浏览器侧 JPEG 编码、
@@ -2180,10 +2187,12 @@ async function runSession(ws, req, lifecycle) {
         const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
         if (rafN === null) return;
         let rafActive = false;
-        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.hot)) return; }
+        // v0.72 video 旁路 rAF 门：视频播放不依赖页面 rAF（纯 <video> 页 rAF 静止），
+        // 页内有可见 video 就保持捕获循环存活；静止视频由 sig 指数退避收敛成本
+        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) return; }
         else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
         // v0.65 动画集合（含 streak 判定）——用于帧流目标与占位集
-        const animItems = list.filter((it) => it.kind !== 'elbit' && rafActive && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2);
+        const animItems = list.filter((it) => it.kind !== 'elbit' && it.kind !== 'video' && rafActive && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2); // v0.72 video 不进帧流（非 canvas 合成面）
         if (animItems.length) {
           scLastAnimAt = Date.now();
           if (!scOn) {
@@ -2204,6 +2213,9 @@ async function runSession(ws, req, lifecycle) {
           if (scOn && scTarget && sigKey === scTarget.id) continue; // v0.65 帧流承载
           if (scOn && [...scBlank].some((b) => b.id === sigKey)) continue; // v0.65 透明占位中
           if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
+          // v0.72 video 帧率节流：循环 120ms，video 最低间隔 200ms（≈5fps）；
+          // 全局另受 CAPTURE_PER_SEC 与 60s 字节预算约束
+          if (it.kind === 'video') { const lt = vidLast.get(sigKey) || 0; if (Date.now() - lt < 200) continue; }
           // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
           if (captureTimes.length >= CAPTURE_PER_SEC) break; // v0.70 env 化
           // v0.63 字节预算门：超限时每画布至少间隔 1.5s（urgent 静态变更最多延迟
@@ -2227,11 +2239,14 @@ async function runSession(ws, req, lifecycle) {
           // ②注入前创建的 GL 上下文无标记——直读连续 2 拍不变且 rAF 在动
           //（像素在变=直读说谎）→ glSticky 永久切截图（收敛自愈）
           // ③读取失败（污染）。elbit（DOM 区域）同走截图
-          const viaData = it.kind !== 'elbit' && it.id !== undefined && !glSticky.has(sigKey);
+          const viaData = it.kind !== 'elbit' && it.kind !== 'video' && it.id !== undefined && !glSticky.has(sigKey); // v0.72 video 无 canvas 缓冲可直读
           let shot = null;
           let usedData = false;
           // v0.64 动画快速通道判定（streak 来自此前各拍；截图后 sig record 再更新）
           const animFast = it.kind !== 'elbit' && rafActive && (animStreak.get(sigKey) || 0) >= 2;
+          // v0.72 video fast lane：播放中（帧连续变化 streak≥1）JPEG@ANIM_QUALITY
+          // 半分辨率；首帧/静止保持 PNG 全分辨率（海报帧保真）
+          const vidFast = it.kind === 'video' && (animStreak.get(sigKey) || 0) >= 1;
           if (viaData) {
             // v0.43 tile 通道同样合成 CSS 底色（透明底 canvas 的 toDataURL 透明
             // 像素会在客户端 img 上透出白底——与源站视觉不一致）
@@ -2284,14 +2299,15 @@ async function runSession(ws, req, lifecycle) {
             // closed-shadow 瓦片共用此通道，登录后页面图表区域与源站产生色差——
             // 保真优先；流量优化由 v0.58 canvas-ops 泄漏修复承担（实测 -50%）
             shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
-              format: animFast ? 'jpeg' : 'png',
-              ...(animFast ? { quality: ANIM_QUALITY } : {}),
-              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * (animFast ? ANIM_SCALE : 1) },
+              format: (animFast || vidFast) ? 'jpeg' : 'png',
+              ...((animFast || vidFast) ? { quality: ANIM_QUALITY } : {}),
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * ((animFast || vidFast) ? ANIM_SCALE : 1) },
               captureBeyondViewport: true,
             })), 3000, 'canvasShot').catch(() => null);
           }
           if (!shot) continue;
           captureTimes.push(Date.now());
+          if (it.kind === 'video') vidLast.set(sigKey, Date.now()); // v0.72
           let sig = null;
           try {
             if (sharp) {
@@ -2315,7 +2331,7 @@ async function runSession(ws, req, lifecycle) {
           if (ws.readyState === 1) {
             // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
             //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id
-            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || (animFast ? 'image/jpeg' : 'image/png'))) + ';base64,' + shot.data });
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || ((animFast || vidFast) ? 'image/jpeg' : 'image/png'))) + ';base64,' + shot.data });
             ws.send(pl);
             ws._bytes = (ws._bytes || 0) + pl.length;
             ws._chunks = (ws._chunks || 0) + 1;
@@ -2324,10 +2340,23 @@ async function runSession(ws, req, lifecycle) {
         }
       } catch (e) {} finally { canvasBusy = false; }
     }, 120);
+    // v0.72 title 持续同步：SPA 路由切换会改写 <title>，此前仅 WS meta 首帧携带，
+    // 镜像标签页标题停在初始值（实测 sr_login 镜像 "Metis" vs 源站 "墨提斯 - 智能渗透测试平台"）
+    if (!titleTimer) {
+      let lastTitle = null;
+      titleTimer = setInterval(async () => {
+        if (dead || !page || ws.readyState !== 1) return;
+        try {
+          const t = await withTimeout(page.title(), 800, 'title').catch(() => null);
+          if (t && t !== lastTitle) { lastTitle = t; sendJson({ type: 'title', title: t }); }
+        } catch (e) {}
+      }, 1000);
+    }
   }
 
   async function stopDomMirror() {
     domActive = false;
+    if (titleTimer) { clearInterval(titleTimer); titleTimer = null; } // v0.72
     try { scStop(); } catch (e) {} // v0.65 会话停时停帧流
     try { await page.evaluate(() => { if (window.__xyObs) { window.__xyObs.disconnect(); window.__xyObs = null; } }); } catch {}
   }
@@ -2608,19 +2637,36 @@ async function runSession(ws, req, lifecycle) {
     navOrigins = requestOrigins;
     if (typeof page.setRequestInterception === 'function') {
       await page.setRequestInterception(true);
-      // 弹窗的首个请求发生在新页面上、不经过本页拦截：在页面脚本之前禁用新窗口
-      if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(() => {
+      // 弹窗的首个请求发生在新页面上、不经过本页拦截。v0.72 起不再"吞掉"而是改
+      // 同页导航：window.open / target=_blank 类交互在镜像里从"无任何反馈"变为
+      // current-tab 跳转——主框架导航管线（源站白名单/NAVIGATION_BLOCKED/导航
+      // 同步/客户端跟随）全部生效；javascript:/data:/blob: 等非导航协议仍丢弃。
+      // evaluateOnNewDocument 只对"下一次"导航生效：热页池接管的当前文档在装配
+      // 前已加载、注入不回溯（实测热页会话里 window.open 走原生弹新标签，引擎
+      // 无感知）——当前文档再直接补挂一次（__xyNoWinOpen 幂等守卫）。
+      const winOpenOverride = () => {
         if (window.__xyNoWinOpen) return;
         window.__xyNoWinOpen = true;
-        window.open = () => null;
+        const navSelf = (u) => {
+          try {
+            if (typeof u !== 'string' || !u || /^(javascript|data|blob|mailto|tel|about):/i.test(u.trim())) return;
+            const abs = new URL(u, location.href).href;
+            if (abs !== location.href) location.href = abs;
+          } catch (e) {}
+        };
+        window.open = (u) => { navSelf(u); return null; };
         const newWindow = (t) => t && !/^_(self|parent|top)$/i.test(t);
-        for (const type of ['click', 'submit']) {
-          window.addEventListener(type, (e) => {
-            const el = e.target && e.target.closest && e.target.closest(type === 'click' ? 'a[target],area[target]' : 'form[target]');
-            if (el && newWindow(el.getAttribute('target'))) e.preventDefault();
-          }, true);
-        }
-      });
+        window.addEventListener('click', (e) => {
+          const el = e.target && e.target.closest && e.target.closest('a[target],area[target]');
+          if (el && newWindow(el.getAttribute('target'))) { e.preventDefault(); navSelf(el.getAttribute('href')); }
+        }, true);
+        window.addEventListener('submit', (e) => {
+          const el = e.target && e.target.closest && e.target.closest('form[target]');
+          if (el && newWindow(el.getAttribute('target'))) el.removeAttribute('target'); // 自然按 _self 提交
+        }, true);
+      };
+      if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(winOpenOverride);
+      try { await page.evaluate(winOpenOverride); } catch (e) {}
       page.on('request', (r) => {
         // v0.45 P4 修复：API 文档拦截必须在 requestAllowed 之前——
         // 白名单源的请求走 requestAllowed→continue→return 先退出，
