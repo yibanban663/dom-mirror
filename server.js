@@ -317,6 +317,17 @@ async function launchSessionBrowser() {
 // 多源会话（x-rbi-origin 白名单）资产以 /m/o/<b64url(origin)>/path 下发，
 // 短式 /m/path 固定路由到 ORIGIN_URL 缺省源站（历史形态，缓存友好）。
 const ORIGIN_ALLOWED = new Set([ORIGIN_BASE.origin, ...ALLOWED_ORIGINS.map(x => String(x).replace(/\/+$/, ''))]);
+// v0.67b 资产代理白名单补 vhost 形态：normalizeSessionOrigin 把会话源站改写为
+// vhost 后，客户端以 /m/o/<b64(vhost)>/ 请求资产，而 ORIGIN_ALLOWED 只有回源
+// IP 形态 → logo 等静态图 403（:91 实测）。为每个命中改写表的白名单源站
+// 追加其 vhost 形态。
+for (const x of ALLOWED_ORIGINS) {
+  try {
+    const u = new URL(String(x).replace(/\/+$/, ''));
+    const vh = originHostRewrite.get(u.host);
+    if (vh) { u.hostname = vh; u.host = vh + (u.port ? ':' + u.port : ''); ORIGIN_ALLOWED.add(u.origin); }
+  } catch (e) {}
+}
 const httpBoth = { http: require('http'), https: require('https') };
 const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? httpBoth.https : httpBoth.http;
 // /m 代理路径 → 绝对 URL（obf 网站字体下载等 Node 侧消费方使用）；非代理形态原样返回
