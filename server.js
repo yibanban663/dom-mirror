@@ -1508,7 +1508,12 @@ async function runSession(ws, req, lifecycle) {
     if (!m || typeof m !== 'object' || Array.isArray(m)) return;
     try {
       await handleCommand(m);
-    } catch (e) { sendJson({ type: 'error', msg: '事件处理异常: ' + e.message }); }
+    } catch (e) {
+      // 不透传内部错误细节(CDP 方法名/协议错误可被访客探测实现)——完整错误
+      // 只进服务端日志, 访客侧收通用文案
+      try { logger.log('[cmd-err]', e && e.message); } catch (e2) {}
+      sendJson({ type: 'error', msg: '事件处理异常，本次操作已忽略' });
+    }
   };
   let snapReplay = null; // v0.52 快照重放缓存（本会话最近一次全量帧+DOM签名）
   let lastSnapDomSig = null; // v0.55 导航重拍链门控：最近一次全量快照完成时的 DOM 签名
