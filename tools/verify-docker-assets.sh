@@ -30,7 +30,7 @@ docker network create --internal "$run_id" >/dev/null
 docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server" --network "$run_id" --network-alias mirror \
   "${proxy_env[@]}" \
   --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=8 \
-  -e ORIGIN_URL=http://127.0.0.1:8077/assets.html \
+  -e ORIGIN_URL=http://127.0.0.1:8077/assets.html -e XY_CSS_PASSTHROUGH=1 \
   -e RBI_ALLOWED_ORIGINS=http://origin-b:8000 \
   "$image" timeout 180 node demo/server.js >/dev/null
 for f in assets.html assets.css font.woff2 img.png; do
@@ -58,7 +58,8 @@ docker exec "$originb" node -e '
   })().catch(() => process.exit(1));
 '
 
-docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --memory 2g \
+# v0.76 诊断：失败时打印引擎日志尾巴（cleanup 只落盘不上传）
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --rm --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" \
   -e MIRROR_URL=http://mirror:8088/ -e ORIGIN_B=http://origin-b:8000 -e EVIDENCE_DIR=/tmp/assets-evidence \
-  --entrypoint timeout "$image" 170 node tools/verify-assets.cjs
+  --entrypoint timeout "$image" 170 node tools/verify-assets.cjs || { echo '---- engine log tail ----'; docker logs "$server" 2>&1 | tail -30; exit 1; }

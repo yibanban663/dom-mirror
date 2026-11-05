@@ -533,6 +533,69 @@ function syncDocScrollerStyle() {
   } catch (e) {}
 }
 
+
+// v0.76 样式表直通配套：@import 段异步装载等待（sheet 就绪且所有 CSSImportRule
+// 的 styleSheet 非 null = 导入完成；同源 /m 可读 cssRules）与 @font-face 提升——
+// @font-face 经 @import 在 shadow <style> 内不注册（icon font 全站形态），取回
+// 文本后把 @font-face 块就地注入一个直属 <style>（url 按被导入 css 自身地址
+// 解析；同源结果发路径形态，代理路径在壳源下解析等价）。
+function xyImportStylesPending(root) {
+  try {
+    const stys = root ? [...root.querySelectorAll('style')] : [];
+    for (const st of stys) {
+      const t = st.textContent || '';
+      if (t.indexOf('@import') < 0) continue;
+      if (!st.sheet) return true;
+      try {
+        for (const r of st.sheet.cssRules) {
+          if (r instanceof CSSImportRule && !r.styleSheet) return true;
+        }
+      } catch (e) { return true; }
+    }
+  } catch (e) {}
+  return false;
+}
+function waitImportStyles(root, ms) {
+  return new Promise((res) => {
+    if (!xyImportStylesPending(root)) return res();
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      if (!xyImportStylesPending(root) || Date.now() - t0 > (ms || 2000)) { clearInterval(iv); res(); }
+    }, 50);
+    setTimeout(() => { clearInterval(iv); res(); }, (ms || 2000) + 100);
+  });
+}
+function hoistImportFonts(css) {
+  return new Promise((res) => {
+    let cssText = '';
+    let pending = 0, done = false;
+    const finish = () => { if (!done) { done = true; try { if (cssText && mirrorRoot) { let st = mirrorRoot.getElementById('xy-import-fonts'); if (!st) { st = document.createElement('style'); st.id = 'xy-import-fonts'; mirrorRoot.appendChild(st); } if (st.textContent !== cssText) st.textContent = cssText; } } catch (e) {} res(); } };
+    try {
+      const urls = [];
+      const re = /@import\s+url\((['"]?)([^'")]+)\1\)\s*;/g;
+      let m;
+      while ((m = re.exec(String(css || '')))) urls.push(m[2]);
+      if (!urls.length) return finish();
+      for (const u of urls) {
+        pending++;
+        let abs;
+        try { abs = new URL(u, location.href).href; } catch (e) { pending--; continue; }
+        fetch(abs).then((r) => r.ok ? r.text() : '').then((t) => {
+          const faces = (String(t).match(/@font-face\s*\{[^}]*\}/g) || []);
+          cssText += faces.map((b) => b.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (w2, q2, u2) => {
+            if (/^(data:|blob:|https?:)/i.test(u2)) return w2;
+            try {
+              const ru = new URL(u2, abs);
+              const v3 = (ru.origin === location.origin) ? (ru.pathname + ru.search) : ru.href;
+              return 'url(' + q2 + v3 + q2 + ')';
+            } catch (e2) { return w2; }
+          })).join('\n') + '\n';
+        }).catch(() => {}).then(() => { pending--; if (!pending) finish(); });
+      }
+      setTimeout(finish, 1500);
+    } catch (e) { finish(); }
+  });
+}
 function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const host = document.getElementById('mirrorHost');
     if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
@@ -564,7 +627,12 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     // 元素触发 focusout 批量应用，把打字中途挂起的陈旧补丁盖回新树（草稿
     // 截断竞态实测根因：服务端值完整、客户端停在半截）
     pendingFocusPatches = [];
-    const mirrorHtml = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
+    // v0.76 样式表直通：css 分段（__xy_css_segment_v76__ 分隔）各成 <style>——
+    // @import 段必须独占一个 sheet（CSS 规范：@import 须先于其它规则，混排
+    // 会被浏览器丢弃）；分段顺序=文档序=级联序
+    const segs = String(css2).split('\n/*__xy_css_segment_v76__*/\n');
+    const cssTags = segs.length > 1 ? segs.map((s) => '<style>' + s + '</style>').join('') : ('<style>' + css2 + '</style>');
+    const mirrorHtml = cssTags + '<div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     // v0.71 @property 提升注册：CSS Houdini @property 在 shadow 作用域不被 Chromium
     // 注册（tailwind v4 全站使用）——未注册的自定义属性无初始值，var() 链在
     // computed-value 时失效：bg-gradient-to-r 的 --tw-gradient-stops 整条断链
@@ -1724,17 +1792,30 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
                 }));
               }
             }
-            Promise.all(preload).then(() => {
+            Promise.all(preload).then(async () => {
               if (ws !== socket || socket.readyState !== 1 || serial !== snapshotSerial) return;
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               if (css) lastCss = css;
               buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId, j.bodyStyle);
-
+              // v0.75 语义恢复：快照就绪=镜像已构建，online/交互通道立即恢复。
+              // v0.76 首版曾把 import 等待插在 snapshotReady 之前——慢环境下
+              // availability 迟迟不置位，期间 send() 静默丢弃一切输入（实测
+              // domclick 落窗被吞、同页导航 0 快照）。样式完备属视觉收尾，
+              // 不属可用性门槛；对账回执侧自有 waitImportStyles 前置。
               rum.snaps++;
               rumApplied(); // v0.21 RUM：快照应用=交互到视觉链路闭环
               snapshotReady = true;
               if (syncWatchdog) { clearTimeout(syncWatchdog); syncWatchdog = null; }
               activate();
+              // v0.76：@import 未装载窗口的可见性门槛——未样式化布局与最终布局
+              // 错位，期间按坐标的点击会锚定到错误元素（Vikunja 建项实测必现；
+              // 可用性不回退：输入通道照常，装载完成即显示，稳态快照 imports
+              // 已就位则零隐藏）
+              const msEl = document.getElementById('mirrorScroll');
+              const hadPendingCss = xyImportStylesPending(mirrorRoot);
+              if (hadPendingCss && msEl) { try { msEl.style.visibility = 'hidden'; } catch (e3) {} }
+              try { await Promise.race([Promise.all([waitImportStyles(mirrorRoot, 2000), hoistImportFonts(css)]), new Promise((r2) => setTimeout(r2, 2500))]); } catch (e2) {}
+              if (hadPendingCss && msEl) { try { msEl.style.visibility = ''; } catch (e3) {} }
               lastSnapAppliedAt = Date.now();
               // v0.53 F5 缓存：节流 1.5s 存最后快照；pagehide 兜底即时存。
               // 刷新时新文档首帧同步重建，消除「旧页销毁→WS 快照到达」的纯底色空窗
@@ -2084,6 +2165,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             (async () => {
               const ids = Array.isArray(j.ids) ? j.ids.slice(0, 24) : [];
               if (!ids.length || !mirrorBody) return;
+              try { await waitImportStyles(mirrorRoot, 1600); } catch (e2) {}
               try { await Promise.race([(document.fonts && document.fonts.ready) || 1, new Promise((r) => setTimeout(r, 1200))]); } catch (e) {}
               try {
                 const imgs = [...mirrorBody.querySelectorAll('img')].slice(0, 40);
@@ -2100,7 +2182,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
                 if (!el || !el.getBoundingClientRect) continue;
                 try { const r = el.getBoundingClientRect(); samples.push({ id, w: Math.round(r.width), h: Math.round(r.height) }); } catch (e) {}
               }
-              try { send({ type: 'fp', seq: j.seq, samples }); } catch (e) {}
+              try { send({ type: 'fp', seq: j.seq, samples, dh: mirrorBody ? Math.round(mirrorBody.scrollHeight) : null }); } catch (e) {}
             })();
           }
           if (j.type === 'pong') { m('mRtt').textContent = Math.round(performance.now() - j.t); }

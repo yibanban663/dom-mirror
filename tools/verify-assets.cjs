@@ -49,10 +49,14 @@ async function main() {
   if (output) fs.mkdirSync(output, { recursive: true });
   const results = { pass: false };
 
-  // A. 缺省源站：短式 /m
+  // A. 缺省源站：v0.76 同源 link 直通——快照 css 为一段 @import，css 文件经
+  //    /m 原样字节下发（相对 url 由浏览器按 css 文件地址解析到 /m/font.woff2）
   const a = await wsProbe(mirror, {});
-  results.A_snapshot = !!(a.snap && a.snap.css && a.snap.css.includes('url(/m/font.woff2)'));
-  if (!results.A_snapshot) results.A_why = JSON.stringify({ refused: a.refused, timeout: a.timeout || undefined, closed: a.closed || undefined, cssSample: a.snap ? String(a.snap.css).slice(0, 160) : null });
+  results.A_import = !!(a.snap && a.snap.css && a.snap.css.includes('@import url(/m/assets.css)'));
+  if (!results.A_import) results.A_why = JSON.stringify({ refused: a.refused, timeout: a.timeout || undefined, closed: a.closed || undefined, cssSample: a.snap ? String(a.snap.css).slice(0, 160) : null });
+  const fac = await fetch(mirror.replace(/\/$/, '') + '/m/assets.css');
+  const facBody = await fac.text().catch(() => '');
+  results.A_cssProxy = fac.status === 200 && /text\/css/.test(fac.headers.get('content-type') || '') && facBody.includes('url(font.woff2)') && facBody.includes('@font-face');
   const fa = await fetch(mirror.replace(/\/$/, '') + '/m/font.woff2');
   const faBody = await fa.text().catch(() => '');
   results.A_proxy = fa.status === 200 && faBody === 'DEFAULT-ASSET-BYTES-0123456789';
@@ -60,8 +64,13 @@ async function main() {
   // B. 白名单多源：/m/o/<b64url(origin-b)>
   const bSeg = '/m/o/' + b64url(originB);
   const b = await wsProbe(mirror, { 'x-rbi-origin': originB });
-  results.B_snapshot = !!(b.snap && b.snap.css && b.snap.css.includes('url(' + bSeg + '/font.woff2)'));
-  if (!results.B_snapshot) results.B_why = JSON.stringify({ refused: b.refused, timeout: b.timeout || undefined, closed: b.closed || undefined, cssSample: b.snap ? String(b.snap.css).slice(0, 200) : null });
+  // v0.76 直通：多源 link 以 @import 指向 /m/o/<b64>/assets.css，字体 url 在
+  // css 文件内（代理命名空间相对解析到 /m/o/<b64>/font.woff2，B_proxy 验证取回）
+  results.B_import = !!(b.snap && b.snap.css && b.snap.css.includes('@import url(' + bSeg + '/assets.css)'));
+  if (!results.B_import) results.B_why = JSON.stringify({ refused: b.refused, timeout: b.timeout || undefined, closed: b.closed || undefined, cssSample: b.snap ? String(b.snap.css).slice(0, 200) : null });
+  const fbc = await fetch(mirror.replace(/\/$/, '') + bSeg + '/assets.css');
+  const fbcBody = await fbc.text().catch(() => '');
+  results.B_cssProxy = fbc.status === 200 && /text\/css/.test(fbc.headers.get('content-type') || '') && fbcBody.includes('url(font.woff2)');
   const fb = await fetch(mirror.replace(/\/$/, '') + bSeg + '/font.woff2');
   const fbBody = await fb.text().catch(() => '');
   results.B_proxy = fb.status === 200 && fbBody === 'ORIGIN-B-ASSET-BYTES-9876543210';
@@ -96,6 +105,14 @@ async function main() {
       const b2 = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.querySelector('.xy-body');
       return b2 && b2.querySelector('#order');
     }, { timeout: 25000 });
+    // v0.76 直通：@import 样式表异步装载——#order 结构就位≠样式就位，后续
+    // 级联/背景图/字体断言与坐标点击全部以 #bg 背景图（link 段独有规则）
+    // 就位为前置
+    await page.waitForFunction(() => {
+      const root = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
+      const bg = root && root.querySelector('#bg');
+      try { return bg && getComputedStyle(bg).backgroundImage !== 'none'; } catch (e) { return false; }
+    }, { timeout: 15000, polling: 300 }).catch(() => {});
 
     // 级联顺序：<link> 红在先、<style> 绿在后 → 镜像必须绿
     results.D_cascade = await page.evaluate(() => {
@@ -119,6 +136,16 @@ async function main() {
       return [...root.querySelectorAll('style')].some((st) => /@font-face[^}]*url\((['"]?)(\/m\/font\.woff2)\1/.test(st.textContent));
     });
 
+    // v0.76 样式表直通：@import 异步装载——构建完成探测（结构元素可见）可能
+    // 先于 css 应用通过，其后的坐标点击会落在样式前布局上（元素随后位移 =
+    // 点击丢失 → 无导航 → 0 快照，冷 runner 确定性复现）。点击前先等
+    // "级联色就位"（link 段生效的确定性信号）
+    await page.waitForFunction(() => {
+      const root = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
+      // #bg 的背景图是 link 段独有规则——非 none 即 @import 样式表已装载应用
+      const bg = root && root.querySelector('#bg');
+      try { return bg && getComputedStyle(bg).backgroundImage !== 'none'; } catch (e) { return false; }
+    }, { timeout: 15000, polling: 300 }).catch(() => {});
     // 快照去重：同页导航（服务端 nav+600ms+1500ms 共 3 次相同快照）
     await page.evaluate(() => {
       const root = document.querySelector('#mirrorHost').shadowRoot;
@@ -130,9 +157,22 @@ async function main() {
       }).observe(root, { childList: true });
       window.__snapAtCount = window.__snapCount;
     });
-    await page.click('#mirrorHost >>> #self');
+    // v0.76：坐标点击依赖布局/样式装载时序（@import 异步 → 冷热环境各态）。
+    // 改页面内合成点击：事件走客户端捕获链 → domclick → 会话浏览器导航，
+    // 与布局零耦合（本用例验证的是服务端同页导航重拍与去重，不是点击命中）
+    results.D_clickDiag = await page.evaluate(() => {
+      try {
+        const el = document.querySelector('#mirrorHost').shadowRoot.querySelector('#self');
+        if (!el) return { found: false };
+        const diag = { found: true, tag: el.tagName, href: (el.getAttribute('href') || '').slice(0, 40) };
+        el.click();
+        return diag;
+      } catch (e) { return { found: false, err: String(e).slice(0, 60) }; }
+    });
+    console.log('D_clickDiag ' + JSON.stringify(results.D_clickDiag));
     await new Promise((r) => setTimeout(r, 3500));
-    const d = await page.evaluate(() => ({ snaps: window.__snapCount - window.__snapAtCount, rebuilds: window.__bursts, stillThere: !!(document.querySelector('#mirrorHost').shadowRoot.querySelector('#order')) }));
+    const d = await page.evaluate(() => ({ snaps: window.__snapCount - window.__snapAtCount, totalSnaps: window.__snapCount, rebuilds: window.__bursts, stillThere: !!(document.querySelector('#mirrorHost').shadowRoot.querySelector('#order')), loc: location.pathname, synth: window.__synthClick || null, drops: (window.__sendDrops || []).slice(-6), connEvt: (window.__connEvt || []).slice(-6) }));
+    console.log('D_counts ' + JSON.stringify(d));
     results.D_snapshots = d.snaps;
     results.D_rebuilds = d.rebuilds;
     results.D_alive = !!d.stillThere;
@@ -147,7 +187,7 @@ async function main() {
     await browser.close();
   }
 
-  results.pass = !!(results.A_snapshot && results.A_proxy && results.B_snapshot && results.B_proxy && results.B_forbiddenAsset && results.C_refused
+  results.pass = !!(results.A_import && results.A_proxy && results.B_import && results.B_proxy && results.B_forbiddenAsset && results.C_refused
     && results.D_cascade && results.D_bgUrl && results.D_fontFace && results.D_dedupe);
   if (output) fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(results, null, 2));
   console.log(JSON.stringify(results));
