@@ -163,7 +163,7 @@ async function main() {
     });
     console.log('D_clickDiag ' + JSON.stringify(results.D_clickDiag));
     await new Promise((r) => setTimeout(r, 3500));
-    const d = await page.evaluate(() => ({ snaps: window.__snapCount - window.__snapAtCount, totalSnaps: window.__snapCount, rebuilds: window.__bursts, stillThere: !!(document.querySelector('#mirrorHost').shadowRoot.querySelector('#order')), loc: location.pathname, synth: window.__synthClick || null }));
+    const d = await page.evaluate(() => ({ snaps: window.__snapCount - window.__snapAtCount, totalSnaps: window.__snapCount, rebuilds: window.__bursts, stillThere: !!(document.querySelector('#mirrorHost').shadowRoot.querySelector('#order')), loc: location.pathname, synth: window.__synthClick || null, drops: (window.__sendDrops || []).slice(-6) }));
     console.log('D_counts ' + JSON.stringify(d));
     results.D_snapshots = d.snaps;
     results.D_rebuilds = d.rebuilds;

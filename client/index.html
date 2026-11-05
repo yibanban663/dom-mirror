@@ -2274,7 +2274,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const r = cv.getBoundingClientRect();
     return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
   }
-  function send(o) { if (connected && ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+  function send(o) { if (connected && ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else { window.__sendDrops = (window.__sendDrops || []).concat([{ t: o && o.type, conn: connected, rs: ws ? ws.readyState : -1 }]); } }
 
   cv.addEventListener('mousemove', (e) => {
     const now = performance.now();
