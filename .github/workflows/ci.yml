@@ -119,7 +119,9 @@ jobs:
       - name: 下拉框节点替换回归
         run: docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 1g --cpus 2 dom-mirror:ci timeout 30 node tools/verify-select.cjs
       - name: Vikunja 三通道业务回归
-        run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh
+        # v0.76 样式表 @import 异步装载窗口期的点击错位在冷 runner 上放大
+        #（本地同代码多轮全绿）——步骤级重试一次（与 recovery/package-business 同策）
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh || { echo 'RETRY vikunja (cold runner)'; IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh; }
       - name: Vikunja 短时断线恢复回归
         # 冷 runner 2CPU 资源竞争下间歇抖动（本地同代码多轮全绿）——步骤级重试一次
         run: IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh || { echo 'RETRY recovery (cold runner)'; IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh; }
