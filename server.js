@@ -679,7 +679,8 @@ function handleRequest(req, res) {
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 8192) { body = body.slice(0, 8192); req.destroy(); } });
     req.on('end', () => {
-      try { logger.log('[rum-beacon] ' + body); } catch (e) {}
+      // 单行化: 防 CRLF 日志注入(审计完整性)
+      try { logger.log('[rum-beacon] ' + body.replace(/\r?\n/g, '\\n')); } catch (e) {}
       res.writeHead(204, { 'cache-control': 'no-store' });
       res.end();
     });
@@ -1511,7 +1512,7 @@ async function runSession(ws, req, lifecycle) {
     } catch (e) {
       // 不透传内部错误细节(CDP 方法名/协议错误可被访客探测实现)——完整错误
       // 只进服务端日志, 访客侧收通用文案
-      try { logger.log('[cmd-err]', e && e.message); } catch (e2) {}
+      try { logger.log('[cmd-err]', String(e && e.message).replace(/\r?\n/g, '\\n')); } catch (e2) {}
       sendJson({ type: 'error', msg: '事件处理异常，本次操作已忽略' });
     }
   };
