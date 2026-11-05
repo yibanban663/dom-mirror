@@ -112,6 +112,7 @@ test('revocation waits for page and browser cleanup and leaves host HTTP service
   browser.newPage = async () => {
     pageCreated();
     return {
+      on: () => {}, // v0.64: 会话页面挂 dialog 自动处理, mock 跟进
       createCDPSession: () => new Promise(resolve => { finishAttach = resolve; }),
       close: () => { pageCloses++; return new Promise(resolve => { finishPageClose = resolve; }); },
     };
