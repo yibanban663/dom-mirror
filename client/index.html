@@ -1525,6 +1525,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     clearTimeout(retryTimer);
     m('newSession').hidden = true;
     // v0.51 无感：prod 壳下文案中性化——"会话/恢复"是 RBI 术语，客户不可见
+    window.__connEvt = (window.__connEvt || []).concat([{ ev: 'connect-start', at: Date.now() }]);
     availability(false, document.body.classList.contains('prod') ? '正在加载…' : (resumeToken ? '正在恢复会话，请稍候…' : '正在连接…'));
     setStatus('连接中…', false);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1533,7 +1534,8 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     snapshotReady = false; syncReady = false; // v0.53：状态在模块域，逐连接复位
     const activate = () => {
       if (!snapshotReady || !syncReady || !retryAllowed || ws !== socket || socket.readyState !== 1) return;
-      availability(true); retryDelay = 500; setStatus('会话在线', true);
+      window.__connEvt = (window.__connEvt || []).concat([{ ev: 'online', at: Date.now() }]);
+    availability(true); retryDelay = 500; setStatus('会话在线', true);
     };
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => {
@@ -2143,6 +2145,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               }
               retryAllowed = false;
               clearTimeout(retryTimer);
+              window.__connEvt = (window.__connEvt || []).concat([{ ev: 'srv-error', msg: String(j.msg || '').slice(0, 60), at: Date.now() }]);
               availability(false, j.msg);
               m('newSession').hidden = false;
             }
