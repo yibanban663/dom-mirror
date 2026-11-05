@@ -1046,6 +1046,7 @@ async function runSession(ws, req, lifecycle) {
   let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
   let driftStreak = 0, lastDriftHeal = 0; // v0.18 分歧自愈：连续漂移计数与限频
   let lastSnapServerEls = null, driftHealFails = 0, driftMuteUntil = 0; // v0.56：快照口径基准 + 自愈熔断
+  let lastCleanAt = 0; // v0.77：连续干净窗口起点（熔断计数衰减用）
   let xframeSecret = null; // v0.25 跨源 iframe 资产代理的会话作用域密钥
   let xframeBusy = false;
   let xframeTimer = null; // v0.26 跨源 iframe 周期刷新（变化推 outer 补丁）
@@ -1171,7 +1172,11 @@ async function runSession(ws, req, lifecycle) {
                 // 大跳变（导航/大块渲染）仍用实时数
                 const srvFp = (lastSnapServerEls !== null && Math.abs(liveFp - lastSnapServerEls) <= liveFp * 0.05) ? lastSnapServerEls : liveFp;
                 const drift = Math.abs(srvFp - m.fp);
-                if (drift > Math.max(2, srvFp * 0.02)) {
+                // v0.77：阈值 2%→8%（下限 4）+ streak≥3 + 30s 间隔——轮询/流式
+                // 页（beacon 事件列表 7↔8 行震荡）补丁在途滞后即假漂移，旧参数
+                // 每 10s 全量重拍 = 周期性整树重建（用户视角"白一下"+卡）。真
+                // 失步（结构性）通常是大差额，8% 依然秒抓
+                if (drift > Math.max(4, srvFp * 0.05)) {
                   driftStreak++;
                   if (driftStreak >= 2 && Date.now() - lastDriftHeal > 10000) {
                     // v0.56 熔断：短窗内多次自愈未收敛 = 系统性口径差（快照就不含
@@ -1187,7 +1192,13 @@ async function runSession(ws, req, lifecycle) {
                     logger.log(`[drift ] self-heal: server=${srvFp}(live=${liveFp},snapBase=${lastSnapServerEls}) mirror=${m.fp} delta=${drift} attempt=${driftHealFails}${driftHealFails >= 3 ? ' MUTED 5min' : ''}`);
                     startDomMirror().catch(() => {});
                   }
-                } else { driftStreak = 0; if (drift <= 2) driftHealFails = 0; }
+                } else {
+                  driftStreak = 0;
+                  // v0.77：连续干净 5 分钟才清熔断计数（原 ≤2 即清零：震荡页
+                  // 每次自愈"成功"都复位，10s 一拍永不升级熔断）
+                  if (drift <= 2) { if (!lastCleanAt) lastCleanAt = Date.now(); if (Date.now() - lastCleanAt > 300000) driftHealFails = 0; }
+                  else lastCleanAt = 0;
+                }
               } catch (e) {}
             }
             break;
@@ -2406,7 +2417,13 @@ async function runSession(ws, req, lifecycle) {
           let shot = null;
           let usedData = false;
           // v0.64 动画快速通道判定（streak 来自此前各拍；截图后 sig record 再更新）
-          const animFast = it.kind !== 'elbit' && rafActive && (animStreak.get(sigKey) || 0) >= 2;
+          const animStreakN = animStreak.get(sigKey) || 0;
+          const animFast = it.kind !== 'elbit' && rafActive && animStreakN >= 2;
+          // v0.77 快车道分级：streak 2-4 = 慢更新（轮询仪表盘 2s 一刷）——全分辨率
+          // q85（每秒至多一两帧，带宽无压力，文字/图表必须清晰）；streak≥5 = 真动画
+          // 才降半档走 ANIM_SCALE/ANIM_QUALITY（带宽优先）。beacon 实测模糊根因：
+          // 仪表盘被误判进真动画档（半分辨率 q50 拉伸 2x）
+          const animHot = animFast && animStreakN >= 5;
           // v0.72 video fast lane：播放中（帧连续变化 streak≥1）JPEG@ANIM_QUALITY
           // 半分辨率；首帧/静止保持 PNG 全分辨率（海报帧保真）
           const vidFast = it.kind === 'video' && (animStreak.get(sigKey) || 0) >= 1;
@@ -2446,7 +2463,7 @@ async function runSession(ws, req, lifecycle) {
                 }
                 return c.toDataURL('image/png');
               } catch (e) { return null; } finally { window.__xyOpsSuspend = suspPrev; }
-            }, it.id, animFast, ANIM_SCALE), 1500, 'canvasData').catch(() => null);
+            }, it.id, animHot, ANIM_SCALE), 1500, 'canvasData').catch(() => null);
             if (dataUrl && dataUrl.length > 40) {
               // v0.57：直读产物 mime 两态（透明底 PNG / 合成底色 JPEG）——从 dataUrl
               // 前缀提取真实 mime，服务端拼 data URL 才能正确解码
@@ -2463,8 +2480,8 @@ async function runSession(ws, req, lifecycle) {
             // 保真优先；流量优化由 v0.58 canvas-ops 泄漏修复承担（实测 -50%）
             shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
               format: (animFast || vidFast) ? 'jpeg' : 'png',
-              ...((animFast || vidFast) ? { quality: ANIM_QUALITY } : {}),
-              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * ((animFast || vidFast) ? ANIM_SCALE : 1) },
+              ...((animFast || vidFast) ? { quality: (animHot || vidFast) ? ANIM_QUALITY : 85 } : {}),
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * ((animHot || vidFast) ? ANIM_SCALE : 1) },
               captureBeyondViewport: true,
             })), 3000, 'canvasShot').catch(() => null);
           }
