@@ -149,7 +149,10 @@ async function main() {
       }).observe(root, { childList: true });
       window.__snapAtCount = window.__snapCount;
     });
-    await page.click('#mirrorHost >>> #self');
+    // v0.76：坐标点击依赖布局/样式装载时序（@import 异步 → 冷热环境各态）。
+    // 改页面内合成点击：事件走客户端捕获链 → domclick → 会话浏览器导航，
+    // 与布局零耦合（本用例验证的是服务端同页导航重拍与去重，不是点击命中）
+    await page.evaluate(() => { try { document.querySelector('#mirrorHost').shadowRoot.querySelector('#self').click(); } catch (e) {} });
     await new Promise((r) => setTimeout(r, 3500));
     const d = await page.evaluate(() => ({ snaps: window.__snapCount - window.__snapAtCount, rebuilds: window.__bursts, stillThere: !!(document.querySelector('#mirrorHost').shadowRoot.querySelector('#order')) }));
     results.D_snapshots = d.snaps;
