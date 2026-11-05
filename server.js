@@ -370,6 +370,24 @@ for (const x of ALLOWED_ORIGINS) {
     if (vh) { u.hostname = vh; u.host = vh + (u.port ? ':' + u.port : ''); ORIGIN_ALLOWED.add(u.origin); }
   } catch (e) {}
 }
+// v0.75 保真哨兵（布局指纹对账）：按源站记录 dom 车道降级事件——10 分钟窗口
+// 内 ≥3 次降级的源站，新会话直接以 frame 起步（站点级改版击穿 dom 车道时的
+// 站点级兜底，窗口滑出后自动恢复 dom 尝试）。XY_FIDELITY_OFF=1 整体停用
+// （运维逃生门：对账异常本身不拖垮正常会话）。
+const FIDELITY_OFF = process.env.XY_FIDELITY_OFF === '1';
+const fidelityOrigin = new Map(); // origin -> [降级时间戳]
+function fidelityHot(origin) {
+  if (FIDELITY_OFF || !origin) return false;
+  const arr = (fidelityOrigin.get(origin) || []).filter((t) => Date.now() - t < 600000);
+  if (arr.length) fidelityOrigin.set(origin, arr); else fidelityOrigin.delete(origin);
+  return arr.length >= 3;
+}
+function fidelityMark(origin) {
+  if (!origin) return;
+  const arr = (fidelityOrigin.get(origin) || []).filter((t) => Date.now() - t < 600000);
+  arr.push(Date.now());
+  fidelityOrigin.set(origin, arr);
+}
 const httpBoth = { http: require('http'), https: require('https') };
 const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? httpBoth.https : httpBoth.http;
 // /m 代理路径 → 绝对 URL（obf 网站字体下载等 Node 侧消费方使用）；非代理形态原样返回
@@ -903,6 +921,7 @@ async function runSession(ws, req, lifecycle) {
   logger.log(`[sess  ] open (${sessions}/${MAX_SESSIONS})`);
 
   let page = null, cdp = null, mode = DEFAULT_MODE;
+  let fpState = null; // v0.75 布局对账：{seq, ids, timer, fails, pending}
   let sessionBrowser = null;
   let sessionExclusive = (fn) => fn(); // v0.30 池化：同浏览器截图互斥（无池=直通）
   let sessionRelease = null;
@@ -1229,6 +1248,44 @@ async function runSession(ws, req, lifecycle) {
             } catch (e) {}
             break;
           }
+          case 'fp': {
+            // v0.75 布局对账回执：与 fpMeasure 的 live 几何比对；过期 seq（导航/
+            // 重拍后旧回执）直接忽略
+            if (FIDELITY_OFF || mode !== 'dom' || !domActive || !fpState || m.seq !== fpState.seq) break;
+            if (fpState.timer) { clearTimeout(fpState.timer); fpState.timer = null; }
+            const cmap = new Map();
+            for (const s of (Array.isArray(m.samples) ? m.samples : [])) {
+              if (s && Number.isInteger(s.id)) cmap.set(s.id, s);
+            }
+            let srvFp = null;
+            try { srvFp = await withTimeout(page.evaluate((list) => window.__xy.fpMeasure(list), fpState.ids), 2500, 'fpMeasure').catch(() => null); } catch (e) {}
+            if (!Array.isArray(srvFp)) break; // 会话浏览器忙/逐出：本轮作罢（下次快照再对）
+            let match = 0, total = 0;
+            for (const s of srvFp) {
+              if (!s || s.w < 0 || s.h < 0) continue; // live 已移除：不计
+              total++;
+              if (process.env.XY_FIDELITY_TRAP === '1' && total % 10 !== 0) { s.w += 64; s.h += 48; } // 测试钩子：模拟布局漂移
+              const c = cmap.get(s.id);
+              if (!c || !Number.isFinite(c.w) || !Number.isFinite(c.h)) continue;
+              const tolW = Math.max(6, Math.round(s.w * 0.04)), tolH = Math.max(6, Math.round(s.h * 0.04));
+              if (Math.abs((c.w || 0) - (s.w || 0)) <= tolW && Math.abs((c.h || 0) - (s.h || 0)) <= tolH) match++;
+            }
+            if (!total) break;
+            if (match / total >= 0.7) {
+              logger.log('[fidelity] layout ok ' + match + '/' + total);
+              fpState.fails = 0;
+              break;
+            }
+            fpState.fails++;
+            logger.log('[fidelity] layout mismatch ' + match + '/' + total + ' (fail #' + fpState.fails + ')');
+            if (fpState.fails >= 2) {
+              fpState = null;
+              await fidelityDowngrade('layout ' + match + '/' + total);
+            } else {
+              scheduleFp(fpState.ids, 1500, fpState.fails); // 复测一次：等晚到资源落位
+            }
+            break;
+          }
           case 'navigate': {
             // v0.30 伪路由：地址栏跳转。仅允许会话源站白名单内的目标（与请求
             // 拦截同语义）；相对地址按当前页解析，裸主机名自动补 http://
@@ -1502,6 +1559,37 @@ async function runSession(ws, req, lifecycle) {
       return st.map(s => { const t = s.textContent || ''; return t.length + ':' + t.slice(0, 24) + '|' + t.slice(-24); }).join('~');
     } catch (e) { return null; }
   }).catch(() => null);
+  // v0.75 布局指纹对账：快照送达后抽查客户端渲染几何（w/h，与滚动位置无关）。
+  // 客户端按 fp-req 携带的 data-xy-id 从 mirrorIds 回读自己的排版结果上报，
+  // 服务端与会话浏览器同 id 的 live 几何比对——dom 车道从"希望对"升级为
+  // "验证对"。≥70% 样本落在 max(6px,4%) 容差内判通过；不过先复测一次（字体/
+  // 图片晚到是常态），连续两败 → 本会话降级 frame + 记源站降级事件。
+  function scheduleFp(ids, delayMs, carryFails) {
+    if (FIDELITY_OFF || mode !== 'dom' || !Array.isArray(ids) || ids.length < 6) return;
+    if (fpState && fpState.timer) clearTimeout(fpState.timer);
+    fpState = { seq: (fpState ? fpState.seq : 0) + 1, ids: ids.slice(0, 24), fails: carryFails || 0, timer: null, pending: true };
+    fpState.timer = setTimeout(() => {
+      if (!fpState || !fpState.pending) return;
+      try {
+        if (mode === 'dom' && domActive && ws && ws.readyState === 1) sendJson({ type: 'fp-req', seq: fpState.seq, ids: fpState.ids });
+        else fpState.pending = false;
+      } catch (e) { fpState.pending = false; }
+    }, delayMs || 1800);
+  }
+  async function fidelityDowngrade(why) {
+    if (mode !== 'dom') return;
+    const org = (() => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } })();
+    fidelityMark(org);
+    logger.log('[fidelity] downgrade dom->frame origin=' + org + ' why=' + why);
+    mode = 'frame';
+    try {
+      await cdp.send('Page.stopScreencast').catch(() => {});
+      await startDomMirror();
+      sendJson({ type: 'mode', mode });
+    } catch (e) {
+      sendJson({ type: 'error', msg: `保真降级 frame 启动失败: ${e.message}` });
+    }
+  }
   function startDomMirror() {
     if (dead || ws.readyState !== 1 || !page) return Promise.resolve();
     // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
@@ -1903,6 +1991,8 @@ async function runSession(ws, req, lifecycle) {
         if (sig && fullPayload.length <= 2 * 1024 * 1024) { snapReplay = { payload: fullPayload, sig }; snapReplayBytes += fullPayload.length; }
       } catch (e) {}
     }
+    // v0.75 布局对账：快照落位（客户端构建+字体/图片在途）给 1.8s，随后抽查
+    if (mode === 'dom' && Array.isArray(snap.fpIds) && snap.fpIds.length >= 6) scheduleFp(snap.fpIds);
     // v0.48 像素蒙皮：快照后立即截全页图发给客户端叠加在镜像 DOM 之上——
     // 文字是服务端 Linux Chromium 光栅化的位图，访客端不再自行渲染文字
     // → 视觉 100% 还原。DOM 层 pointer-events 正常处理交互（打字/点击/
@@ -3002,7 +3092,18 @@ async function runSession(ws, req, lifecycle) {
     // 栏同步都挂在 location 处理器上——此前仅导航/恢复路径发送，纯浏览会话的
     // 工具栏永远 hidden、hover 唤出失效（gen_nav 实测 navGo 点击落空）
     try { sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) }); } catch (e) {}
+    // v0.75 保真哨兵站点级兜底：该源站 10 分钟窗口内已 3 次 dom 降级 → 本会话
+    // 直接 frame 起步（每页先碎一次再降级对用户是重复伤害）
+    if (mode === 'dom' && !FIDELITY_OFF) {
+      try {
+        if (fidelityHot(new URL(sessionOrigin).origin)) {
+          mode = 'frame';
+          logger.log('[fidelity] origin cooldown -> frame ' + sessionOrigin);
+        }
+      } catch (e) {}
+    }
     if (mode === 'dom' || mode === 'frame') await startDomMirror();
+    if (mode === 'frame') { try { sendJson({ type: 'mode', mode: 'frame' }); } catch (e) {} }
 
     dispatchReady = true;
     for (const raw of queue.splice(0)) enqueue(raw);
