@@ -711,7 +711,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         // 管线，曾在此被静默丢弃——源站直连可提交的按钮在镜像内点了没反应
         // （:82 登录实测）。按元素锚转发，服务端对同元素执行等价 el.click()
         if (!e.isTrusted) {
-          try { const aid = idOfMirror(t); window.__synthClick = { aid, tag: t.tagName || '?', at: Date.now() }; if (aid !== null) send({ type: 'domclick', id: aid }); } catch (e2) { window.__synthClick = { err: String(e2).slice(0, 80) }; }
+          try { const aid = idOfMirror(t); if (aid !== null) send({ type: 'domclick', id: aid }); } catch (e2) {}
         }
       });
       // 指针事件输入管线（点击/拖拽的唯一转发通道）：
@@ -1525,7 +1525,6 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     clearTimeout(retryTimer);
     m('newSession').hidden = true;
     // v0.51 无感：prod 壳下文案中性化——"会话/恢复"是 RBI 术语，客户不可见
-    window.__connEvt = (window.__connEvt || []).concat([{ ev: 'connect-start', at: Date.now() }]);
     availability(false, document.body.classList.contains('prod') ? '正在加载…' : (resumeToken ? '正在恢复会话，请稍候…' : '正在连接…'));
     setStatus('连接中…', false);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1534,8 +1533,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     snapshotReady = false; syncReady = false; // v0.53：状态在模块域，逐连接复位
     const activate = () => {
       if (!snapshotReady || !syncReady || !retryAllowed || ws !== socket || socket.readyState !== 1) return;
-      window.__connEvt = (window.__connEvt || []).concat([{ ev: 'online', at: Date.now() }]);
-    availability(true); retryDelay = 500; setStatus('会话在线', true);
+      availability(true); retryDelay = 500; setStatus('会话在线', true);
     };
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => {
@@ -1799,15 +1797,18 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
               if (css) lastCss = css;
               buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId, j.bodyStyle);
-              // v0.76：@import 样式表异步装载——等待其落位并完成 @font-face 提升
-              // 再宣告快照就绪（恢复"快照=样式即达"不变量；有界等待防死等）
-              try { await Promise.race([Promise.all([waitImportStyles(mirrorRoot, 2000), hoistImportFonts(css)]), new Promise((r2) => setTimeout(r2, 2500))]); } catch (e2) {}
-
+              // v0.75 语义恢复：快照就绪=镜像已构建，online/交互通道立即恢复。
+              // v0.76 首版曾把 import 等待插在 snapshotReady 之前——慢环境下
+              // availability 迟迟不置位，期间 send() 静默丢弃一切输入（实测
+              // domclick 落窗被吞、同页导航 0 快照）。样式完备属视觉收尾，
+              // 不属可用性门槛；对账回执侧自有 waitImportStyles 前置。
               rum.snaps++;
               rumApplied(); // v0.21 RUM：快照应用=交互到视觉链路闭环
               snapshotReady = true;
               if (syncWatchdog) { clearTimeout(syncWatchdog); syncWatchdog = null; }
               activate();
+              // v0.76：@import 装载与 @font-face 提升为视觉完备性收尾（有界等待）
+              try { await Promise.race([Promise.all([waitImportStyles(mirrorRoot, 2000), hoistImportFonts(css)]), new Promise((r2) => setTimeout(r2, 2500))]); } catch (e2) {}
               lastSnapAppliedAt = Date.now();
               // v0.53 F5 缓存：节流 1.5s 存最后快照；pagehide 兜底即时存。
               // 刷新时新文档首帧同步重建，消除「旧页销毁→WS 快照到达」的纯底色空窗
@@ -2145,7 +2146,6 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               }
               retryAllowed = false;
               clearTimeout(retryTimer);
-              window.__connEvt = (window.__connEvt || []).concat([{ ev: 'srv-error', msg: String(j.msg || '').slice(0, 60), at: Date.now() }]);
               availability(false, j.msg);
               m('newSession').hidden = false;
             }
@@ -2277,7 +2277,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const r = cv.getBoundingClientRect();
     return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
   }
-  function send(o) { if (connected && ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else { window.__sendDrops = (window.__sendDrops || []).concat([{ t: o && o.type, conn: connected, rs: ws ? ws.readyState : -1 }]); } }
+  function send(o) { if (connected && ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
   cv.addEventListener('mousemove', (e) => {
     const now = performance.now();
