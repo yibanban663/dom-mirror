@@ -10,3 +10,4 @@ assets/obf/
 __pycache__/
 artifacts/
 *.tgz
+tools/NotoSansSC-*.ttf
