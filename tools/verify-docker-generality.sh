@@ -85,6 +85,9 @@ for c in ${CASES:-forms editor media layout style canvas dnd vlist nav anim warm
     # v0.21 RUM 通道断言：forms 会话必须产生 [rum] 心跳或 [rum-beacon] 尾包日志
     # v0.32 镜像复用可观测断言：warm 会话必须出现热页取走与资产缓存命中日志
     if [ "$c" = "warm" ]; then
+      # v0.76 样式表直通后第二访客的样式装载多被访客浏览器 HTTP 缓存吸收（引擎
+      # 日志静默）——引擎缓存命中改为确定性探测：引擎本机取两次 css，第二次必命中
+      docker exec "$server" node -e 'fetch("http://127.0.0.1:8088/m/gen-style-base.css").then(()=>fetch("http://127.0.0.1:8088/m/gen-style-base.css")).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' || true
       warmtake=$(docker logs "$server" 2>&1 | grep -c '\[warm  \] take' || true)
       warmcache=$(docker logs "$server" 2>&1 | grep -cE '\[cache \] (m-)?hit' || true)
       if [ "$warmtake" -ge 1 ] && [ "$warmcache" -ge 1 ]; then

@@ -19,6 +19,8 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer').default;
 const { assetUrl, selectOrigin, createRequestPolicy, requestAllowed } = require('./lib/policy');
+const { fidelityJudge, createFidelityStore, FIDELITY_PASS, FIDELITY_MIN_JUDGED } = require('./lib/fidelity');
+const { stripClientComments } = require('./lib/text-utils');
 const { SessionStore } = require('./lib/sessions');
 const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
@@ -169,36 +171,6 @@ let clientHtmlRaw = null;
 // 工具栏不浮层化、被镜像层盖住，gen_nav 地址栏跳转点击全落空）。逐块
 // 扫 /* 开闭 + 行内完整对剥除 + 行首 // 保持原语义；客户端已核实无字符串
 // 内嵌 /* 风险（仅 4 处完整内联对）
-function stripClientComments(html) {
-  let out = html.replace(/<!--[\s\S]*?-->/g, '');
-  // 引擎身份串不外泄（指纹化目标）：标题/页头等处的产品名统一中性化
-  out = out.replace(/dom-mirror/gi, 'mirror');
-  const kept = [];
-  let inBlock = false;
-  for (const line of out.split('\n')) {
-    if (inBlock) {
-      const c = line.indexOf('*/');
-      if (c < 0) continue; // 块内整行丢弃
-      inBlock = false;
-      const rest = line.slice(c + 2);
-      if (rest.trim() && !rest.trim().startsWith('//')) kept.push(rest); // 块尾同行残余代码保留
-      continue;
-    }
-    let s = line;
-    for (;;) {
-      const o2 = s.indexOf('/*');
-      if (o2 < 0) break;
-      const c2 = s.indexOf('*/', o2 + 2);
-      if (c2 >= 0) { s = s.slice(0, o2) + ' ' + s.slice(c2 + 2); continue; } // 行内完整对
-      s = s.slice(0, o2); // 跨行块：保留 /* 前代码，进入块模式
-      inBlock = true;
-      break;
-    }
-    if (s.trim().startsWith('//')) continue; // 行首 // 整行
-    kept.push(s);
-  }
-  return kept.join('\n');
-}
 // v0.52 快照重放：F5/断线 resume 时 page 静止则原样重放上次快照帧——
 // 跳过 snapshotReal 全量（beacon 页实测 247KB CSS 收集 + 全 DOM 序列化 1-3s），
 // 刷新白窗从「全量快照耗时」降到一次 RTT。全局预算防 1000 会话各持大帧
@@ -370,24 +342,11 @@ for (const x of ALLOWED_ORIGINS) {
     if (vh) { u.hostname = vh; u.host = vh + (u.port ? ':' + u.port : ''); ORIGIN_ALLOWED.add(u.origin); }
   } catch (e) {}
 }
-// v0.75 保真哨兵（布局指纹对账）：按源站记录 dom 车道降级事件——10 分钟窗口
-// 内 ≥3 次降级的源站，新会话直接以 frame 起步（站点级改版击穿 dom 车道时的
-// 站点级兜底，窗口滑出后自动恢复 dom 尝试）。XY_FIDELITY_OFF=1 整体停用
-// （运维逃生门：对账异常本身不拖垮正常会话）。
+// v0.75 保真哨兵（布局指纹对账）/ v0.76 记忆落盘：按源站记录 dom 车道降级
+// 事件——10 分钟窗口内 ≥3 次降级的源站，新会话直接以 frame 起步（站点级
+// 兜底，窗口滑出自动恢复）。XY_FIDELITY_OFF=1 整体停用（运维逃生门）。
 const FIDELITY_OFF = process.env.XY_FIDELITY_OFF === '1';
-const fidelityOrigin = new Map(); // origin -> [降级时间戳]
-function fidelityHot(origin) {
-  if (FIDELITY_OFF || !origin) return false;
-  const arr = (fidelityOrigin.get(origin) || []).filter((t) => Date.now() - t < 600000);
-  if (arr.length) fidelityOrigin.set(origin, arr); else fidelityOrigin.delete(origin);
-  return arr.length >= 3;
-}
-function fidelityMark(origin) {
-  if (!origin) return;
-  const arr = (fidelityOrigin.get(origin) || []).filter((t) => Date.now() - t < 600000);
-  arr.push(Date.now());
-  fidelityOrigin.set(origin, arr);
-}
+const fidelityStore = createFidelityStore(require('node:path').join(__dirname, 'fidelity-origins.json'));
 const httpBoth = { http: require('http'), https: require('https') };
 const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? httpBoth.https : httpBoth.http;
 // /m 代理路径 → 绝对 URL（obf 网站字体下载等 Node 侧消费方使用）；非代理形态原样返回
@@ -401,6 +360,41 @@ function unproxyAsset(u) {
   mo = s.match(/^\/m(\/[^\s?#]*)(\?[^\s#]*)?$/);
   if (mo) return ORIGIN_URL.replace(/\/+$/, '') + mo[1] + (mo[2] || '');
   return s;
+}
+// v0.76 样式表直通配套：css 文件以原始字节经 /m(/m/o) 下发，其中指向白名单
+// 源站的绝对 URL 必须改写回代理形态（否则访客端直连内网源站必败）；相对
+// URL 不动——浏览器按 css 文件自身地址（代理命名空间内）解析，天然正确。
+// html/:root/body 选择子映射同步在此承担（镜像根是 .xy-body div，原选择子
+// 在 shadow 内匹配不到——与客户端内联段同款映射，保持两路径一致）。
+function absToProxy(u) {
+  if (!/^https?:\/\//i.test(String(u))) return null;
+  try {
+    const x = new URL(String(u));
+    if (x.username || x.password) return null;
+    if (!(ORIGIN_ALLOWED.has(x.origin) || dynamicOrigins.has(x.origin))) return null;
+    return '/m/o/' + Buffer.from(x.origin).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + x.pathname + x.search;
+  } catch (e) { return null; }
+}
+function cssProxyRewrite(cssText) {
+  let out = String(cssText).replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (whole, q, u) => {
+    const p = absToProxy(u);
+    return p ? 'url(' + q + p + q + ')' : whole;
+  });
+  out = out.replace(/(image-set\(|-webkit-image-set\()\s*(['"])([^'"]+)\2/g, (whole, fn, q, u) => {
+    const p = absToProxy(u);
+    return p ? fn + ' ' + q + p + q : whole;
+  });
+  out = out.replace(/@import\s+(?!url\()(['"])([^'"]+)\1/g, (whole, q, u) => {
+    const p = absToProxy(u);
+    return p ? '@import ' + q + p + q : whole;
+  });
+  // html/:root/body → .xy-body（与客户端 buildMirror 的映射同款，作用于
+  // 独立下发的样式表字节）
+  out = out
+    .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
+    .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
+    .replace(/(^|[\s,{}>+~])body(?=[\[{.,:\s)])/g, '$1.xy-body');
+  return out;
 }
 // v0.25 跨源 iframe 同源化：会话作用域资产代理。secret 为每会话随机值（同 obf
 // 字体路由的安全模型），注册表只收该会话源站页面实际嵌入过的源——防开放代理/
@@ -456,9 +450,13 @@ function proxyAsset(req, res) {
   const mod = base.protocol === 'https:' ? httpBoth.https : httpBoth.http;
   const u = assetUrl(rest, base);
   if (!u) { res.writeHead(403); res.end('asset allowlist'); return; }
+  // v0.76 修复：assetUrl 返回 URL 对象，而缓存 Map 按引用匹配——跨请求的新
+  // 对象永不命中，/m 路由的共享缓存自 v0.32 起实际零命中（历史 warm 断言的
+  // hit 全部来自会话浏览器拦截路径）。规范化为字符串键后首次真正生效。
+  const uKey = String(u);
   // v0.32 镜像复用：/m/ 表现层资产跨访客共享缓存——命中免回源
   if (originAssetCache) {
-    const hit = originAssetCache.get(u);
+    const hit = originAssetCache.get(uKey);
     if (hit) {
       try { logger.log('[cache ] m-hit', new URL(u).pathname.slice(0, 70)); } catch (e) {}
       res.writeHead(hit.status, {
@@ -482,8 +480,10 @@ function proxyAsset(req, res) {
       const chunks = [];
       up.on('data', (c) => chunks.push(c));
       up.on('end', () => {
-        const body = Buffer.concat(chunks);
-        originAssetCache.put(u, { status: up.statusCode || 200, headers: up.headers, body });
+        let body = Buffer.concat(chunks);
+        // v0.76：css 响应改写后再入库/下发（缓存里存改写后形态，命中零成本）
+        if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'))); } catch (e) {} }
+        originAssetCache.put(uKey, { status: up.statusCode || 200, headers: up.headers, body });
         if (!res.headersSent) {
           res.writeHead(up.statusCode || 200, {
             'content-type': up.headers['content-type'] || 'application/octet-stream',
@@ -492,6 +492,18 @@ function proxyAsset(req, res) {
           });
         }
         res.end(body);
+      });
+      up.on('error', () => res.destroy());
+      return;
+    }
+    if (/^text\/css/.test(ct)) {
+      // v0.76：无缓存部署下 css 同样要过改写（缓冲后整段转换）
+      const chunks2 = [];
+      up.on('data', (c) => chunks2.push(c));
+      up.on('end', () => {
+        let b2 = Buffer.concat(chunks2);
+        try { b2 = Buffer.from(cssProxyRewrite(b2.toString('utf8'))); } catch (e) {}
+        res.end(b2);
       });
       up.on('error', () => res.destroy());
       return;
@@ -519,6 +531,9 @@ function proxyAsset(req, res) {
 // 字体由 tools/build_obf_font.py 在构建期烘焙（种子池 assets/obf/），会话创建即生效
 // （零预热）；种子池可扩容，动态按会话构建走同脚本（python3-fonttools）。
 const OBF_ON = config.obfuscate;
+// v0.76 样式表直通：obf 关闭且未显式关闭时启用（obf 需要扫描全量 css 文本
+// 构建字体孪生，开启时维持内联路径）
+const CSS_PASS = process.env.XY_CSS_PASSTHROUGH !== '0' && !OBF_ON;
 const OBF_POOL_DIR = path.join(__dirname, 'assets', 'obf');
 const OBF_FAMILIES = ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans SC'];
 const obfPool = [];
@@ -1259,34 +1274,31 @@ async function runSession(ws, req, lifecycle) {
             }
             let srvFp = null;
             try { srvFp = await withTimeout(page.evaluate((list) => window.__xy.fpMeasure(list), fpState.ids), 2500, 'fpMeasure').catch(() => null); } catch (e) {}
-            if (!Array.isArray(srvFp)) break; // 会话浏览器忙/逐出：本轮作罢（下次快照再对）
-            let match = 0, judged = 0, unstable = 0;
-            for (const s of srvFp) {
-              if (!s || s.w < 0 || s.h < 0) continue; // live 已移除：不计
-              const snapD = fpState.dims ? fpState.dims.get(s.id) : null;
-              if (!snapD) continue;
-              const tolW = Math.max(6, Math.round(s.w * 0.04)), tolH = Math.max(6, Math.round(s.h * 0.04));
-              // 稳定性过滤：live 与快照基准不一致 = 页面自己改了这个元素——
-              // 它的正确性由补丁通道保证，不作为对账证据
-              if (Math.abs(s.w - (snapD.w || 0)) > tolW || Math.abs(s.h - (snapD.h || 0)) > tolH) { unstable++; continue; }
-              judged++;
-              if (process.env.XY_FIDELITY_TRAP === '1' && judged % 10 !== 0) { s.w += 64; s.h += 48; } // 测试钩子：模拟布局漂移
-              const c = cmap.get(s.id);
-              if (!c || !Number.isFinite(c.w) || !Number.isFinite(c.h)) continue;
-              if (Math.abs((c.w || 0) - (s.w || 0)) <= tolW && Math.abs((c.h || 0) - (s.h || 0)) <= tolH) match++;
-            }
+            if (!srvFp || !Array.isArray(srvFp.samples)) break; // 会话浏览器忙/逐出：本轮作罢（下次快照再对）
+            // v0.76 页总高：只作日志观测不参与判定——.xy-body 与源站 body 的
+            // scrollHeight 不是同构量（视口高布局 800 vs 406 实测），滚动时序再
+            // 掺入后误报率不可接受；整页塌陷由锚点几何全失配天然覆盖
+            const v = fidelityJudge(srvFp.samples, cmap, fpState.dims, {
+              trap: process.env.XY_FIDELITY_TRAP === '1',
+            });
+            const hInfo = ((Number.isFinite(srvFp.docH) ? srvFp.docH : 0) + '/' + ((Number.isFinite(m.dh) && m.dh > 0) ? m.dh : 0));
+            const match = v.match, judged = v.judged;
             if (!judged) break;
-            if (judged < 4) { logger.log('[fidelity] skip busy (judged=' + judged + ' unstable=' + unstable + ')'); fpState.fails = 0; break; }
-            if (match / judged >= 0.7) {
-              logger.log('[fidelity] layout ok ' + match + '/' + judged + (unstable ? ' (unstable ' + unstable + ')' : ''));
+            if (judged < FIDELITY_MIN_JUDGED) { logger.log('[fidelity] skip busy (judged=' + judged + ' unstable=' + v.unstable + ')'); fpState.fails = 0; break; }
+            if (match / judged >= FIDELITY_PASS) {
+              logger.log('[fidelity] layout ok ' + match + '/' + judged + ' h=' + hInfo + (v.unstable ? ' (unstable ' + v.unstable + ')' : ''));
               fpState.fails = 0;
+              // v0.76 持续对账：静默会话 45s 后再抽查一轮（新快照/降级/断开重置
+              // fpState，链条自然断开；SPA 路由切换后的晚到碎裂由此覆盖）
+              scheduleFp(fpState.anchors, 45000, 0);
               break;
             }
             fpState.fails++;
-            logger.log('[fidelity] layout mismatch ' + match + '/' + judged + ' (fail #' + fpState.fails + ')');
+            logger.log('[fidelity] layout mismatch ' + match + '/' + judged + ' h=' + hInfo + ' (fail #' + fpState.fails + ')');
             if (fpState.fails >= 2) {
+              const whyFp = 'layout ' + match + '/' + judged;
               fpState = null;
-              await fidelityDowngrade('layout ' + match + '/' + judged);
+              await fidelityDowngrade(whyFp);
             } else {
               scheduleFp(fpState.anchors, 1500, fpState.fails); // 复测一次：等晚到资源落位（带基准几何）
             }
@@ -1590,7 +1602,7 @@ async function runSession(ws, req, lifecycle) {
   async function fidelityDowngrade(why) {
     if (mode !== 'dom') return;
     const org = (() => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } })();
-    fidelityMark(org);
+    fidelityStore.mark(org);
     logger.log('[fidelity] downgrade dom->frame origin=' + org + ' why=' + why);
     mode = 'frame';
     try {
@@ -1930,7 +1942,7 @@ async function runSession(ws, req, lifecycle) {
         await page.evaluate((b64) => { window.__xyFrameShot = b64; }, shotF.data);
       } catch (e) { await page.evaluate(() => { window.__xyFrameShot = null; }).catch(() => {}); }
     }
-    const snap = await withTimeout(page.evaluate((wf) => window.__xy.snapshotReal(wf), mode === 'frame'), 10000, 'snapshot');
+    const snap = await withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === 'frame', CSS_PASS), 10000, 'snapshot');
     try {
       const diag = await page.evaluate(() => window.__xyCssDiag || null);
       if (diag) logger.log(`[snapcss] ${diag.url} links=${diag.hrefs.length}(${diag.hrefs.map(h => h.split('/').pop()).join(',')}) kf=${diag.kf} cssLen=${diag.styleLen + diag.linkLen}`);
@@ -3107,7 +3119,7 @@ async function runSession(ws, req, lifecycle) {
     // 直接 frame 起步（每页先碎一次再降级对用户是重复伤害）
     if (mode === 'dom' && !FIDELITY_OFF) {
       try {
-        if (fidelityHot(new URL(sessionOrigin).origin)) {
+        if (fidelityStore.hot(new URL(sessionOrigin).origin)) {
           mode = 'frame';
           logger.log('[fidelity] origin cooldown -> frame ' + sessionOrigin);
         }

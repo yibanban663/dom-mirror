@@ -23,6 +23,8 @@ jobs:
         run: |
           node -e "require('puppeteer');require('ws');require('sharp')"
           npm audit --omit=dev
+      - name: 单元测试（对账判定/记忆库/注释剥离）
+        run: node tools/verify-unit.cjs
       - name: 语法与策略回归检查
         run: |
           timeout 120 npm run check > check.log 2>&1 || { echo "::error::CHECK failed: $(tail -c 500 check.log | tr '\n' '|')"; exit 1; }

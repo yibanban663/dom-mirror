@@ -49,10 +49,14 @@ async function main() {
   if (output) fs.mkdirSync(output, { recursive: true });
   const results = { pass: false };
 
-  // A. 缺省源站：短式 /m
+  // A. 缺省源站：v0.76 同源 link 直通——快照 css 为一段 @import，css 文件经
+  //    /m 原样字节下发（相对 url 由浏览器按 css 文件地址解析到 /m/font.woff2）
   const a = await wsProbe(mirror, {});
-  results.A_snapshot = !!(a.snap && a.snap.css && a.snap.css.includes('url(/m/font.woff2)'));
-  if (!results.A_snapshot) results.A_why = JSON.stringify({ refused: a.refused, timeout: a.timeout || undefined, closed: a.closed || undefined, cssSample: a.snap ? String(a.snap.css).slice(0, 160) : null });
+  results.A_import = !!(a.snap && a.snap.css && a.snap.css.includes('@import url(/m/assets.css)'));
+  if (!results.A_import) results.A_why = JSON.stringify({ refused: a.refused, timeout: a.timeout || undefined, closed: a.closed || undefined, cssSample: a.snap ? String(a.snap.css).slice(0, 160) : null });
+  const fac = await fetch(mirror.replace(/\/$/, '') + '/m/assets.css');
+  const facBody = await fac.text().catch(() => '');
+  results.A_cssProxy = fac.status === 200 && /text\/css/.test(fac.headers.get('content-type') || '') && facBody.includes('url(font.woff2)') && facBody.includes('@font-face');
   const fa = await fetch(mirror.replace(/\/$/, '') + '/m/font.woff2');
   const faBody = await fa.text().catch(() => '');
   results.A_proxy = fa.status === 200 && faBody === 'DEFAULT-ASSET-BYTES-0123456789';
@@ -60,8 +64,13 @@ async function main() {
   // B. 白名单多源：/m/o/<b64url(origin-b)>
   const bSeg = '/m/o/' + b64url(originB);
   const b = await wsProbe(mirror, { 'x-rbi-origin': originB });
-  results.B_snapshot = !!(b.snap && b.snap.css && b.snap.css.includes('url(' + bSeg + '/font.woff2)'));
-  if (!results.B_snapshot) results.B_why = JSON.stringify({ refused: b.refused, timeout: b.timeout || undefined, closed: b.closed || undefined, cssSample: b.snap ? String(b.snap.css).slice(0, 200) : null });
+  // v0.76 直通：多源 link 以 @import 指向 /m/o/<b64>/assets.css，字体 url 在
+  // css 文件内（代理命名空间相对解析到 /m/o/<b64>/font.woff2，B_proxy 验证取回）
+  results.B_import = !!(b.snap && b.snap.css && b.snap.css.includes('@import url(' + bSeg + '/assets.css)'));
+  if (!results.B_import) results.B_why = JSON.stringify({ refused: b.refused, timeout: b.timeout || undefined, closed: b.closed || undefined, cssSample: b.snap ? String(b.snap.css).slice(0, 200) : null });
+  const fbc = await fetch(mirror.replace(/\/$/, '') + bSeg + '/assets.css');
+  const fbcBody = await fbc.text().catch(() => '');
+  results.B_cssProxy = fbc.status === 200 && /text\/css/.test(fbc.headers.get('content-type') || '') && fbcBody.includes('url(font.woff2)');
   const fb = await fetch(mirror.replace(/\/$/, '') + bSeg + '/font.woff2');
   const fbBody = await fb.text().catch(() => '');
   results.B_proxy = fb.status === 200 && fbBody === 'ORIGIN-B-ASSET-BYTES-9876543210';
@@ -147,7 +156,7 @@ async function main() {
     await browser.close();
   }
 
-  results.pass = !!(results.A_snapshot && results.A_proxy && results.B_snapshot && results.B_proxy && results.B_forbiddenAsset && results.C_refused
+  results.pass = !!(results.A_import && results.A_proxy && results.B_import && results.B_proxy && results.B_forbiddenAsset && results.C_refused
     && results.D_cascade && results.D_bgUrl && results.D_fontFace && results.D_dedupe);
   if (output) fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(results, null, 2));
   console.log(JSON.stringify(results));
