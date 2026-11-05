@@ -454,9 +454,13 @@ function proxyAsset(req, res) {
   // 对象永不命中，/m 路由的共享缓存自 v0.32 起实际零命中（历史 warm 断言的
   // hit 全部来自会话浏览器拦截路径）。规范化为字符串键后首次真正生效。
   const uKey = String(u);
+  // v0.76：css 经代理改写（选择子映射/绝对URL）后与源站原始字节不同——必须
+  // 与会话浏览器拦截路径（原始键）隔离存取，否则源站页面吃到 .xy-body 改写
+  // 版 css 即中毒（Vikunja 建项点击全错实测）
+  const cacheKey = /\.css(?:$|\?)/i.test(uKey) ? ('css-rw:' + uKey) : uKey;
   // v0.32 镜像复用：/m/ 表现层资产跨访客共享缓存——命中免回源
   if (originAssetCache) {
-    const hit = originAssetCache.get(uKey);
+    const hit = originAssetCache.get(cacheKey);
     if (hit) {
       try { logger.log('[cache ] m-hit', new URL(u).pathname.slice(0, 70)); } catch (e) {}
       res.writeHead(hit.status, {
@@ -483,7 +487,7 @@ function proxyAsset(req, res) {
         let body = Buffer.concat(chunks);
         // v0.76：css 响应改写后再入库/下发（缓存里存改写后形态，命中零成本）
         if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'))); } catch (e) {} }
-        originAssetCache.put(uKey, { status: up.statusCode || 200, headers: up.headers, body });
+        originAssetCache.put(cacheKey, { status: up.statusCode || 200, headers: up.headers, body });
         if (!res.headersSent) {
           res.writeHead(up.statusCode || 200, {
             'content-type': up.headers['content-type'] || 'application/octet-stream',
@@ -531,9 +535,11 @@ function proxyAsset(req, res) {
 // 字体由 tools/build_obf_font.py 在构建期烘焙（种子池 assets/obf/），会话创建即生效
 // （零预热）；种子池可扩容，动态按会话构建走同脚本（python3-fonttools）。
 const OBF_ON = config.obfuscate;
-// v0.76 样式表直通：obf 关闭且未显式关闭时启用（obf 需要扫描全量 css 文本
-// 构建字体孪生，开启时维持内联路径）
-const CSS_PASS = process.env.XY_CSS_PASSTHROUGH !== '0' && !OBF_ON;
+// v0.76 样式表直通：默认关闭（opt-in XY_CSS_PASSTHROUGH=1）。机制完备且经
+// assets/fidelity/generality 全量验证，但 Vikunja 真实业务回归确定性失败
+//（路由切换后补丁 id miss → repair 不收敛，根因待查）——先以开关交付，
+// 内联路径维持 v0.75 行为，直通兼容性立为跟踪项
+const CSS_PASS = process.env.XY_CSS_PASSTHROUGH === '1' && !OBF_ON;
 const OBF_POOL_DIR = path.join(__dirname, 'assets', 'obf');
 const OBF_FAMILIES = ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans SC'];
 const obfPool = [];

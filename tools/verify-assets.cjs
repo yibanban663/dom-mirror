@@ -105,6 +105,14 @@ async function main() {
       const b2 = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.querySelector('.xy-body');
       return b2 && b2.querySelector('#order');
     }, { timeout: 25000 });
+    // v0.76 直通：@import 样式表异步装载——#order 结构就位≠样式就位，后续
+    // 级联/背景图/字体断言与坐标点击全部以 #bg 背景图（link 段独有规则）
+    // 就位为前置
+    await page.waitForFunction(() => {
+      const root = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
+      const bg = root && root.querySelector('#bg');
+      try { return bg && getComputedStyle(bg).backgroundImage !== 'none'; } catch (e) { return false; }
+    }, { timeout: 15000, polling: 300 }).catch(() => {});
 
     // 级联顺序：<link> 红在先、<style> 绿在后 → 镜像必须绿
     results.D_cascade = await page.evaluate(() => {

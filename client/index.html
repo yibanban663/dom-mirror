@@ -1807,8 +1807,15 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               snapshotReady = true;
               if (syncWatchdog) { clearTimeout(syncWatchdog); syncWatchdog = null; }
               activate();
-              // v0.76：@import 装载与 @font-face 提升为视觉完备性收尾（有界等待）
+              // v0.76：@import 未装载窗口的可见性门槛——未样式化布局与最终布局
+              // 错位，期间按坐标的点击会锚定到错误元素（Vikunja 建项实测必现；
+              // 可用性不回退：输入通道照常，装载完成即显示，稳态快照 imports
+              // 已就位则零隐藏）
+              const msEl = document.getElementById('mirrorScroll');
+              const hadPendingCss = xyImportStylesPending(mirrorRoot);
+              if (hadPendingCss && msEl) { try { msEl.style.visibility = 'hidden'; } catch (e3) {} }
               try { await Promise.race([Promise.all([waitImportStyles(mirrorRoot, 2000), hoistImportFonts(css)]), new Promise((r2) => setTimeout(r2, 2500))]); } catch (e2) {}
+              if (hadPendingCss && msEl) { try { msEl.style.visibility = ''; } catch (e3) {} }
               lastSnapAppliedAt = Date.now();
               // v0.53 F5 缓存：节流 1.5s 存最后快照；pagehide 兜底即时存。
               // 刷新时新文档首帧同步重建，消除「旧页销毁→WS 快照到达」的纯底色空窗

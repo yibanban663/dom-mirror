@@ -1,0 +1,2201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dom-mirror — DOM 镜像与 PNG 差分</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#242e44; --txt:#dbe4f3; --dim:#8294b0; --accent:#4f8cff; --ok:#3fce8f; }
+  /* 网关(生产)模式：访客只看到业务页面本身——演示壳全部隐藏，镜像铺满窗口 */
+  body.prod header, body.prod aside, body.prod .stage-hint,
+  body.prod .quality, body.prod .conn-info, body.prod main .panel { display: none !important; }
+  body.prod main { padding: 0; gap: 0; }
+  body.prod .stage { flex: 1 1 auto; width: 100%; }
+  body.prod .canvas-box { position: fixed; inset: 0; border: none; border-radius: 0; background: transparent; z-index: 50; } /* v0.35.1：#fff 是全屏白层——prod 类加上到内容上屏之间盖出第二记白闪 */
+  /* v0.30 伪地址栏：生产模式固定顶部（业务壳外唯一的浏览器语义 UI） */
+  #navWrap { display:flex; gap:6px; padding:6px 10px; background:var(--panel); border-bottom:1px solid var(--line); align-items:center; }
+  #navWrap[hidden] { display:none; }
+  #navWrap button { background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:5px 10px; cursor:pointer; font-size:13px; }
+  #navWrap button:hover { border-color: var(--accent); }
+  #navUrl { flex:1; min-width:120px; background:var(--bg); border:1px solid var(--line); color:var(--txt); border-radius:14px; padding:6px 12px; font-size:12.5px; outline:none; }
+  #navUrl:focus { border-color: var(--accent); }
+  /* v0.32.5 消黑闪：prod 模式客户端壳不画自己的深色底——白底中性（与原生浏览器
+     首绘一致）；源站底色由网关注入（缓存热后首绘即正确色）/meta.bg 接管。
+     曾因壳深色底在白与浅色源站页之间插进一帧 #0f1420 黑闪（:82 实测） */
+  body.prod { background: transparent; } /* 透出 html 注入底色；底色未注入时为浏览器默认白 */
+  /* v0.55：藏屏外时不得带阴影——box-shadow 随元素移出屏外仍向下投影 ~12px，
+     在浅色源站顶部压出 4% 黑暗条（实测右侧米白区全宽条带，像素 diff 3% 的主来源）。
+     阴影改为唤出态才加 */
+  body.prod #navWrap { position: fixed; top:0; left:0; right:0; z-index:90; transform: translateY(-100%); transition: transform .18s ease, box-shadow .18s ease; box-shadow: none; }
+  body.prod #navWrap:hover, body.prod #navHot:hover ~ #navWrap { transform: none; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+  body.prod #navHot { position: fixed; top:0; left:0; right:0; height: 9px; z-index:89; }
+  body.prod #mirrorScroll { width: 100vw !important; height: 100vh !important; }
+  /* v0.35.1 三闪修复：镜像容器内联 #fff 在 prod 全屏下是一块白板——在 html 注入
+     底色与内容上屏之间盖出第二记白闪（全帧率实测 629ms 帧）。透明透出注入底色 */
+  body.prod #mirrorScroll { background: transparent !important; }
+  body.prod #rbi { width: 100vw; height: 100vh; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--txt); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; overflow-x:auto; }
+  header { display:flex; align-items:center; gap:14px; padding:14px 22px; border-bottom:1px solid var(--line); }
+  header .logo { width:34px; height:34px; border-radius:8px; background:linear-gradient(135deg,#4f8cff,#2a5298); display:flex; align-items:center; justify-content:center; font-weight:800; }
+  header h1 { font-size:17px; font-weight:600; }
+  header .sub { color:var(--dim); font-size:12.5px; }
+  header .status { margin-left:auto; font-size:13px; padding:6px 14px; border-radius:20px; background:#332; color:#f88; }
+  header .status.on { background:#153a2c; color:var(--ok); }
+  main { display:flex; gap:16px; padding:16px 22px; align-items:flex-start; }
+  .stage { flex:0 0 auto; }
+  .canvas-box { position:relative; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#000; }
+  canvas#rbi { display:block; }
+  .cursor { position:absolute; width:18px; height:18px; border:2px solid #4f8cff; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; display:none; box-shadow:0 0 8px rgba(79,140,255,.8); }
+  .stage-hint { color:var(--dim); font-size:12px; margin-top:8px; max-width:1280px; line-height:1.7; }
+  aside { flex:1 1 380px; min-width:360px; display:flex; flex-direction:column; gap:14px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .panel h3 { font-size:13.5px; color:var(--accent); margin-bottom:10px; font-weight:600; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .metric { background:var(--bg); border-radius:8px; padding:10px; text-align:center; }
+  .metric .v { font-size:20px; font-weight:700; font-family:Consolas,monospace; }
+  .metric .l { font-size:11px; color:var(--dim); margin-top:2px; }
+  .quality { display:flex; gap:8px; margin-top:10px; }
+  .quality button { flex:1; background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 0; cursor:pointer; font-size:12.5px; }
+  .quality button.active { border-color:var(--accent); color:var(--accent); }
+  .quality button:disabled { opacity:.4; cursor:not-allowed; }
+  ul.plain { list-style:none; font-size:12.5px; line-height:1.9; color:var(--txt); }
+  ul.plain li::before { content:"✓ "; color:var(--ok); }
+  ul.plain li.bad::before { content:"✗ "; color:#f88; }
+  code { background:#0c111c; padding:1px 6px; border-radius:4px; font-size:11.5px; color:#9fc3ff; font-family:Consolas,monospace; }
+  table.cmp { width:100%; border-collapse:collapse; font-size:12px; }
+  table.cmp th, table.cmp td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  table.cmp th { background:#0c111c; color:var(--dim); font-weight:600; }
+  table.cmp td:first-child { color:var(--dim); white-space:nowrap; }
+  .conn-info { font-size:12px; color:var(--dim); line-height:1.8; }
+  .btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; }
+  #connectionNotice { position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:2147483647; max-width:90vw; padding:12px 18px; border:1px solid #8294b0; border-radius:8px; background:#fff; color:#1f2d3d; box-shadow:0 4px 18px #0002; font-size:14px; }
+  #connectionNotice[hidden] { display:none; }
+  #newSession { margin-left:12px; }
+</style>
+</head>
+<body>
+<div id="navHot" hidden></div>
+<div id="navWrap" hidden>
+  <button id="navBack" title="后退">←</button>
+  <button id="navFwd" title="前进">→</button>
+  <input id="navUrl" placeholder="输入地址（限允许源站）" spellcheck="false" autocomplete="off" />
+  <button id="navGo">跳转</button>
+</div>
+<div id="connectionNotice" role="status"><span id="connectionText">正在连接…</span><button id="newSession" class="btn" hidden>重新开始</button></div>
+<header>
+  <div class="logo">影</div>
+  <div>
+    <h1>dom-mirror · DOM 镜像 Demo</h1>
+    <div class="sub">服务端 Chromium 执行业务页面，本地呈现 DOM 镜像或 PNG 差分画面。</div>
+  </div>
+  <div class="status" id="status">连接中…</div>
+</header>
+
+<main>
+  <div class="stage">
+    <div class="canvas-box" id="box">
+      <canvas id="rbi" width="1280" height="800" tabindex="0"></canvas>
+      <div class="cursor" id="cur"></div>
+    </div>
+    <div class="canvas-box" id="mirrorBox" style="display:none">
+      <div id="mirrorScroll" style="width:1280px;height:800px;overflow:auto;background:#fff;transform:translateZ(0)">
+        <div id="mirrorHost"></div>
+      </div>
+    </div>
+    <div class="stage-hint" id="stageHint">
+      操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入（试试搜索框：<b>输入"138"</b> 回车筛选客户表；报价计算器输入数字实时计算）。
+      PoC 未实现 IME 本地合成框，中文输入请暂用英文/数字验证键盘回传链路。
+    </div>
+  </div>
+
+  <aside>
+    <div class="panel">
+      <h3>实时链路指标（客户端视角实测）</h3>
+      <div class="metrics">
+        <div class="metric"><div class="v" id="mBw">0</div><div class="l">KB/s（下行）</div></div>
+        <div class="metric"><div class="v" id="mRtt">-</div><div class="l">RTT ms</div></div>
+        <div class="metric"><div class="v" id="mInLat">-</div><div class="l">输入→出帧 ms</div></div>
+        <div class="metric"><div class="v" id="mFrames">0</div><div class="l">累计帧数</div></div>
+        <div class="metric"><div class="v" id="mTotal">0</div><div class="l">累计 KB</div></div>
+        <div class="metric"><div class="v" id="mIdle">idle</div><div class="l">帧流状态</div></div>
+          <div class="metric"><div class="v" id="mFps">0</div><div class="l">下行消息/秒</div></div>
+          <div class="metric"><div class="v" id="mSrvFps">-</div><div class="l">服务端消息/秒</div></div>
+        <div class="metric"><div class="v" id="mMode">dom</div><div class="l">当前模式</div></div>
+      </div>
+      <div class="quality" style="margin-top:12px">
+        <button data-m="dom" class="active">DOM 镜像</button>
+        <button data-m="frame">像素直出兜底</button>
+      </div>
+      <div class="conn-info" style="margin-top:10px">
+        受保护源站标题：<code id="oTitle">-</code><br>
+        模式：<code id="spec">DOM 镜像（本地渲染 + 服务端补丁）</code> · DOM 补丁按变化发送<br>
+        输入→出帧指标仅反映画面通道，不代表 DOM 更新延迟；DOM 模式的本地滚动、CSS 悬停与动画无需等待服务端。
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>链路自查（DevTools）</h3>
+      <ul class="plain">
+        <li>Elements：DOM 模式在 Shadow DOM 中呈现业务结构和文本</li>
+        <li>Network：WebSocket 传输 JSON 快照、补丁与 PNG data URL</li>
+        <li>业务脚本在服务端执行；展示数据、属性和输入值可能下发</li>
+        <li>字体混淆仅增加提取成本，可从字体映射恢复，不是加密</li>
+        <li>frame 通道仍携带镜像 DOM，不提供纯像素保密保证</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h3>方案对比（客户端执行与服务端执行）</h3>
+      <table class="cmp">
+        <tr><th>维度</th><th>客户端 SW 方案</th><th>DOM 镜像（本项目）</th></tr>
+        <tr><td>客户端拿到什么</td><td>真实页面 + 加密逻辑（SW 在本地跑）</td><td>DOM/CSS、属性与展示数据；业务脚本在服务端执行</td></tr>
+        <tr><td>防绕过</td><td>SW 可卸载、首载裸奔、高级爬虫可模拟</td><td>仍可提取 DOM 数据；字体混淆不等于加密</td></tr>
+        <tr><td>带宽</td><td>与原页面相当</td><td>按变化发送 DOM 补丁；统计和心跳仍有流量</td></tr>
+        <tr><td>服务端成本</td><td>一个 WAF</td><td>每会话独立 Chromium；默认最多 3 会话，资源成本需实测</td></tr>
+        <tr><td>工程量</td><td>已有</td><td>已实现镜像与输入回传；集群、上传下载和复杂站点兼容仍需完善</td></tr>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3>会话</h3>
+      <div class="conn-info" id="sessInfo">当前会话数上限 3（演示容器资源限制）。断开后自动回收服务端页面。</div>
+      <button class="btn" id="reconn" style="margin-top:8px">重连会话</button>
+    </div>
+  </aside>
+</main>
+
+<script>
+(function () {
+  const cv = document.getElementById('rbi');
+  const ctx = cv.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const curEl = document.getElementById('cur');
+  let ws = null, connected = false, lastErr = '', mode = 'dom';
+  // v0.36 会话复用：resume 令牌持久化到 sessionStorage——刷新页面重连时认领
+  // 同一会话槽（此前只在内存，F5 即新建会话，8 次刷新耗尽上限）
+  let resumeToken = (() => { try { return sessionStorage.getItem('xyResume') || null; } catch (e) { return null; } })();
+  let retryTimer = null, retryDelay = 500, retryAllowed = true;
+  const setResume = (t) => {
+    resumeToken = t || null;
+    try { if (t) sessionStorage.setItem('xyResume', t); else sessionStorage.removeItem('xyResume'); } catch (e) {}
+  };
+
+  let frames = 0, bytes = 0;
+  let winBw = [], winFps = [];
+  const m = id => document.getElementById(id);
+
+  function setStatus(txt, on) { statusEl.textContent = txt; statusEl.className = 'status' + (on ? ' on' : ''); }
+  let noticeTimer = null, everOnline = false;
+  function availability(online, text) {
+    connected = online;
+    document.getElementById('mirrorScroll').inert = !online;
+    cv.inert = !online;
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    if (online) everOnline = true;
+    // v0.51 无感：prod 首连延迟 1.5s 才显示提示——秒连场景客户全程不见
+    // "正在连接/恢复会话"字样；断线（曾在线）仍立即提示，客户需要知道
+    const show = () => { m('connectionNotice').hidden = online; m('connectionText').textContent = text || ''; };
+    if (!online && document.body.classList.contains('prod') && !everOnline) {
+      // 首连先藏（HTML 初始无 hidden 属性），1.5s 未连上才显示
+      m('connectionNotice').hidden = true;
+      noticeTimer = setTimeout(show, 1500);
+    } else {
+      show();
+    }
+    if (online) m('newSession').hidden = true;
+  }
+
+  function noteFrame(sz) {
+    frames++;
+    const now = performance.now();
+    if (sz) { bytes += sz; winBw.push({ t: now, v: sz }); }
+    winFps.push({ t: now, v: 1 });
+    m('mIdle').textContent = 'streaming';
+  }
+  function noteBytes(sz) {
+    bytes += sz;
+    winBw.push({ t: performance.now(), v: sz });
+  }
+
+  function setMode(mo) {
+    mode = mo;
+    const isDom = mo === 'dom' || mo === 'frame';
+    frameMode = mo === 'frame';
+    if (window.__xyDebug) console.log('setMode', mo);
+    m('mMode').textContent = mo;
+    m('spec').textContent = mo === 'dom' ? 'DOM 镜像（本地渲染 + 服务端补丁）'
+      : '像素直出（服务端整页渲染，本地零重排）';
+    document.getElementById('box').style.display = isDom ? 'none' : '';
+    document.getElementById('cur').style.display = 'none';
+    document.getElementById('mirrorBox').style.display = isDom ? '' : 'none';
+    document.getElementById('stageHint').innerHTML = mo === 'dom'
+      ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端编码下发、<b>渲染在你本地</b>——本地滚动、CSS 悬停与动画无需等待服务端；内容变化由服务端推送小补丁（事件驱动，业务 DOM 静止时不发结构补丁，统计和心跳仍发送）。试试：滚动页面、悬停按钮、在输入框打字。'
+      : '操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入。';
+    document.querySelectorAll('.quality button[data-m]').forEach(b => b.classList.toggle('active', b.dataset.m === mo));
+  }
+
+  // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
+  let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
+  // v0.12 节点 id → 镜像元素（服务端 data-xy-id；与 DOM 位置解耦，重排/移动不漂移）
+  const mirrorIds = new Map();
+  let bodyId = 1;
+  function idOfMirror(el) {
+    if (!el || !el.getAttribute) return null;
+    const v = parseInt(el.getAttribute('data-xy-id'), 10);
+    return Number.isFinite(v) ? v : null;
+  }
+  function registerSubtree(el) {
+    if (!el || el.nodeType !== 1 || !el.querySelectorAll) return;
+    const selfId = idOfMirror(el);
+    if (selfId !== null) mirrorIds.set(selfId, el);
+    for (const c of el.querySelectorAll('[data-xy-id]')) {
+      const v = parseInt(c.getAttribute('data-xy-id'), 10);
+      if (Number.isFinite(v)) mirrorIds.set(v, c);
+    }
+    // v0.14：递归进入 open shadow root（声明式 template 已由解析器重建影子树，
+    // 影子内元素同样登记 id——补丁/输入/锚点按 id 命中）
+    if (el.shadowRoot) for (const c of el.shadowRoot.children) registerSubtree(c);
+  }
+  function unregisterSubtree(el) {
+    if (!el || el.nodeType !== 1 || !el.querySelectorAll) return;
+    const selfId = idOfMirror(el);
+    if (selfId !== null) mirrorIds.delete(selfId);
+    for (const c of el.querySelectorAll('[data-xy-id]')) {
+      const v = parseInt(c.getAttribute('data-xy-id'), 10);
+      if (Number.isFinite(v)) mirrorIds.delete(v);
+    }
+    if (el.shadowRoot) for (const c of el.shadowRoot.children) unregisterSubtree(c);
+  }
+  let snapSelfCheckRetries = 0;
+  // v0.32.5 patch-miss 重同步限频：miss→全量重建→重建期补丁必然再 miss→再请求
+  // 的自激循环曾 10s 打出 16 次全量（1.2MB×16，仪表盘卡顿主因）。4s 冷却 +
+  // 快照落位后 1.5s 宽限（过渡期 miss 是重建自产物，不应再触发）
+  let lastMissResyncAt = 0;
+  let lastSnapAppliedAt = 0;
+  // v0.37 定点修复：id miss 不再全量重同步轮盘（实测仪表盘 25s 122 次 miss→
+  // 3 次全量重建=图表反复闪黑）。缺的 id 上报服务端，服务端回父元素 inner 补丁
+  // 原位重建（O(子树)）；连续修复仍不收敛才回落全量
+  const repairPending = new Set();
+  let lastRepairSentAt = 0;
+  let repairFailStreak = 0;
+  // v0.14 canvas 指令流重放器：每镜像画布一份 {ring(自 reset 起的完整指令史),
+  // grads(渐变索引), imgs(图像缓存), applied(已应用条数)}。常规批只应用新增尾段；
+  // 图像异步加载完成 → 清空整环重放（drawImage 顺序正确；图表类 clearRect 循环
+  // 天然幂等）。服务端渐变索引与本地计数同序（均从 reset 起连续编号）。
+  const canvasStreams = new Map();
+  function replayCanvasOps(st, fromReset) {
+    const ctx = st.ctx;
+    if (!ctx) return;
+    let pendingImg = false;
+    const arg = (v) => {
+      if (v !== null && typeof v === 'object') {
+        if (typeof v.__img === 'string') {
+          let im = st.imgs[v.__img];
+          if (!im) {
+            im = new Image();
+            im.onload = () => { replayCanvasOps(st, true); };
+            im.src = v.__img;
+            st.imgs[v.__img] = im;
+          }
+          if (!im.complete || im.naturalWidth === 0) { pendingImg = true; return null; }
+          return im;
+        }
+        if (v.__imgd) {
+          try {
+            const bin = atob(v.__imgd.b64);
+            const d8 = new Uint8ClampedArray(bin.length);
+            for (let i = 0; i < bin.length; i++) d8[i] = bin.charCodeAt(i);
+            return new ImageData(d8, v.__imgd.w, v.__imgd.h);
+          } catch (e) { return null; }
+        }
+        return null;
+      }
+      if (typeof v === 'string' && v.charCodeAt(0) === 64) { // '@g<idx>' 渐变引用
+        return st.grads[v] || null;
+      }
+      return v;
+    };
+    let start = st.applied || 0;
+    if (fromReset) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      start = 0;
+    }
+    let applied = start;
+    for (let i = start; i < st.ring.length; i++) {
+      const op = st.ring[i];
+      const name = op[0];
+      applied = i + 1;
+      try {
+        if (name.charCodeAt(0) === 36) { // '$prop' 属性赋值
+          ctx[name.slice(1)] = arg(op[1]);
+          continue;
+        }
+        if (name === 'createLinearGradient' || name === 'createRadialGradient') {
+          const g = ctx[name](...op.slice(1).map(x => arg(x)));
+          const idx = st.grads.__n || 0;
+          st.grads.__n = idx + 1;
+          st.grads['@g' + idx] = g;
+          continue;
+        }
+        if (name === '__ac') { // addColorStop idx/off/color（渐变指令流 v0.14）
+          const g = st.grads['@g' + op[1]];
+          if (g) { try { g.addColorStop(op[2], op[3]); } catch (e) {} }
+          continue;
+        }
+        const args = op.slice(1).map(x => arg(x));
+        if (pendingImg) continue; // 图像未就绪：跳过依赖指令，onload 后整环重放
+        if (typeof ctx[name] === 'function') ctx[name](...args);
+      } catch (e) {}
+    }
+    st.applied = applied;
+  }
+  let frameMode = false; // 像素直出：整页服务端像素为视觉唯一来源，DOM 仅作隐形交互代理
+  let lastCss = null; // v0.17 带宽：最近快照 css（服务端 cssSame 时不重发，客户端用缓存）
+  // v0.53 F5 零空窗：快照状态提升到模块域——首帧缓存渲染要在 connect 前置位
+  // lastSnapKey，后续同内容快照命中去重跳过重建（否则入口动画重放=刷新闪一下）
+  let snapshotReady = false, syncReady = false, snapshotSerial = 0, lastSnapKey = null;
+  let lastSnapData = null, lastSnapSaveAt = 0;
+  let syncWatchdog = null; // v0.53：'session' 后同步看门狗（静默卡死兜底）
+  let lastFpResync = 0; // 结构指纹重同步限频
+  let pendingFocusPatches = [];
+  let lastServerHoles = null, holeRafOn = false; // 服务端穿孔区（rAF 持续重申，免疫瓦片覆盖时序） // 聚焦输入期间挂起的补丁（失焦后统一应用）
+  // v0.21 RUM：真实会话性能采集——帧时间滑窗（240 帧）、交互到视觉延迟（发送
+  // 交互→首个被应用的下行消息）、按消息类型字节。10s 心跳随 ping 回传网关日志，
+  // pagehide 时 sendBeacon('/rum')；window.__xyRum 供外部抓取
+  const rum = { frames: [], inputLat: [], bytesBy: {}, snaps: 0, patches: 0, sentAt: 0, t0: Date.now() };
+  window.__xyRum = rum;
+  (function rumRaf() {
+    let prev = performance.now();
+    requestAnimationFrame(function raf(t) {
+      rum.frames.push(t - prev);
+      prev = t;
+      if (rum.frames.length > 240) rum.frames.shift();
+      requestAnimationFrame(raf);
+    });
+  })();
+  const rumInputSent = () => { rum.sentAt = performance.now(); };
+  const rumApplied = () => {
+    if (rum.sentAt) {
+      rum.inputLat.push(performance.now() - rum.sentAt);
+      if (rum.inputLat.length > 40) rum.inputLat.shift();
+      rum.sentAt = 0;
+    }
+  };
+  const rumReport = () => {
+    const pct = (arr, p) => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return +s[Math.min(s.length - 1, Math.floor(s.length * p))].toFixed(1); };
+    return {
+      s: Math.round((Date.now() - rum.t0) / 1000),
+      frameP50: pct(rum.frames, 0.5), frameP95: pct(rum.frames, 0.95),
+      inLatP50: pct(rum.inputLat, 0.5), inLatP95: pct(rum.inputLat, 0.95), inLatN: rum.inputLat.length,
+      snaps: rum.snaps, patches: rum.patches, bytesBy: rum.bytesBy, dpr: window.devicePixelRatio || 1,
+      vw: window.innerWidth, vh: window.innerHeight,
+    };
+  };
+  window.addEventListener('pagehide', () => {
+    try { navigator.sendBeacon('/rum', JSON.stringify(rumReport())); } catch (e) {}
+  });
+  // v0.53 F5 缓存：卸载前把节流窗口内的最新快照落盘
+  window.addEventListener('pagehide', () => {
+    if (!lastSnapData) return;
+    try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
+  });
+  // 投机本地回显的当前孔（位图原件保存在 __xyLocalHole.saved，本地即时复原）
+  function closeLocalHole() {
+    const h = window.__xyLocalHole;
+    if (!h) return;
+    window.__xyLocalHole = null;
+    // 不做本地 putImageData 复原：孔期间服务端可能已推送过该区域的新瓦片
+    // （如 hover 态像素），回写旧位图会把它盖掉，下个差分 tick 再推回来——
+    // 竞态表现为高亮色深 45% 收敛 3-6 帧。改为请求服务端按当前画面重绘该
+    // 区域（单张小瓦片，<20ms），终态精确无竞态
+    try {
+      if (ws && ws.readyState === 1) {
+        const td = window.devicePixelRatio || 1;
+        const ms2 = document.getElementById('mirrorScroll');
+        const sx2 = ms2 ? ms2.scrollLeft : 0, sy2 = ms2 ? ms2.scrollTop : 0;
+        ws.send(JSON.stringify({ type: 'repaint', x: Math.round(h.x / td) + sx2, y: Math.round(h.y / td) + sy2, w: Math.round(h.w / td), h: Math.round(h.h / td) }));
+      }
+    } catch (e) {}
+  }
+  // 用户在镜像字段里打过的最近值（仅客户端自产数据，非服务端明文）。
+  // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
+  // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
+  const lastTyped = new Map();
+  let viewW = 1280, viewH = 800;
+  // v0.13 文件传输：上行分块状态机 + 下行装配缓冲（供回归/诊断观察）
+  window.__xyUploads = [];
+  window.__xyDownloads = [];
+  const uploadStates = new Map();   // tid -> {file, fid, sent}
+  const downloadStates = new Map(); // id -> {name, chunks, size}
+  async function sendFileChunks(tid, file, maxChunk) {
+    const step = Math.max(16 * 1024, Math.min(maxChunk || 32 * 1024, 32 * 1024));
+    const buf = new Uint8Array(await file.arrayBuffer());
+    for (let off = 0; off < buf.length; off += step) {
+      const slice = buf.subarray(off, off + step);
+      let bin = '';
+      for (let i = 0; i < slice.length; i += 0x8000) bin += String.fromCharCode.apply(null, slice.subarray(i, i + 0x8000));
+      send({ type: 'upload-chunk', tid, b64: btoa(bin) });
+    }
+    send({ type: 'upload-end', tid });
+  }
+  // 镜像 file input 的本地选择 → 上传管线（v0.13）：白名单/大小校验在服务端，
+  // 分块 ≤48KiB 上行；完成后远端页面经 CDP 拿到真实文件，UI 变化以补丁回传。
+  function handleFilePick(input) {
+    const fid = idOfMirror(input);
+    if (fid === null || !input.files || !input.files.length) return;
+    const file = input.files[0];
+    const tid = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    uploadStates.set(tid, { file, fid, sent: false });
+    window.__xyUploads.push({ name: file.name, size: file.size, state: 'begin' });
+    send({ type: 'upload-begin', tid, name: file.name, size: file.size, fid });
+  }
+
+  function pathOfMirror(node) {
+    const parts = [];
+    let n = node;
+    while (n && n !== mirrorBody) {
+      const p = n.parentNode;
+      if (!p) return null;
+      const index = [...p.children].indexOf(n);
+      if (index < 0) return null;
+      parts.unshift(index);
+      n = p;
+    }
+    return n === mirrorBody ? parts.join('/') : null;
+  }
+  function mirrorFind(ref) {
+    if (!mirrorBody) return null;
+    if (typeof ref === 'number') {
+      if (ref === bodyId) return mirrorBody;
+      const el = mirrorIds.get(ref);
+      return (el && el.isConnected) ? el : null;
+    }
+    if (ref === '' || ref === undefined) return mirrorBody;
+    let n = mirrorBody;
+    for (const i of String(ref).split('/')) { n = n.children[+i]; if (!n) return null; }
+    return n;
+  }
+    // v0.27 统一 HTML 片段解析：<template>.content 属惰性文档片段——其中的声明式
+  // shadow 模板（closed 组件补丁）在节点插入文档时不会被处理（快照路径经
+  // mirrorRoot.setHTMLUnsafe 可处理，实测补丁路径闭盒丢失）。div.setHTMLUnsafe
+  // 在解析期即挂影子根，随节点移动保留
+  // v0.40 F4 纵深防御：惰性 template.content 预清洗——on*/srcdoc/formaction
+  // 连同嵌套 template 内容（声明式 shadow 载体）全部剥离。服务端 sanitizeClone
+  // 是第一道（实测 9 载体零穿透），本层保证未来任何序列化路径漏扫时镜像源
+  // 仍不执行（审计的架构性批评：setHTMLUnsafe 语义=信任输入）
+  const scrubHtml = (str) => {
+    try {
+      const pre = document.createElement('template');
+      pre.innerHTML = str; // 惰性：不执行脚本/不挂影子/不派发事件
+      const scrub = (root) => {
+        for (const el of root.querySelectorAll('*')) {
+          for (const a of [...el.attributes]) {
+            if (/^on/i.test(a.name) || a.name === 'formaction') el.removeAttribute(a.name); // srcdoc 不剥：引擎同源 iframe 载体（内容服务端已净化）
+          }
+          if (el.tagName === 'TEMPLATE' && el.content) scrub(el.content);
+        }
+      };
+      scrub(pre.content);
+      return pre.innerHTML;
+    } catch (e) { return str; }
+  };
+  const parseHtml = (str) => {
+    const d = document.createElement('div');
+    const clean = scrubHtml(str);
+    if (typeof d.setHTMLUnsafe === 'function') d.setHTMLUnsafe(clean); else d.innerHTML = clean;
+    const nodes = [...d.childNodes];
+    for (const n of nodes) d.removeChild(n);
+    return nodes;
+  };
+
+// v0.60：文档滚动器样式外提。源站 html/body 上的滚动条定制（scrollbar-width/
+// scrollbar-color/overscroll-behavior）经选择器映射后落在 .xy-body 上——但 DOM
+// 模式下 .xy-body 自动高度、不是滚动容器，规则整体失效；真正的滚动器是 shadow
+// 外的 #mirrorScroll。不外提时用户浏览器里源站细滚动条/定制配色 vs 虚影默认宽
+// 滚动条（实测受保护站 bundle：body{overflow-y:auto;overscroll-behavior:contain;
+// scrollbar-width:thin}，shadow 内规则够不到外层滚动器）。从 .xy-body 计算样式
+// 取值写到 #mirrorScroll，对任何站点通用；'auto' 也照写（与源站计算值恒等）。
+function syncDocScrollerStyle() {
+  try {
+    const ms = document.getElementById('mirrorScroll');
+    if (!ms || !mirrorBody) return;
+    const cs = getComputedStyle(mirrorBody);
+    if (cs.scrollbarWidth) ms.style.setProperty('scrollbar-width', cs.scrollbarWidth, 'important');
+    if (cs.scrollbarColor) ms.style.setProperty('scrollbar-color', cs.scrollbarColor, 'important');
+    // v0.61：color-scheme 决定滚动条明暗底色（实测灵袭 bundle :root{color-scheme:light}
+    // + [data-theme=dark] 暗色变体）。不外提时暗色主题下源站=暗色滚动条、虚影=亮色。
+    // shadow 内表单控件不受影响（origin 规则已在 shadow 内生效并覆盖继承值）。
+    if (cs.colorScheme) ms.style.setProperty('color-scheme', cs.colorScheme, 'important');
+    const ob = cs.overscrollBehavior || cs.overscrollBehaviorY;
+    if (ob) ms.style.setProperty('overscroll-behavior', ob, 'important');
+  } catch (e) {}
+}
+
+function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
+    const host = document.getElementById('mirrorHost');
+    if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
+    else mirrorRoot = host.shadowRoot;
+    // 选择器映射：:root/html/body（含复合选择器 html[data-theme]、html.foo 等）→ .xy-body
+    // （Shadow DOM 内 :root/html 匹配不到镜像根；复合形式不映射则按属性切换的主题全部失配，
+    // 实测受保护站点 data-theme 亮色变量整组失效、输入框白底变暗——踩过）
+    const css2 = css
+      .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
+      .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
+      .replace(/(^|[\s,{}>+~])body(?=[\[{.,:\s)])/g, '$1.xy-body');
+    // 像素瓦片模式：镜像内零文字明文 → 客户端无需任何字体下发（省 16MB），
+    // 所有可见文字/图表 = 服务端按本机 DPR 渲染的原始像素瓦片，1:1 显示
+    // html/body 的类与属性（主题载体）挂到镜像根上
+    // 重建会销毁焦点元素（焦点回落到 body，之后 Enter/快捷键落在镜像外不再被转发）——
+    // 先记住焦点路径与选区，重建完成后还原，打字→回车链路不被 700ms 重同步打断。
+    let keepFocus = null;
+    const ae = mirrorRoot.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
+      const fid = idOfMirror(ae);
+      const fp = fid !== null ? null : pathOfMirror(ae);
+      // 本地值同样保留：快照可能早于服务端处理完最后几个按键（与 dom-props 跳过焦点元素同一策略）
+      if (fid !== null || fp !== null) keepFocus = { id: fid, path: fp, val: ae.isContentEditable ? null : ae.value, sel: (ae.selectionStart == null) ? null : [ae.selectionStart, ae.selectionEnd] };
+    }
+    const mirrorHtml = '<style>' + css2 + '</style><div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
+    // v0.14：innerHTML 已不解析声明式 Shadow DOM（Chrome 提示需 setHTMLUnsafe）；
+    // 影子树由 <template shadowrootmode> 重建。旧浏览器回退 innerHTML（无影子镜像）
+    // v0.40 F4 纵深：快照整页同样过 parseHtml 的惰性预清洗（服务端 sanitize 为第一道）
+    const safeHtml = scrubHtml(mirrorHtml);
+    if (typeof mirrorRoot.setHTMLUnsafe === 'function') mirrorRoot.setHTMLUnsafe(safeHtml);
+    else mirrorRoot.innerHTML = safeHtml;
+
+
+
+    mirrorBody = mirrorRoot.querySelector('.xy-body');
+    // v0.20：源站 body 的可继承计算样式钉到镜像根——裸元素不再继承客户端外壳
+    // 的字体/颜色（body{} 选择器映射只覆盖源站显式设置的属性）
+    if (bodyStyle && mirrorBody) { try { mirrorBody.style.cssText += ';' + bodyStyle; } catch (e) {} }
+    bodyId = (typeof newBodyId === 'number' && Number.isFinite(newBodyId)) ? newBodyId : 1;
+    mirrorIds.clear();
+    // v0.47 原子渲染收尾：全部内容（HTML+CSS+图标+位图）就绪，一次性显示
+
+    canvasStreams.clear();
+    registerSubtree(mirrorBody);
+    // v0.60：快照落位即同步文档滚动器样式（内联 <style> 已生效；晚到 CSS 由 meta 周期兜底）
+    syncDocScrollerStyle();
+    // 防抓取混淆字体（关键兼容）：@font-face 写在 shadow root 样式里在部分 Chromium
+    // （Windows 实测）不生效——字体栈落到本地"Microsoft YaHei"，PUA 码点无字形 → 全页
+    // 豆腐块。同一组 @font-face 必须额外注入文档级（document.head），文档级字体对所有
+    // shadow 内容可见；按会话 sid 变化时整体替换（URL 变了自然重新拉取）。
+    try {
+      const faces = (css.match(/@font-face\{[^}]*\/(?:m\/obf\/|f\/noto-)[^}]*\}/g) || []).join('\n');
+      if (faces) {
+        let st = document.getElementById('xy-obf-fonts');
+        if (!st) { st = document.createElement('style'); st.id = 'xy-obf-fonts'; document.head.appendChild(st); }
+        if (st.textContent !== faces) st.textContent = faces;
+      }
+    } catch (e) {}
+    snapMirrorToDevice();
+    // 瓦片图层（仅 frame 像素直出模式）：设备分辨率 canvas，整数设备坐标 1:1 blit。
+    // v3 dom 模式无图层——瓦片元素锚定在镜像文档流里，滚动/悬停/动画全部本地原生
+    if (frameMode) {
+      const layer = document.createElement('canvas');
+      layer.className = 'xy-tiles';
+      const tdpr = window.devicePixelRatio || 1;
+      layer.style.cssText = 'position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:2147483647';
+      layer.width = Math.round((viewW || 1280) * tdpr);
+      syncLayerCSS(layer);
+      layer.height = 1;
+      layer.tdpr = tdpr;
+      mirrorBody.appendChild(layer);
+    }
+    if (!mirrorWired) {
+      mirrorWired = true;
+      // v0.14：事件穿出影子边界时 e.target 被重定向为宿主元素（shadow retargeting），
+      // 所有输入类监听一律以 composedPath()[0] 取真实目标（影子内输入/滚动/组合）
+      const realTarget = (e) => {
+        const path = (typeof e.composedPath === 'function') ? e.composedPath() : null;
+        return (path && path.length) ? path[0] : e.target;
+      };
+      mirrorRoot.addEventListener('click', (e) => {
+        // SPA 链接/表单导航一律拦截在本地，真实路由变化由服务端执行后以补丁回来
+        // （点击本身已由 pointer 管线转发，这里只拦本地导航副作用）
+        const t = realTarget(e);
+        if (t.closest && t.closest('a, form')) e.preventDefault();
+        // 合成点击（脚本/自动化/a11y 的 el.click()，isTrusted=false）不经过指针
+        // 管线，曾在此被静默丢弃——源站直连可提交的按钮在镜像内点了没反应
+        // （:82 登录实测）。按元素锚转发，服务端对同元素执行等价 el.click()
+        if (!e.isTrusted) {
+          try { const aid = idOfMirror(t); if (aid !== null) send({ type: 'domclick', id: aid }); } catch (e2) {}
+        }
+      });
+      // 指针事件输入管线（点击/拖拽的唯一转发通道）：
+      // 1) pointerdown 永远先于一切销毁到达（结构补丁的 innerHTML 替换会让浏览器
+      //    取消 mousedown/click 合成——实测登录按钮点击被静默吞掉），在 pointerdown
+      //    里完成锚定与转发；
+      // 2) 坐标以按下时的目标元素为锚做服务端平移（镜像布局与服务端有字体度量级
+      //    偏差，实测登录表单水平差 125px），整个手势期间偏移恒定；
+      // 3) 服务端用 CDP 真实按压/释放派发——真实点击语义（表单提交/聚焦/滑块
+      //    验证码/拖放全部原生），与 DOM 快照状态完全解耦。
+      {
+        let lastPtAt = 0;
+        const anchorOf = (t) => {
+          const aid = (t && t.getAttribute) ? idOfMirror(t) : null;
+          const r = (t && t.getBoundingClientRect) ? t.getBoundingClientRect() : null;
+          return (aid !== null && r) ? { id: aid, x: r.left, y: r.top } : null;
+        };
+        const syncPointerScroll = (target) => {
+          if (frameMode) return; // frame 的滚动以服务端画面为准
+          const ms = document.getElementById('mirrorScroll');
+          const inner = [];
+          // v0.14：祖先链穿透 shadow 与 iframe 边界（影子内/iframe 内滚动容器都上报）
+          const up = (el) => el.parentElement
+            || (el.getRootNode() instanceof ShadowRoot ? el.getRootNode().host : null)
+            || (el.ownerDocument && el.ownerDocument !== document && el.ownerDocument.defaultView ? el.ownerDocument.defaultView.frameElement : null);
+          for (let el = up(target); el && el !== mirrorBody; el = up(el)) {
+            if (el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth) continue;
+            const sid = idOfMirror(el);
+            if (sid !== null) inner.push({ id: sid, top: Math.round(el.scrollTop), left: Math.round(el.scrollLeft) });
+          }
+          // scroll 事件可能晚于 pointerdown；先发当前实际位置，服务端串行队列
+          // 会先完成滚动，再测量锚点并派发按压，避免首击落在旧视口之外。
+          send({ type: 'scroll', x: ms ? Math.round(ms.scrollLeft) : 0, y: ms ? Math.round(ms.scrollTop) : 0, inner });
+        };
+        mirrorRoot.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0 || !e.isPrimary) return;
+          // 客户端输入框聚焦：pointer 事件不触发原生聚焦（mousedown 被吞时），
+          // 键盘输入需要客户端焦点
+          const t = realTarget(e);
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable || (t.tabIndex !== undefined && t.tabIndex >= 0 && t.tagName !== 'BODY'))) { try { t.focus({ preventScroll: true }); } catch (e2) {} }
+          syncPointerScroll(t);
+          window.__xyDrag = anchorOf(t);
+          const a = window.__xyDrag;
+          rumInputSent(); send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
+        }, true);
+        mirrorRoot.addEventListener('pointermove', (e) => {
+          if (!e.isPrimary) return;
+          const a = window.__xyDrag;
+          const now = Date.now();
+          if (!a && now - lastPtAt < 40) return;
+          lastPtAt = now;
+          send(Object.assign({ type: 'mouse', action: 'move', x: e.clientX, y: e.clientY, buttons: a ? 1 : 0 }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
+        }, true);
+        const endDrag = (e) => {
+          if (e.button !== 0 || !window.__xyDrag) return;
+          const a = window.__xyDrag;
+          window.__xyDrag = null;
+          send(Object.assign({ type: 'mouse', action: 'up', x: e.clientX, y: e.clientY, button: 'left' }, { aid: a.id, ax: a.x, ay: a.y }));
+        };
+        mirrorRoot.addEventListener('pointerup', endDrag, true);
+        mirrorRoot.addEventListener('pointercancel', endDrag, true);
+        // 同源 iframe（v0.14）：srcdoc 渲染的 iframe 是独立浏览上下文，事件不越界，
+        // load 后在其文档上挂同一套转发监听（指针/输入/组合/功能键），元素按
+        // data-xy-id 注册（与主镜像同一 id 空间，服务端 find(id) 直接命中源站
+        // iframe 内元素）。旧文档的失联 id 在数量超限时清扫。
+        const sweepStaleIds = () => {
+          if (mirrorIds.size < 5000) return;
+          for (const [k, v] of mirrorIds) if (!v.isConnected) mirrorIds.delete(k);
+        };
+        const wireIframeDoc = (doc) => {
+          if (!doc || doc.__xyWired) return;
+          try { doc.__xyWired = true; } catch (e) { return; }
+          sweepStaleIds();
+          try { for (const el of doc.querySelectorAll('[data-xy-id]')) { const v = parseInt(el.getAttribute('data-xy-id'), 10); if (Number.isFinite(v)) mirrorIds.set(v, el); } } catch (e) {}
+          const iTarget = (e) => {
+            const path = (typeof e.composedPath === 'function') ? e.composedPath() : null;
+            return (path && path.length) ? path[0] : e.target;
+          };
+          doc.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || !e.isPrimary) return;
+            const t = iTarget(e);
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable || (t.tabIndex !== undefined && t.tabIndex >= 0 && t.tagName !== 'BODY'))) { try { t.focus({ preventScroll: true }); } catch (e2) {} }
+            syncPointerScroll(t);
+            window.__xyDrag = anchorOf(t);
+            const a = window.__xyDrag;
+            rumInputSent(); send(Object.assign({ type: 'mouse', action: 'down', x: e.clientX, y: e.clientY, button: 'left' }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
+          }, true);
+          doc.addEventListener('pointermove', (e) => {
+            if (!e.isPrimary) return;
+            const a = window.__xyDrag;
+            const now = Date.now();
+            if (!a && now - lastPtAt < 40) return;
+            lastPtAt = now;
+            send(Object.assign({ type: 'mouse', action: 'move', x: e.clientX, y: e.clientY, buttons: a ? 1 : 0 }, a ? { aid: a.id, ax: a.x, ay: a.y } : {}));
+          }, true);
+          const iEndDrag = (e) => {
+            if (e.button !== 0 || !window.__xyDrag) return;
+            const a = window.__xyDrag;
+            window.__xyDrag = null;
+            send(Object.assign({ type: 'mouse', action: 'up', x: e.clientX, y: e.clientY, button: 'left' }, { aid: a.id, ax: a.x, ay: a.y }));
+          };
+          doc.addEventListener('pointerup', iEndDrag, true);
+          doc.addEventListener('pointercancel', iEndDrag, true);
+          doc.addEventListener('submit', (e) => e.preventDefault());
+          doc.addEventListener('click', (e) => { const t = iTarget(e); if (t.closest && t.closest('a, form')) e.preventDefault(); });
+          doc.addEventListener('input', (e) => {
+            const t = iTarget(e);
+            if (t && t.isContentEditable) {
+              const cid = idOfMirror(t);
+              if (cid !== null) send({ type: 'dom', kind: 'ce', id: cid, html: t.innerHTML });
+              return;
+            }
+            if (!t.matches || !t.matches('input, select, textarea')) return;
+            if (t.tagName === 'INPUT' && t.type === 'file') return;
+            const id = idOfMirror(t);
+            if (id !== null) send({ type: 'dom', kind: 'input', id, value: t.value });
+          });
+          doc.addEventListener('change', (e) => {
+            const t = iTarget(e);
+            if (!t.matches || !t.matches('input, select, textarea')) return;
+            if (t.tagName === 'INPUT' && t.type === 'file') { handleFilePick(t); return; }
+            const id = idOfMirror(t);
+            if (id !== null) send({ type: 'dom', kind: 'change', id, value: t.value });
+          });
+          doc.addEventListener('compositionupdate', (e) => {
+            const t = iTarget(e);
+            if (!t.matches || !t.matches('input, textarea')) return;
+            const id = idOfMirror(t);
+            if (id === null) return;
+            const text = e.data || '';
+            send({ type: 'composition', id, text, s: (t.selectionStart == null) ? text.length : t.selectionStart, e: (t.selectionEnd == null) ? text.length : t.selectionEnd });
+          });
+          doc.addEventListener('compositionend', (e) => {
+            const t = iTarget(e);
+            if (!t.matches || !t.matches('input, textarea')) return;
+            const id = idOfMirror(t);
+            if (id !== null) send({ type: 'composition-commit', id, text: e.data || '' });
+          });
+          doc.addEventListener('keydown', (e) => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if (e.isComposing || e.keyCode === 229) return;
+            const k = e.key;
+            if (k === 'Enter' || k === 'Escape' || k === 'Tab' || k.indexOf('Arrow') === 0 || k === 'Backspace' || k === 'Delete') {
+              e.__xyKeyFwd = true;
+              send({ type: 'key', action: 'down', key: k });
+              if (k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
+              return;
+            }
+            // 键盘型应用（iframe 内）：非输入元素焦点时字符转发（与主文档同语义）
+            if (k.length === 1) {
+              const t = iTarget(e);
+              const inField = !!(t && t.matches && (t.matches('input, textarea, select') || t.isContentEditable || (t.closest && t.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))));
+              if (!inField) { e.preventDefault(); e.__xyKeyFwd = true; send({ type: 'key', action: 'down', text: k }); }
+            }
+          }, true);
+        };
+        mirrorRoot.addEventListener('load', (e) => {
+          const f = e.target;
+          if (f && f.tagName === 'IFRAME') {
+            try { if (f.contentDocument) wireIframeDoc(f.contentDocument); } catch (err) {}
+          }
+        }, true);
+        // 已挂载的 iframe（快照重建后 srcdoc 立即解析，load 事件可能先于本 wiring）
+        try {
+          for (const f of mirrorBody.querySelectorAll('iframe')) {
+            if (f.contentDocument && f.contentDocument.readyState !== 'loading') wireIframeDoc(f.contentDocument);
+          }
+        } catch (e) {}
+      }
+      // v0.19：HTML5 拖拽转发——镜像上 dragstart/over/drop/end 合成到源站
+      // （dragover/drop 本地 preventDefault，源站为唯一事实源；drop 载荷尽量读取）
+      {
+        let lastOver = 0;
+        const dndSend = (kind, e) => {
+          const t = realTarget(e);
+          const id = t ? idOfMirror(t) : null;
+          const o = { type: 'dnd', kind, x: Math.round(e.clientX), y: Math.round(e.clientY) };
+          if (id !== null) o.id = id;
+          if (kind === 'drop') {
+            try { const txt = e.dataTransfer.getData('text/plain'); if (txt) o.text = txt; } catch (err) {}
+          }
+          send(o);
+        };
+        mirrorRoot.addEventListener('dragstart', (e) => dndSend('start', e), true);
+        mirrorRoot.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          const now = Date.now();
+          if (now - lastOver < 100) return;
+          lastOver = now;
+          dndSend('over', e);
+        }, true);
+        mirrorRoot.addEventListener('drop', (e) => { e.preventDefault(); dndSend('drop', e); }, true);
+        mirrorRoot.addEventListener('dragend', (e) => dndSend('end', e), true);
+      }
+      // v0.19：触摸转发（移动端访客）——本地 preventDefault 防合成鼠标双事件，
+      // 触点坐标送 CDP dispatchTouchEvent，源站按真实触点语义响应
+      {
+        const ptsOf = (e) => [...(e.touches || e.changedTouches || [])].map((t) => [t.clientX, t.clientY]);
+        mirrorRoot.addEventListener('touchstart', (e) => { e.preventDefault(); send({ type: 'touch', kind: 'start', pts: ptsOf(e) }); }, { passive: false, capture: true });
+        mirrorRoot.addEventListener('touchmove', (e) => { e.preventDefault(); send({ type: 'touch', kind: 'move', pts: ptsOf(e) }); }, { passive: false, capture: true });
+        mirrorRoot.addEventListener('touchend', (e) => { e.preventDefault(); send({ type: 'touch', kind: 'end', pts: ptsOf(e) }); }, { passive: false, capture: true });
+      }
+      // 内部滚动容器（v3 dom）：本地原生滚动 + 上报滚动位置（capture 收不冒泡
+      // 的滚动事件），服务端跟随到同位置——懒加载内容以补丁回来、后续瓦片
+      // 裁剪坐标正确。40ms 节流。
+      {
+        let lastInAt = 0;
+        mirrorRoot.addEventListener('scroll', (e) => {
+          if (frameMode) return; // frame：内部滚动由服务端差分回传
+          const t = realTarget(e);
+          if (!t || t.nodeType !== 1 || t.scrollTop === undefined) return;
+          const now = Date.now();
+          if (now - lastInAt < 40) return;
+          lastInAt = now;
+          const sid = idOfMirror(t);
+          if (sid === null) return;
+          const msx = document.getElementById('mirrorScroll');
+          send({ type: 'scroll', x: msx ? Math.round(msx.scrollLeft) : 0, y: msx ? Math.round(msx.scrollTop) : 0, inner: [{ id: sid, top: Math.round(t.scrollTop), left: Math.round(t.scrollLeft) }] });
+        }, true);
+      }
+      mirrorRoot.addEventListener('submit', (e) => e.preventDefault());
+      // contenteditable（富文本/笔记类）：本地原生编辑保流畅，内容整体（120ms 节流
+      // 尾随合并）同步服务端；服务端 setInnerHTML + 派发 input，应用逻辑照常响应
+      const ceTimers = new Map();
+      const ceSync = (id, el) => {
+        if (ceTimers.has(id)) return;
+        ceTimers.set(id, setTimeout(() => {
+          ceTimers.delete(id);
+          if (!el.isConnected) return;
+          send({ type: 'dom', kind: 'ce', id, html: el.innerHTML });
+        }, 120));
+      };
+      mirrorRoot.addEventListener('input', (e) => {
+        const t = realTarget(e);
+        if (t && t.isContentEditable) {
+          if (composing && e.isComposing !== false) return;
+          const cid = idOfMirror(t);
+          if (cid !== null) ceSync(cid, t);
+          return;
+        }
+        if (!t.matches || !t.matches('input, select, textarea')) return;
+        // IME 组合期间（isComposing）的 input 携带拼音串，不做值同步
+        if (composing && e.isComposing !== false) return;
+        // v4：输入框是真实控件，打字回显原生；值同步服务端（v0.12：按 id 定位）
+        const id = idOfMirror(t);
+        if (id !== null) { lastTyped.set(id, t.value); send({ type: 'dom', kind: 'input', id, value: t.value }); return; }
+        const p = pathOfMirror(t);
+        if (p !== null) { lastTyped.set(p, t.value); send({ type: 'dom', kind: 'input', path: p, value: t.value }); }
+      });
+      mirrorRoot.addEventListener('change', (e) => {
+        const t = realTarget(e);
+        if (!t.matches || !t.matches('input, select, textarea')) return;
+        // v0.13：file input 的"值"是本地 fakepath，不做值同步——改走上传管线
+        if (t.tagName === 'INPUT' && t.type === 'file') { handleFilePick(t); return; }
+        const id = idOfMirror(t);
+        if (id !== null) { lastTyped.set(id, t.value); send({ type: 'dom', kind: 'change', id, value: t.value }); return; }
+        const p = pathOfMirror(t);
+        if (p !== null) { lastTyped.set(p, t.value); send({ type: 'dom', kind: 'change', path: p, value: t.value }); }
+      });
+      // v0.13 IME：组合期镜像候选串（服务端 CDP imeSetComposition），上屏走
+      // composition-commit（CDP insertText）。组合期间抑制普通 input 值同步，
+      // 拼音串不会被当作最终值写进源站字段；上屏后的最终 input 事件正常同步。
+      let composing = false;
+      const compTarget = (e) => {
+        const t = realTarget(e);
+        return (t && t.matches && t.matches('input, textarea')) ? t : null;
+      };
+      mirrorRoot.addEventListener('compositionstart', (e) => {
+        if (compTarget(e)) composing = true;
+      });
+      mirrorRoot.addEventListener('compositionupdate', (e) => {
+        const t = compTarget(e);
+        if (!t || !composing) return;
+        const id = idOfMirror(t);
+        if (id === null) return;
+        const text = e.data || '';
+        const s = (t.selectionStart == null) ? text.length : t.selectionStart;
+        const en = (t.selectionEnd == null) ? text.length : t.selectionEnd;
+        send({ type: 'composition', id, text, s, e: en });
+      });
+      mirrorRoot.addEventListener('compositionend', (e) => {
+        if (!composing) return;
+        composing = false;
+        const t = compTarget(e);
+        if (!t) return;
+        const id = idOfMirror(t);
+        if (id === null) return;
+        send({ type: 'composition-commit', id, text: e.data || '' });
+      });
+      // 焦点落进输入字段时找回重建前的已键入值（重同步重建会清掉克隆里的当前值）
+      mirrorRoot.addEventListener('focusin', (e) => {
+        const t = realTarget(e);
+        if (!t.matches || !t.matches('input, textarea') || t.value !== '' || t.isContentEditable) return;
+        const id = idOfMirror(t);
+        if (id === null || !lastTyped.has(id)) return;
+        const v = lastTyped.get(id);
+        t.value = v;
+        try { t.setSelectionRange(v.length, v.length); } catch (err) {}
+      });
+      // 失焦：统一补挂聚焦期间挂起的补丁
+      mirrorRoot.addEventListener('focusout', () => {
+        if (!pendingFocusPatches.length) return;
+        const q = pendingFocusPatches;
+        pendingFocusPatches = [];
+        setTimeout(() => applyPatches(q), 30);
+      });
+      // 功能键与字符键分派（v0.17 起挂在 document 捕获层）：合成 pointer 事件不产生
+      // 原生聚焦，焦点常留在 body——keydown 不会经过 shadow root，必须文档级捕获。
+      // Enter/Escape/Tab/方向/退格转发服务端（服务端页面响应）；字符输入在输入控件/
+      // 富文本上由 input 事件同步（转发会双输入），焦点在"非输入元素"（键盘型应用：
+      // 终端/游戏/canvas）时字符原文转发服务端 CDP——页面级 keydown 才是真正消费者。
+      const keyForward = (e, isDown) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.isComposing || e.keyCode === 229) return; // 输入法组合中的 Enter 是"上屏"，不是发送
+        const k = e.key;
+        const special = k === 'Enter' || k === 'Escape' || k === 'Tab' || k.indexOf('Arrow') === 0 || k === 'Backspace' || k === 'Delete';
+        const path = (typeof e.composedPath === 'function') ? e.composedPath() : null;
+        const t0 = (path && path.length) ? path[0] : e.target;
+        const inField = !!(t0 && t0.matches && (t0.matches('input, textarea, select') || t0.isContentEditable || (t0.closest && t0.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))));
+        // v0.62：Tab 焦点齐步——此前 Tab 转发服务端（服务端焦点前进）但本地
+        // preventDefault 把焦点留在原字段，两端分歧：后续打字进错字段（实测纯键盘
+        // 登录 3/3 静默失败：用户名被拼上密码、密码恒空）。值同步按 id 定位（v0.12），
+        // 客户端焦点即输入归属——Tab 时本地把 shadow 焦点移到下一/上一可聚焦元素
+        //（约束在镜像内，防跑出到外壳隐形控件），服务端照旧收 Tab 键事件，两端同步。
+        if (isDown && k === 'Tab' && inField && t0 && t0.getRootNode && t0.getRootNode() !== document) {
+          e.__xyKeyFwd = true;
+          rumInputSent();
+          send({ type: 'key', action: 'down', key: 'Tab' });
+          e.preventDefault();
+          try {
+            const rn = t0.getRootNode();
+            const sc = (rn && rn.querySelectorAll) ? rn : mirrorRoot;
+            const vis = (el) => { try { return el.offsetParent !== null || el.getClientRects().length > 0; } catch (err) { return false; } };
+            const fset = [...sc.querySelectorAll('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')].filter(vis);
+            const fi = fset.indexOf(t0);
+            let next = null;
+            if (e.shiftKey) next = fi > 0 ? fset[fi - 1] : fset[fset.length - 1];
+            else next = (fi >= 0 && fi < fset.length - 1) ? fset[fi + 1] : fset[0];
+            if (next && next !== t0) next.focus();
+          } catch (err) {}
+          return;
+        }
+        if (special) {
+          if (isDown && k === 'Enter' && inField) {
+            // Enter 通常是提交/发送：服务端会清空字段。忘掉本地已键入值并清空本地值，
+            // 否则重同步/focusin 会把已发送的文字塞回输入框、change 回传写脏服务端。
+            const inp = (t0.closest && t0.closest('input, textarea')) || (t0.matches && t0.matches('input, textarea') ? t0 : null);
+            const tid = inp ? idOfMirror(inp) : null;
+            if (tid !== null) lastTyped.delete(tid);
+            if (inp) inp.value = '';
+          }
+          e.__xyKeyFwd = true;
+          if (isDown) rumInputSent();
+          send({ type: 'key', action: isDown ? 'down' : 'up', key: k });
+          // Enter/Esc/Tab 不落本地（语义由服务端执行）；Backspace/Delete/方向键
+          // 保持本地编辑生效（输入框本地编辑 + 值同步，服务端同样收到键事件）
+          if (isDown && k !== 'Backspace' && k !== 'Delete' && k.indexOf('Arrow') !== 0) e.preventDefault();
+          return;
+        }
+        if (k.length === 1) {
+          if (inField) return; // 输入控件/富文本：本地编辑 + input 事件同步
+          e.preventDefault();
+          e.__xyKeyFwd = true;
+          if (isDown) rumInputSent();
+          send({ type: 'key', action: isDown ? 'down' : 'up', text: k });
+        }
+      };
+      document.addEventListener('keydown', (e) => keyForward(e, true), true);
+      document.addEventListener('keyup', (e) => keyForward(e, false), true);
+      mirrorRoot.addEventListener('mouseleave', () => { closeLocalHole(); }, true);
+      // 滚轮转发（根治内层容器滚动失效）：真实应用多为 100vh 布局 + 内层
+      // overflow 容器，页面级 scroll 同步永远不触发。wheel 直接送服务端
+      // CDP mouseWheel——滚哪个容器由服务端命中测试决定（与原生同语义）。
+      // 本地 preventDefault：代理不双滚，滚动结果经差分/内部滚动同步回传。
+      // ===== 投机本地回显（Speculative Local Echo）=====
+      // 交互反馈延迟的根治：悬停/按下/输入的视觉反馈原生页面是本地同步渲染（0ms），
+      // 镜像要走"服务端渲染→差分→回传"（150-300ms）。代理层持有整份真实 CSS，
+      // 纯 CSS 状态（:hover/:active/:focus-within）的"预测"对我们是精确计算：
+      // 指针/焦点所在区域在位图上穿孔，浏览器本地即时渲染出与服务端完全一致的
+      // 状态；服务端的差分瓦片稍后到达并以相同像素接管（无感切换）。
+      // 位图原件先行保存，指针离开/失焦后本地复原（不等网络）。
+      let holeEl = null;
+      const openLocalHole = (el, pad) => {
+        if (!frameMode || !mirrorBody || !el || !el.getBoundingClientRect) return;
+        // 含文字的元素不穿孔：代理层文字是占位符，孔内会闪空字（实测标题整行
+        // 重栅格化闪烁、导航标签前 2 帧缺失）。这类悬停回退到服务端差分（100ms）
+        if ((el.textContent || '').trim() && el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT') return;
+        const layer = mirrorBody.querySelector('.xy-tiles');
+        if (!layer) return;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        const td = window.devicePixelRatio || 1;
+        const p2 = pad || 6;
+        const x = Math.max(0, Math.round((r.left - p2) * td));
+        const y = Math.max(0, Math.round((r.top - p2) * td));
+        const w = Math.min(layer.width - x, Math.round((r.width + p2 * 2) * td));
+        const h = Math.min(layer.height - y, Math.round((r.height + p2 * 2) * td));
+        if (w < 2 || h < 2) return;
+        closeLocalHole();
+        try {
+          const ctx = layer.getContext('2d');
+          window.__xyLocalHole = { x, y, w, h, saved: ctx.getImageData(x, y, w, h) };
+          ctx.clearRect(x, y, w, h);
+          holeEl = el;
+        } catch (e) {}
+      };
+      // 悬停目标：元素自身 + 父链两层（列表项悬停样式常在容器上）
+      const hoverTargetOf = (t) => {
+        let el = t;
+        for (let i = 0; i < 3 && el && el !== mirrorBody; i++) {
+          // 有 :hover 变化的元素无法廉价检测——直接按"最近的交互性祖先"近似：
+          // 带 cursor:pointer 计算值或常见交互标签的最近祖先
+          const cs = getComputedStyle(el);
+          if (cs.cursor === 'pointer' || /^(A|BUTTON|INPUT|SELECT|TEXTAREA|LI)$/.test(el.tagName) || el.hasAttribute('onclick')) return el;
+          el = el.parentElement;
+        }
+        return t;
+      };
+      // 在指针管线里挂钩：move 时开悬停孔、up 后延时关、输入聚焦即开孔
+      (function () {
+        // 悬停/按下本地孔已移除：孔开关链（开→关→repaint→服务端孔集抖动→收缩
+        // 整视口重绘）在悬停往返时互激，导致内容头文字周期性消失（Flash 逐帧
+        // 实证）。悬停反馈由 100ms 差分承载，实测仍为首帧级。保留输入聚焦孔：
+        // 打字回显零延迟的核心场景。
+        // 输入框孔：rAF 持续重申（客户端几何每帧重取——元素随补丁/重建移动时
+        // 孔始终跟着；镜像重建（新 canvas）后孔自动重开；免疫瓦片覆盖时序）。
+        // 服务端在打字活跃期同时掩蔽该区域不推瓦片，本地真实输入控件负责渲染。
+        let inputHoleEl = null, inputRafOn = false;
+        const inputPunchLoop = () => {
+          if (!inputHoleEl || !frameMode || !mirrorBody) { inputRafOn = false; return; }
+          if (!inputHoleEl.isConnected) {
+            // 重建后元素被替换：按标签+同位置找回（近似——聚焦路径已由 keepFocus 恢复）
+            const ae2 = mirrorRoot ? mirrorRoot.activeElement : null;
+            if (ae2 && (ae2.tagName === 'INPUT' || ae2.tagName === 'TEXTAREA')) inputHoleEl = ae2;
+            else { inputHoleEl = null; inputRafOn = false; return; }
+          }
+          const layer = mirrorBody.querySelector('.xy-tiles');
+          if (layer) {
+            const r = inputHoleEl.getBoundingClientRect();
+            const td = window.devicePixelRatio || 1;
+            if (r.width > 1 && r.height > 1) {
+              const p3 = 6;
+              const x = Math.max(0, Math.round((r.left - p3) * td));
+              const y = Math.max(0, Math.round((r.top - p3) * td));
+              const w = Math.min(layer.width - x, Math.round((r.width + p3 * 2) * td));
+              const h = Math.min(layer.height - y, Math.round((r.height + p3 * 2) * td));
+              if (w > 1 && h > 1) {
+                try { layer.getContext('2d').clearRect(x, y, w, h); } catch (e) {}
+              }
+            }
+          }
+          requestAnimationFrame(inputPunchLoop);
+        };
+        mirrorRoot.addEventListener('focusin', (e) => {
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+            inputHoleEl = t;
+            if (!inputRafOn) { inputRafOn = true; requestAnimationFrame(inputPunchLoop); }
+          }
+        });
+        mirrorRoot.addEventListener('focusout', () => { inputHoleEl = null; });
+      })();
+    }
+    // 还原重建前的焦点（打字→重同步→回车链路不断）
+    if (keepFocus) {
+      try {
+        const el = mirrorFind(keepFocus.id !== null ? keepFocus.id : keepFocus.path);
+        if (el && el.focus) {
+          el.focus();
+          if (keepFocus.val !== null && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value !== keepFocus.val) el.value = keepFocus.val;
+          if (keepFocus.sel && el.setSelectionRange && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value.length) {
+            el.setSelectionRange(Math.min(keepFocus.sel[0], el.value.length), Math.min(keepFocus.sel[1], el.value.length));
+          }
+        }
+      } catch (e) {}
+    }
+  }
+  // 把镜像容器吸附到整数设备像素：DPR≠1 时 CSS 整数位置可能是半个设备像素（如 22px×1.25=27.5），
+  // 不吸附则整个镜像被合成器重采样，瓦片 1:1 前功尽弃
+  function snapMirrorToDevice() {
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const el = document.getElementById('mirrorScroll');
+      const r = el.getBoundingClientRect();
+      const dx = Math.round(r.left * dpr) / dpr - r.left;
+      const dy = Math.round(r.top * dpr) / dpr - r.top;
+      el.style.transform = 'translateZ(0) translate(' + dx + 'px,' + dy + 'px)';
+    } catch (e) {}
+  }
+  let lastDpr = window.devicePixelRatio || 1;
+  let lastW = window.innerWidth, lastH = window.innerHeight;
+  let vpTimer = null;
+  window.addEventListener('resize', () => {
+    snapMirrorToDevice();
+    if (!document.body.classList.contains('prod')) return;
+    // 网关模式：视口/DPR 变化都上报，服务端按新尺寸重渲并全量重发
+    const d = window.devicePixelRatio || 1;
+    const w = window.innerWidth, h = window.innerHeight;
+    if (vpTimer) clearTimeout(vpTimer);
+    vpTimer = setTimeout(() => {
+      if (connected && ws && ws.readyState === 1 && (d !== lastDpr || w !== lastW || h !== lastH)) {
+        lastDpr = d; lastW = w; lastH = h;
+        try { ws.send(JSON.stringify({ type: 'hello', dpr: d, w: w, h: h })); } catch (e) {}
+        const ms = document.getElementById('mirrorScroll');
+        if (ms) { ms.style.width = w + 'px'; ms.style.height = h + 'px'; }
+      }
+    }, 250);
+  });
+  // canvas 是替换元素：CSS 尺寸为 0 时位图再大也不显示。位图与 CSS 尺寸必须同步（CSS=位图/tdpr，保证 1:1）
+  function syncLayerCSS(layer) {
+    const td = layer.tdpr || window.devicePixelRatio || 1;
+    layer.style.width = (layer.width / td) + 'px';
+    layer.style.height = (layer.height / td) + 'px';
+  }
+  // 把瓦片画到设备分辨率 canvas（整数设备坐标 1:1 blit）。
+  // 全部绘制严格串行：canvas 尺寸重设会清空整幅画面，任何并发交错（快照瓦片、
+  // 补丁瓦片、动画差分瓦片同时到达）都可能用"半清空"状态覆盖已画内容——
+  // 实测表现为间歇性镜像瓦片大面积缺失。排队执行 + 执行时再解析 layer，
+  // 保证快照重建（innerHTML 替换）后旧闭包不会再画到已脱离的画布上。
+  const tileDrawChain = { p: Promise.resolve() };
+  function drawTileToLayer(tile) {
+    const run = () => new Promise((resolve, reject) => {
+      const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
+      if (!layer) return reject(new Error('no layer'));
+      const dpr = layer.tdpr || window.devicePixelRatio || 1;
+      const dh = Math.ceil((tile.cssY + tile.cssH) * dpr) + 1;
+      const dw = Math.ceil((tile.cssX + tile.cssW) * dpr) + 1;
+      const doResize = dh > layer.height || dw > layer.width;
+      const draw = () => {
+        if (doResize) {
+          const old = document.createElement('canvas');
+          old.width = layer.width; old.height = layer.height;
+          old.getContext('2d').drawImage(layer, 0, 0);
+          if (dw > layer.width) layer.width = dw;
+          if (dh > layer.height) layer.height = dh;
+          syncLayerCSS(layer);
+          layer.getContext('2d').drawImage(old, 0, 0);
+        }
+        layer.getContext('2d').drawImage(tile.img, Math.round(tile.cssX * dpr), Math.round(tile.cssY * dpr), tile.w, tile.h);
+        resolve();
+      };
+      if (tile.img && tile.img.complete) { try { draw(); } catch (e) { reject(e); } return; }
+      const im = tile.img || new Image();
+      if (!tile.img) { tile.img = im; im.src = tile.url; }
+      im.onload = () => { try { draw(); } catch (e) { reject(e); } };
+      im.onerror = () => reject(new Error('img load'));
+    });
+    const p = tileDrawChain.p.then(run, run);
+    tileDrawChain.p = p.catch(() => {});
+    return p;
+  }
+  // 瓦片矩形登记：补丁替换同路径瓦片前先清旧区域（否则内容上移后旧像素留影）
+  function tileLayerStore() {
+    const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
+    if (!layer) return null;
+    if (!layer._rects) layer._rects = new Map();
+    return layer;
+  }
+  function clearTileRect(pathKey) {
+    const layer = tileLayerStore();
+    if (!layer) return;
+    const r = layer._rects.get(pathKey);
+    if (!r) return;
+    const dpr = layer.tdpr || window.devicePixelRatio || 1;
+    layer.getContext('2d').clearRect(Math.floor(r.x * dpr), Math.floor(r.y * dpr), Math.ceil(r.w * dpr) + 1, Math.ceil(r.h * dpr) + 1);
+    layer._rects.delete(pathKey);
+  }
+  function noteTileRect(pathKey, t) {
+    const layer = tileLayerStore();
+    if (layer) layer._rects.set(pathKey, { x: t.cssX, y: t.cssY, w: t.cssW, h: t.cssH });
+  }
+  // 结构补丁（innerHTML/outerHTML 替换）应用前清掉该元素子树的所有旧瓦片：
+  // 子元素增删后布局位移，旧位置瓦片没人清就会留"幽灵"残影（实测受保护站点对话
+  // 工作台输入框在旧位置留影）
+  function clearSubtreeTiles(pathKey) {
+    const layer = tileLayerStore();
+    if (!layer || !layer._rects) return;
+    const pre = pathKey + '/';
+    for (const k of [...layer._rects.keys()]) {
+      if (k === pathKey || k.startsWith(pre)) clearTileRect(k);
+    }
+  }
+  function applyPatches(patches, noRepair) {
+    if (!mirrorBody) return;
+    const dpr = window.devicePixelRatio || 1;
+    let batchMiss = 0;
+    const rebound = [];
+    // 焦点保护：React 受控输入每次键入都会重渲染字段节点，补丁把输入框整个换掉，
+    // 焦点掉回 body → 后续字符全部丢失（实测只打进第一个字符）。替换前记焦点元素，
+    // 替换后回焦点（focusin 会按 lastTyped 恢复半截值）
+    const ae = mirrorRoot ? mirrorRoot.activeElement : null;
+    const aeActive = ae && ae !== mirrorBody && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+    for (const p of patches) {
+      // 聚焦输入期间挂起涉及该输入的补丁：React 每键重渲染都换输入框节点，
+      // 与打字/值回填形成竞态（实测值被打乱成 "sescac-loped"）。打字时用户即
+      // 权威（frame 模式输入框穿孔本地原生渲染；dom 模式瓦片随值隐藏），
+      // 失焦后统一补挂（v0.12：按 DOM contains 判定目标与焦点的关系）
+      if (aeActive) {
+        const target0 = mirrorFind(p.id !== undefined ? p.id : p.path);
+        if (target0 && (target0 === ae || target0.contains(ae) || ae.contains(target0))) {
+          pendingFocusPatches.push(p);
+          continue;
+        }
+      }
+      try {
+        // 像素瓦片补丁（v3 元素锚定）：瓦片作为元素背景落在镜像文档流里，
+        // 随布局/滚动自然移动——无图层、无绝对坐标
+        if (p.tile || p.selTile) {
+          const el = mirrorFind(p.id !== undefined ? p.id : p.path);
+          if (!el) throw new Error('id miss');
+          const t = p.tile || p.selTile;
+          const bg = 'url("' + t.url + '")';
+          el.style.backgroundImage = bg;
+          el.style.backgroundSize = (t.cssW || t.w) + 'px ' + (t.cssH || t.h) + 'px';
+          el.style.backgroundPosition = '0 0';
+          el.style.backgroundRepeat = 'no-repeat';
+          if (p.inp || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            el.setAttribute('data-xy-inp', '1');
+            el.setAttribute('data-xy-bg', bg);
+            // 非聚焦态：本地值清空，视觉由服务端像素承载（防双文字）
+            if (mirrorRoot.activeElement !== el) { try { el.value = ''; } catch (e2) {} }
+          }
+          continue;
+        }
+        const el = mirrorFind(p.id !== undefined ? p.id : p.path);
+        if (!el) throw new Error('id miss');
+        // v0.24 LCS 子序列编辑脚本：kidKeep=保留的旧子元素索引（升序），
+        // kidIns=[新序位置, html]，kidTotal=新子元素数。按新序重排并**复用**
+        // 保留节点（不重建）；任何校验失败按 patch-miss 走重同步（宁重不错）
+        if (p.kidKeep !== undefined) {
+          const olds = [...el.children];
+          let ok = Array.isArray(p.kidKeep) && p.kidKeep.length + (p.kidIns ? p.kidIns.length : 0) === p.kidTotal && olds.length >= p.kidKeep.length;
+          let prevIx = -1;
+          if (ok) for (const ix of p.kidKeep) { if (!Number.isInteger(ix) || ix <= prevIx || ix >= olds.length) { ok = false; break; } prevIx = ix; }
+          if (ok) {
+            const byNew = new Array(p.kidTotal).fill(null);
+            for (const pair of (p.kidIns || [])) {
+              if (!Array.isArray(pair) || pair[0] < 0 || pair[0] >= p.kidTotal || typeof pair[1] !== 'string') { ok = false; break; }
+              byNew[pair[0]] = pair[1];
+            }
+            if (ok) {
+              const finalNodes = [];
+              let ki = 0;
+              for (let ni = 0; ni < p.kidTotal && ok; ni++) {
+                const v = byNew[ni];
+                if (typeof v === 'string') {
+                  const nodes = parseHtml(v);
+                  if (nodes.length === 1 && nodes[0].nodeType === 1) finalNodes[ni] = nodes[0];
+                  else ok = false;
+                } else {
+                  const kept = olds[p.kidKeep[ki++]];
+                  if (kept) finalNodes[ni] = kept; else ok = false;
+                }
+              }
+              if (ok && ki === p.kidKeep.length) {
+                for (const c2 of [...el.childNodes]) unregisterSubtree(c2);
+                el.textContent = '';
+                for (const nd of finalNodes) el.appendChild(nd);
+                for (let ni = 0; ni < p.kidTotal; ni++) {
+                  if (typeof byNew[ni] === 'string' && finalNodes[ni]) { try { registerSubtree(finalNodes[ni]); } catch (e2) {} }
+                }
+                continue;
+              }
+            }
+          }
+          throw new Error('kidOps mismatch');
+        }
+        // v0.23 窗口平移补丁（虚拟滚动）：delHead+append（下移：删头 k 行+尾部
+        // 新增）/ prepend+delTail（上移）。O(增量) 替代整窗 inner 替换
+        if (p.delHead !== undefined || p.delTail !== undefined) {
+          for (let i = 0; i < (p.delHead || 0) && el.firstChild; i++) unregisterSubtree(el.firstChild), el.removeChild(el.firstChild);
+          for (let i = 0; i < (p.delTail || 0) && el.lastChild; i++) unregisterSubtree(el.lastChild), el.removeChild(el.lastChild);
+          if (p.append !== undefined) {
+            const before = el.childNodes.length;
+            for (const n2 of parseHtml(p.append)) el.appendChild(n2);
+            for (let ci = before; ci < el.childNodes.length; ci++) { try { registerSubtree(el.childNodes[ci]); } catch (e2) {} }
+          }
+          if (p.prepend !== undefined) {
+            const anchorNode = el.firstChild;
+            for (const n2 of parseHtml(p.prepend)) { el.insertBefore(n2, anchorNode); try { registerSubtree(n2); } catch (e2) {} }
+          }
+          continue;
+        }
+        // v0.17 带宽·文本节点级：单文本变化只改对应 childNodes[ti].textContent
+        // （ti 失配=并发结构变化，静默跳过等下一拍补丁/快照收敛，不触发全量重同步）
+        if (p.text !== undefined) {
+          const tn = el.childNodes[p.ti];
+          if (tn) tn.textContent = p.text;
+          continue;
+        }
+        // v0.17 带宽·追加型：纯末尾追加（聊天/日志/表格流）O(增量) 追加，
+        // setHTMLUnsafe 解析（含声明式 shadow 模板），随后注册新节点 id
+        if (p.append !== undefined) {
+          const before = el.childNodes.length;
+          for (const n2 of parseHtml(p.append)) el.appendChild(n2);
+          for (let ci = before; ci < el.childNodes.length; ci++) {
+            try { registerSubtree(el.childNodes[ci]); } catch (e2) {}
+          }
+          continue;
+        }
+        // v0.29：属性补丁 O(1) 直改（width/style 等；URL 属性服务端仍走 outer）
+        if (p.attrs !== undefined) {
+          for (const [name, val] of Object.entries(p.attrs)) {
+            try { if (val === null) el.removeAttribute(name); else el.setAttribute(name, val); } catch (e2) {}
+          }
+          continue;
+        }
+        // 结构替换前清子树旧瓦片，防幽灵残影
+        clearSubtreeTiles(String(p.path ?? ''));
+        if (p.inner !== undefined) {
+          // frame 模式：body 级补丁会连瓦片图层一起换掉——先摘下再挂回
+          const savedLayer = frameMode ? (mirrorBody ? mirrorBody.querySelector('.xy-tiles') : null) : null;
+          for (const c of [...el.children]) unregisterSubtree(c);
+          if (typeof el.setHTMLUnsafe === 'function') el.setHTMLUnsafe(scrubHtml(p.inner)); else el.innerHTML = scrubHtml(p.inner);
+          // v0.28 elbit：宿主获得真实内容后清除位图叠加与 min 尺寸（真实内容自行撑盒）
+          if (el.getAttribute && el.getAttribute('data-xy-elbit') === '1' && el.children.length) {
+            el.style.backgroundImage = '';
+            el.style.minWidth = '';
+            el.style.minHeight = '';
+            el.removeAttribute('data-xy-elbit');
+          }
+          registerSubtree(el);
+          if (savedLayer && el === mirrorBody) el.appendChild(savedLayer);
+        }
+        else if (p.outer !== undefined) {
+          const nodes = parseHtml(p.outer);
+          const next = nodes[0];
+          if (!next || nodes.length !== 1) throw new Error('outer parse');
+          unregisterSubtree(el);
+          el.replaceWith(next);
+          registerSubtree(next);
+        }
+      } catch (e) {
+        // v0.37 id 解析失败三级处理：
+        // ①mirrorIds 表项过期（元素被补丁替换后旧引用滞留）——按 data-xy-id
+        //   DOM 直查回捞并重绑（实测 #128 全链持有但仍 miss）
+        // ②attrs/text 类 O(1) 增量 miss 视为良性：目标可能是瞬时节点（toast
+        //   退场动画期间 attrs 已发、插入补丁 flush 时节点已移除）或 HEAD 级
+        //   （镜像只承载 body 子树）——真值由父容器 inner flush 保鲜，静默跳过
+        //   不进修复/重同步通道（此前这类 miss 占 9 成，喂爆了修复限频）
+        // ③结构补丁（inner/outer/kidKeep/…）miss 才是真空洞 → 定点修复
+        let resolved = null;
+        if (p.id !== undefined && Number.isInteger(p.id) && mirrorBody) {
+          try {
+            const hit = mirrorBody.querySelector('[data-xy-id="' + p.id + '"]') || (mirrorRoot && mirrorRoot.querySelector ? mirrorRoot.querySelector('[data-xy-id="' + p.id + '"]') : null);
+            if (hit && hit.isConnected) { mirrorIds.set(p.id, hit); resolved = hit; }
+          } catch (e2) {}
+        }
+        if (resolved) {
+          if (!p.__xyRetry) { p.__xyRetry = 1; rebound.push(p); continue; }
+        }
+        const benign = p.attrs !== undefined || p.text !== undefined;
+        if (!benign) console.log('[patch-miss]', p.id !== undefined ? '#' + p.id : p.path, e.message, p.tile ? 'tile' : (p.inner !== undefined ? 'inner' : 'outer'), (JSON.stringify(p) || '').slice(0, 120));
+        if (!benign && p.id !== undefined && Number.isInteger(p.id)) repairPending.add(p.id);
+        if (!benign) batchMiss++;
+      }
+    }
+    if (rebound.length) { try { applyPatches(rebound, true); } catch (e) {} }
+    // v0.37 定点修复请求：批量收尾统一上报（≤12 个 id，1s 限频）。全量重同步
+    // 只作兜底：连续 4 轮修复仍在 miss（repairFailStreak）才触发；干净批次清零
+    if (batchMiss === 0 && repairFailStreak > 0) repairFailStreak = 0;
+    if (!noRepair && batchMiss > 0 && repairPending.size) {
+      const nowMs = Date.now();
+      if (!(ws && ws.readyState === 1)) console.log('[mirror] repair blk: ws');
+      else if (nowMs - lastRepairSentAt <= 1000) console.log('[mirror] repair blk: rate');
+      else {
+        lastRepairSentAt = nowMs;
+        // 快照宽限期内（<1.5s）的 miss 是重建自产物：照发修复但不累计兜底
+        // streak——否则全量重同步流会永久饿死修复通道（实测 snap-grace 连续阻塞）
+        const inGrace = nowMs - lastSnapAppliedAt <= 1500;
+        if (!inGrace) repairFailStreak++;
+        console.log('[mirror] repair req', repairFailStreak, inGrace ? 'grace' : '', [...repairPending].slice(0, 12).join(','));
+        ws.send(JSON.stringify({ type: 'repair', ids: [...repairPending].slice(0, 12) }));
+        repairPending.clear();
+        if (repairFailStreak >= 4 && nowMs - lastMissResyncAt > 8000) {
+          lastMissResyncAt = nowMs;
+          repairFailStreak = 0;
+          console.log('[mirror] repair fallback: full resync');
+          ws.send(JSON.stringify({ type: 'mode', mode: mode })); // 兜底全量（限频）
+        }
+      }
+    }
+    if (aeActive) {
+      try {
+        const aeId = idOfMirror(ae);
+        const el2 = aeId !== null ? mirrorFind(aeId) : null;
+        if (el2 && el2.focus && mirrorRoot.activeElement !== el2) el2.focus();
+      } catch (e) {}
+    }
+    noteFrame(0);
+  }
+
+  // ---------- WS ----------
+  function connect() {
+    clearTimeout(retryTimer);
+    m('newSession').hidden = true;
+    // v0.51 无感：prod 壳下文案中性化——"会话/恢复"是 RBI 术语，客户不可见
+    availability(false, document.body.classList.contains('prod') ? '正在加载…' : (resumeToken ? '正在恢复会话，请稍候…' : '正在连接…'));
+    setStatus('连接中…', false);
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${proto}://${location.host}/ws`);
+    ws = socket;
+    snapshotReady = false; syncReady = false; // v0.53：状态在模块域，逐连接复位
+    const activate = () => {
+      if (!snapshotReady || !syncReady || !retryAllowed || ws !== socket || socket.readyState !== 1) return;
+      availability(true); retryDelay = 500; setStatus('会话在线', true);
+    };
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => {
+      if (ws !== socket) return;
+      lastErr = '';
+      socket.send(JSON.stringify({ type: 'hello', resume: resumeToken || undefined, dpr: window.devicePixelRatio || 1, w: window.innerWidth, h: window.innerHeight, path: location.pathname + location.search || '/' }));
+    };
+    socket.onclose = (event) => {
+      if (ws !== socket) return;
+      if (event.code === 4001) {
+        retryAllowed = false;
+        setResume(null);
+        clearTimeout(retryTimer);
+        lastErr = '会话已撤销，请重新登录后再访问。';
+        m('newSession').hidden = true;
+      }
+      availability(false, lastErr || '连接已断开，正在恢复。未确认的操作请恢复后核对。');
+      setStatus(event.code === 4001 ? '会话已撤销' : '已断开', false);
+      window.__xyDrag = null;
+      m('mIdle').textContent = 'disconnected';
+      if (retryAllowed) {
+        retryTimer = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(5000, retryDelay * 2);
+      }
+    };
+    socket.onerror = () => { if (ws === socket) setStatus('连接错误', false); };
+    socket.onmessage = (ev) => {
+      if (ws !== socket) return;
+      // v0.21 RUM：按消息类型计字节（前缀探测，不整包二次解析）
+      try {
+        const h = ev.data.length > 44 ? ev.data.slice(0, 44) : ev.data;
+        let t = 'other';
+        if (h.includes('"dom-snapshot"')) t = 'dom-snapshot';
+        else if (h.includes('"dom-patches"')) t = 'dom-patches';
+        else if (h.includes('"canvas-tile"')) t = 'canvas-tile';
+        else if (h.includes('"canvas-ops"')) t = 'canvas-ops';
+        else if (h.includes('"anim-tiles"')) t = 'anim-tiles';
+        else if (h.includes('"scroll-sync"')) t = 'scroll-sync';
+        rum.bytesBy[t] = (rum.bytesBy[t] || 0) + ev.data.length;
+      } catch (e) {}
+      {
+        try {
+          const j = JSON.parse(ev.data);
+          // 滚动条目访问器：v0.12 起为 {id,top,left}（旧元组 [path,top,left] 过渡兼容）
+          const scrollEntry = (s) => ({
+            el: mirrorFind(Array.isArray(s) ? s[0] : (s.id !== undefined ? s.id : s.path)),
+            top: Array.isArray(s) ? s[1] : s.top,
+            left: Array.isArray(s) ? s[2] : s.left,
+          });
+          if (j.type === 'session') {
+            setResume(j.token);
+            if (j.resumed) { lastTyped.clear(); pendingFocusPatches = []; }
+            // v0.54 同步看门狗（仅 resumed）：resume 命中半初始化会话时服务端
+            // 可能静默（v0.54 起显式回错，此为纵深兜底）——8s 无快照则清令牌
+            // 换全新会话。全新会话不武装：其装配（warm take+attach+快照）高负载
+            // 下可超 8s，误杀会造成「连接→装配→被杀→重连」循环（每次重连整页
+            // 重建=页面反复闪），且服务端装配自带 30s 超时兜底
+            if (j.resumed) {
+              if (syncWatchdog) clearTimeout(syncWatchdog);
+              syncWatchdog = setTimeout(() => {
+                if (ws !== socket || socket.readyState !== 1 || snapshotReady) return;
+                setResume(null);
+                retryAllowed = true;
+                try { socket.close(); } catch (e2) {}
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(connect, 300);
+              }, 8000);
+            }
+          }
+          // v0.13 文件传输：上传握手应答/完成通知，下载装配与保存
+          if (j.type === 'upload-accept') {
+            const st = uploadStates.get(j.tid);
+            if (!st) { /* noop */ }
+            else if (j.ok) sendFileChunks(j.tid, st.file, j.maxChunk).catch(() => {});
+            else {
+              uploadStates.delete(j.tid);
+              window.__xyUploads.push({ name: st.file.name, state: 'rejected', error: j.error });
+            }
+          }
+          if (j.type === 'upload-end') {
+            const st = uploadStates.get(j.tid);
+            uploadStates.delete(j.tid);
+            if (st) window.__xyUploads.push({ name: st.file.name, size: st.file.size, state: j.ok ? 'stored' : 'error', error: j.error });
+          }
+          if (j.type === 'download-begin') {
+            downloadStates.set(j.id, { name: j.name, chunks: [], size: j.size || 0 });
+            window.__xyDownloads.push({ name: j.name, state: 'begin' });
+          }
+          if (j.type === 'download-chunk') {
+            const st = downloadStates.get(j.id);
+            if (st) st.chunks.push(j.b64);
+          }
+          if (j.type === 'download-end') {
+            const st = downloadStates.get(j.id);
+            downloadStates.delete(j.id);
+            if (!st) { /* noop */ }
+            else if (!j.ok) window.__xyDownloads.push({ name: st.name, state: 'error', error: j.error });
+            else {
+              try {
+                const bin = atob(st.chunks.join(''));
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                const blob = new Blob([bytes]);
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = j.name || st.name || 'download';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+                const record = { name: a.download, size: bytes.length, state: 'saved' };
+                if (bytes.length <= 4096) {
+                  try { record.text = bin; } catch (e) {}
+                }
+                window.__xyDownloads.push(record);
+              } catch (e2) {
+                window.__xyDownloads.push({ name: st.name, state: 'error', error: 'assemble failed' });
+              }
+            }
+          }
+          if (j.type === 'sync-ready') { syncReady = true; activate(); }
+          if (j.type === 'meta') {
+            window.__xyWarmMeta = !!j.warm; // v0.32 热页命中（验收观测点）
+            // v0.32.2 消白闪：快照落位前先铺源站底色
+            if (j.bg) {
+              try {
+                document.documentElement.style.setProperty('background', j.bg, 'important');
+                document.body.style.setProperty('background', j.bg, 'important');
+                const mb = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.getElementById('mirrorBody');
+                if (mb) mb.style.setProperty('background', j.bg, 'important');
+                // v0.59：滚动容器一并修正——其内联 #fff 在内容不满屏/非白底源站
+                // 的大片留白区露出（实测 static 图表页右侧/底部源站米白 vs 镜像纯白）
+                const msEl = document.getElementById('mirrorScroll');
+                if (msEl) msEl.style.setProperty('background', j.bg, 'important');
+              } catch (e) {}
+            }
+            // v0.60：滚动条定制随 meta 周期重取——晚加载的源站 CSS/主题切换会改文档滚动器样式
+            syncDocScrollerStyle();
+            m('oTitle').textContent = j.title || '-';
+            // v0.36：生产模式下浏览器标题跟随业务页（不暴露引擎身份）
+            if (j.prod && j.title) { try { document.title = j.title; } catch (e) {} }
+            // v0.35.1：prod 类必须先于 setMode——setMode 显示 mirrorBox（内联白底），
+            // prod 透明规则晚一拍就是一帧全屏白闪（全帧率实测 582ms 帧）
+            if (j.prod) document.body.classList.add('prod');
+            if (j.mode) setMode(j.mode);
+            if (j.prod) {
+              // prod 类已在 setMode 前加过（防白闪时序）
+              viewW = j.w || window.innerWidth; viewH = j.h || window.innerHeight;
+              const ms = document.getElementById('mirrorScroll');
+              if (ms) { ms.style.width = viewW + 'px'; ms.style.height = viewH + 'px'; }
+              snapMirrorToDevice();
+            }
+          }
+          if (j.type === 'anim-tiles') {
+            // 动画/悬停跟随：服务端差分出的变化区域（不透明底板裁片，直接覆盖）
+            noteBytes(ev.data.length || ev.data.size || 0);
+            if (Array.isArray(j.tiles)) {
+              for (const t of j.tiles) {
+                drawTileToLayer({ cssX: t.cssX, cssY: t.cssY, cssW: t.cssW, cssH: t.cssH, w: t.w, h: t.h, url: t.url }).catch(() => {});
+              }
+            }
+            // 服务端页面自身滚动（锚点/JS/内部滚动区联动）→ 跟随到镜像容器
+            if (j.sx !== undefined) {
+              const ms = document.getElementById('mirrorScroll');
+              if (!(ms && ms.__xyLocalAt && Date.now() - ms.__xyLocalAt < 450) && ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) { // v0.67 本地滚动活跃期忽略滞后回声
+                ms.__xySync = true;
+                ms.scrollLeft = j.sx; ms.scrollTop = j.sy;
+                setTimeout(() => { ms.__xySync = false; }, 80);
+              }
+            }
+            // 穿孔：瓦片画完后在底图上挖洞，露出代理层同 CSS 的原生渲染
+            // （动画 60fps、输入回显/光标本地即时）——洞永远优先于瓦片
+            if (Array.isArray(j.holes)) {
+              lastServerHoles = j.holes;
+              if (!holeRafOn && frameMode && mirrorBody) {
+                holeRafOn = true;
+                const punchLoop = () => {
+                  if (!frameMode || !mirrorBody || !lastServerHoles || !lastServerHoles.length) { holeRafOn = false; return; }
+                  const layerH = mirrorBody.querySelector('.xy-tiles');
+                  if (layerH) {
+                    const tdh = window.devicePixelRatio || 1;
+                    const xh = layerH.getContext('2d');
+                    for (const h2 of lastServerHoles) {
+                      try { xh.clearRect(h2[0] * tdh, h2[1] * tdh, h2[2] * tdh, h2[3] * tdh); } catch (e) {}
+                    }
+                  }
+                  requestAnimationFrame(punchLoop);
+                };
+                requestAnimationFrame(punchLoop);
+              }
+            }
+            // 内部滚动容器跟随（源站 JS 自动滚动，如聊天滚到底）
+            if (Array.isArray(j.scrolls)) {
+              for (const s of j.scrolls) {
+                try {
+                  const { el, top, left } = scrollEntry(s);
+                  if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+                  if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - left) > 1) el.scrollLeft = left;
+                } catch (e) {}
+              }
+            }
+          }
+          if (j.type === 'dom-snapshot') {
+            // 同内容快照去重：服务端导航后 +600ms/+1500ms 兜底重拍在静态页上产出
+            // 字节级相同的快照，整树重建=整页闪动（"每个页面像刷新了 3 次"的直接
+            // 来源）。css+html 与上一次已应用快照一致时跳过重建，仅跟随滚动/标题。
+            // v0.17 带宽：cssSame=true 时用缓存 css（服务端仅 html 变化的重拍不重发 css）
+            const css = (j.css !== undefined && j.css !== null) ? j.css : lastCss;
+            const snapKey = css + '\u0000' + j.html;
+            if (!j.frame && !frameMode && lastSnapKey === snapKey && mirrorBody) {
+              const rs = document.getElementById('mirrorScroll');
+              if (rs) {
+                rs.__xySync = true;
+                rs.scrollLeft = j.sx || 0; rs.scrollTop = j.sy || 0;
+                setTimeout(() => { rs.__xySync = false; }, 80);
+              }
+              if (j.title != null && document.title !== j.title) document.title = j.title;
+              // v0.54：去重路径同样要完成同步闭环——内容已在屏（缓存首帧渲染），
+              // 置 ready 并 activate。此前 return 时 snapshotReady 恒 false：状态
+              // 永远卡「连接中」，resumed 看门狗把活连接误杀 → 重连循环（整页
+              // 重建反复播放入场动画 = 页面不停闪）
+              snapshotReady = true;
+              if (syncWatchdog) { clearTimeout(syncWatchdog); syncWatchdog = null; }
+              activate();
+              return;
+            }
+            if (!j.frame) lastSnapKey = snapKey;
+            const serial = ++snapshotSerial;
+            snapshotReady = false;
+            noteBytes(ev.data.length || ev.data.size || 0);
+            noteFrame(0);
+            // v3：frame 像素直出才存在条带图层；dom 模式纯镜像本地渲染
+            frameMode = !!j.frame;
+            // 原子切换：先预载全部瓦片位图，再一次性重建镜像并同步绘制。
+            // 若先重建后逐张加载，瓦片层会经历"空白→逐张补齐"，交互后每次重同步
+            // 都闪一下（用户实测"页面斗来斗去"的直接来源）。
+            const tiles = Array.isArray(j.tiles) ? j.tiles : [];
+            const frame = j.frame; // 像素直出：整页条带（frame 模式视觉唯一来源）
+            const preload = tiles.map(t => new Promise(res => {
+              const im = new Image();
+              im.onload = im.onerror = () => res();
+              im.src = t.url;
+              t.img = im;
+            }));
+            if (frame && Array.isArray(frame.tiles)) {
+              for (const t of frame.tiles) {
+                preload.push(new Promise(res => {
+                  const im = new Image();
+                  im.onload = im.onerror = () => res();
+                  im.src = t.url;
+                  t.img = im;
+                }));
+              }
+            }
+            Promise.all(preload).then(() => {
+              if (ws !== socket || socket.readyState !== 1 || serial !== snapshotSerial) return;
+              if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
+              if (css) lastCss = css;
+              buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId, j.bodyStyle);
+
+              rum.snaps++;
+              rumApplied(); // v0.21 RUM：快照应用=交互到视觉链路闭环
+              snapshotReady = true;
+              if (syncWatchdog) { clearTimeout(syncWatchdog); syncWatchdog = null; }
+              activate();
+              lastSnapAppliedAt = Date.now();
+              // v0.53 F5 缓存：节流 1.5s 存最后快照；pagehide 兜底即时存。
+              // 刷新时新文档首帧同步重建，消除「旧页销毁→WS 快照到达」的纯底色空窗
+              lastSnapData = { path: location.pathname + location.search, key: snapKey, css, html: j.html, docClass: j.docClass || '', docAttrs: j.docAttrs || '', bodyId: j.bodyId, bodyStyle: j.bodyStyle || '', title: j.title, sx: j.sx || 0, sy: j.sy || 0 };
+              const nowSnapSave = Date.now();
+              if (nowSnapSave - lastSnapSaveAt > 1500) {
+                lastSnapSaveAt = nowSnapSave;
+                try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
+              }
+              const restoredScroll = document.getElementById('mirrorScroll');
+              restoredScroll.__xySync = true;
+              restoredScroll.scrollLeft = j.sx || 0; restoredScroll.scrollTop = j.sy || 0;
+              setTimeout(() => { restoredScroll.__xySync = false; }, 80);
+              // 快照健康自检（v3 dom）：镜像树过小=快照异常，限频请求重同步
+              if (!j.frame && (!j.html || j.html.length < 80) && snapSelfCheckRetries < 3) {
+                snapSelfCheckRetries++;
+                console.log('[mirror] empty snapshot, requesting resync');
+                send({ type: 'mode', mode: mode });
+              } else if (j.html && j.html.length >= 80) {
+                snapSelfCheckRetries = 0;
+              }
+              let maxBottom = 0, maxRight = 0;
+              const td = window.devicePixelRatio || 1;
+              for (const t of tiles) {
+                maxBottom = Math.max(maxBottom, (t.cssY + t.cssH) * td);
+                maxRight = Math.max(maxRight, (t.cssX + t.cssW) * td);
+              }
+              if (frame) {
+                maxBottom = Math.max(maxBottom, Math.round(frame.pageH * td));
+                maxRight = Math.max(maxRight, Math.round(frame.pageW * td));
+              }
+              const layer = mirrorBody && mirrorBody.querySelector('.xy-tiles');
+              if (layer) {
+                layer.height = Math.ceil(maxBottom);
+                if (Math.ceil(maxRight) > layer.width) layer.width = Math.ceil(maxRight);
+                syncLayerCSS(layer);
+              }
+              for (const t of tiles) drawTileToLayer(t).catch(() => {});
+              // 整页条带画在元素瓦片之上：从构造上保证视觉=服务端像素；
+              // 镜像体高度锁定为服务端页高：客户端滚动范围必须与服务端一致，
+              // 否则触底时两边 scrollTop 差 1px，整页内容错位（实测 dy=-1 全屏偏移）
+              if (frame && Array.isArray(frame.tiles)) {
+                for (const t of frame.tiles) drawTileToLayer(t).catch(() => {});
+                // 滚动几何锁定：高度=服务端页高 + overflow:hidden（代理 DOM 自然高度
+                // 与服务端有 1-3px 布局漂移，会撑大 scrollHeight → 触底时客户端
+                // 比服务端多滚 1px，全页内容错位）。代理溢出部分本就被画布盖住不可见
+                if (mirrorBody) { mirrorBody.style.height = frame.pageH + 'px'; mirrorBody.style.overflow = 'hidden'; }
+              }
+              // 内部滚动容器初始位置对齐（快照时的服务端滚动状态）
+              if (Array.isArray(j.scrollers)) {
+                for (const s of j.scrollers) {
+                  try {
+                    const { el, top, left } = scrollEntry(s);
+                    if (el && el.scrollTop !== undefined) { el.scrollTop = top; el.scrollLeft = left; }
+                  } catch (e) {}
+                }
+              }
+              // 快照自检：覆盖率异常时请求重同步（原子切换后重同步不闪烁；frame 模式整页条带必然高覆盖）
+              try {
+                if (!layer || frame) return;
+                const d2 = layer.getContext('2d').getImageData(0, 0, Math.min(layer.width, 1440), Math.min(layer.height, 900)).data;
+                let ink = 0, tot = 0;
+                for (let i = 3; i < d2.length; i += 397 * 4) { tot++; if (d2[i] !== 0) ink++; }
+                if (tiles.length >= 6 && ink / tot < 0.02 && snapSelfCheckRetries < 3) {
+                  snapSelfCheckRetries++;
+                  console.log('[mirror] snapshot low coverage, requesting resync');
+                  send({ type: 'mode', mode: mode });
+                } else if (ink / tot >= 0.02) {
+                  snapSelfCheckRetries = 0;
+                }
+              } catch (e) {}
+            });
+            m('oTitle').textContent = j.title || '-';
+            m('mIdle').textContent = 'mirror';
+          }
+          if (j.type === 'dom-patches') { noteBytes(ev.data.length || ev.data.size || 0); rum.patches += (j.patches || []).length; applyPatches(j.patches); rumApplied(); }
+          if (j.type === 'pixel-skin') {
+            // v0.48 像素蒙皮：服务端截图覆盖镜像 DOM 之上——文字视觉 100%（服务端
+            // Linux 光栅化位图），DOM 层在下面正常处理交互（pointer-events:none）
+            noteBytes(ev.data.length || ev.data.size || 0);
+            noteFrame(0);
+            try {
+              let skin = mirrorRoot.querySelector('#xySkin');
+              if (!skin) {
+                skin = document.createElement('img');
+                skin.id = 'xySkin';
+                skin.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:9999;pointer-events:none;';
+                mirrorRoot.appendChild(skin);
+                // v0.48 交互自适应：用户开始打字/点击时自动移除蒙皮
+                const fadeOut = () => {
+                  if (skin && skin.style.opacity !== '0') {
+                    skin.style.transition = 'opacity .3s';
+                    skin.style.opacity = '0';
+                    setTimeout(() => { if (skin && skin.parentElement) skin.remove(); skin = null; }, 350);
+                    document.removeEventListener('keydown', fadeOut, true);
+                    document.removeEventListener('pointerdown', fadeOut, true);
+                  }
+                };
+                document.addEventListener('keydown', fadeOut, true);
+                document.addEventListener('pointerdown', fadeOut, true);
+              }
+              if (skin) {
+                // v0.49 防白闪：img 在 JPEG 解码完成前隐藏（空白 img 是白底
+                // → 第二次白闪的根因），加载完成后一次性显示
+                skin.style.visibility = 'hidden';
+                skin.onload = () => { skin.style.visibility = 'visible'; };
+                skin.src = j.url;
+              }
+              rumApplied();
+            } catch (e) {}
+          }
+          if (j.type === 'canvas-tile') {
+            // v3：canvas 元素按需捕获（有变化才推）——换掉镜像里的占位 img；
+            // v0.28 elbit（声明式 closed 宿主）：宿主保留为原元素（挂载点可
+            // 继续收 innerHTML），位图以 backgroundImage 叠加
+            noteBytes(ev.data.length || ev.data.size || 0);
+            noteFrame(0);
+            try {
+              let el = mirrorFind(j.id !== undefined ? j.id : j.path);
+              // v0.37 几何回退：图表库 reinit 会替换 canvas 元素（id 随之而变），
+              // 快照烘焙的 img 还持旧 id——tile 按 id 找不到时按尺寸+位置就近
+              // 匹配同位 img，命中后重绑 data-xy-id（后续 tile 恢复按 id 直达）
+              if ((!el || (el.tagName !== 'IMG' && el.tagName !== 'CANVAS' && (!el.getAttribute || el.getAttribute('data-xy-elbit') !== '1'))) && j.w >= 8 && mirrorBody) {
+                try {
+                  const ms = document.getElementById('mirrorScroll');
+                  const sx = ms ? ms.scrollLeft : 0, sy = ms ? ms.scrollTop : 0;
+                  let best = null, bestD = 40;
+                  for (const im of mirrorBody.querySelectorAll('img[data-xy-canvas]')) {
+                    const r = im.getBoundingClientRect();
+                    if (Math.abs(r.width - j.w) > 2 || Math.abs(r.height - j.h) > 2) continue;
+                    const d = Math.abs(r.x + sx - j.x) + Math.abs(r.y + sy - j.y);
+                    if (d < bestD) { bestD = d; best = im; }
+                  }
+                  if (best) {
+                    const staleId = best.getAttribute('data-xy-id');
+                    if (staleId !== null) { try { mirrorIds.delete(parseInt(staleId, 10)); } catch (e2) {} }
+                    if (j.id !== undefined) { best.setAttribute('data-xy-id', String(j.id)); mirrorIds.set(j.id, best); }
+                    el = best;
+                  }
+                } catch (e) {}
+              }
+              if (el && el.tagName === 'IMG') { el.src = j.url; rumApplied(); }
+              else if (el && el.tagName === 'CANVAS') {
+                // v0.29：指令流画布超预算切换位图——镜像侧把 canvas 原位换成
+                // img（保留 id/class/style 使后续补丁与 tile 继续命中），
+                // 与快照序列化的位图兜底形态一致
+                try {
+                  const img = document.createElement('img');
+                  for (const at of el.attributes) img.setAttribute(at.name, at.value);
+                  img.setAttribute('data-xy-canvas', '1');
+                  img.src = j.url;
+                  el.replaceWith(img);
+                  rumApplied();
+                } catch (e) {}
+              }
+              else if (el && el.getAttribute && el.getAttribute('data-xy-elbit') === '1') {
+                el.style.backgroundImage = 'url("' + j.url + '")';
+                el.style.backgroundSize = '100% 100%';
+                el.style.backgroundRepeat = 'no-repeat';
+                rumApplied();
+              }
+            } catch (e) {}
+          }
+          if (j.type === 'canvas-ops') {
+            // v0.14 指令流：按 id 在镜像 canvas 上重放绘制指令
+            noteBytes(ev.data.length || ev.data.size || 0);
+            noteFrame(0);
+            try {
+              for (const b of (j.batches || [])) {
+                const el = mirrorFind(b.id);
+                if (!el || el.tagName !== 'CANVAS') continue;
+                let st = canvasStreams.get(el);
+                if (!st) { st = { ring: [], grads: { __n: 0 }, imgs: {}, applied: 0, ctx: el.getContext('2d') }; canvasStreams.set(el, st); }
+                const fromReset = !!b.reset && !st.resetSeen;
+                if (b.reset) {
+                  if (!st.resetSeen) { st.ring = []; st.grads = { __n: 0 }; st.applied = 0; st.resetSeen = true; }
+                }
+                for (const op of (b.ops || [])) st.ring.push(op);
+                if (st.ring.length > 1024) st.ring.splice(0, st.ring.length - 1024);
+                replayCanvasOps(st, fromReset);
+              }
+            } catch (e) {}
+          }
+          if (j.type === 'scroll-sync') {
+            // 服务端页面滚动（锚点/JS 自动滚动/内部滚动联动）→ 镜像跟随
+            try {
+              const ms = document.getElementById('mirrorScroll');
+              if (!(ms && ms.__xyLocalAt && Date.now() - ms.__xyLocalAt < 450) && ms && (Math.abs(ms.scrollLeft - j.sx) > 1 || Math.abs(ms.scrollTop - j.sy) > 1)) { // v0.67 本地滚动活跃期忽略滞后回声
+                ms.__xySync = true;
+                ms.scrollLeft = j.sx; ms.scrollTop = j.sy;
+                setTimeout(() => { ms.__xySync = false; }, 80);
+              }
+              if (!(ms && ms.__xyLocalAt && Date.now() - ms.__xyLocalAt < 450) && Array.isArray(j.scrolls)) { // v0.67 同上
+                for (const s of j.scrolls) {
+                  try {
+                    const { el, top, left } = scrollEntry(s);
+                    if (el && el.scrollTop !== undefined && Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+                    if (el && el.scrollLeft !== undefined && Math.abs(el.scrollLeft - left) > 1) el.scrollLeft = left;
+                  } catch (e) {}
+                }
+              }
+            } catch (e) {}
+            rumApplied(); // v0.21 RUM：滚动同步应用=闭环
+          }
+            if (j.type === 'location') {
+            // v0.30 伪路由：地址栏跟随（输入聚焦时不打断编辑）
+            const nu = m('navUrl');
+            if (document.activeElement !== nu) nu.value = j.url || '';
+            m('navWrap').hidden = false; m('navHot').hidden = false;
+            // v0.31 真路由：浏览器地址栏随会话同步（取会话 URL 的 path+query 压到
+            // 本站；新地址 pushState、原地变化 replaceState，浏览器前进后退由此可用）
+            try {
+              const su = new URL(j.url || '', 'http://x/');
+              const sp = su.pathname + (su.search || '');
+              if (sp && sp !== location.pathname + location.search) {
+                if (sp !== lastSyncPath) history.pushState({ m: 1 }, '', sp);
+                else history.replaceState({ m: 1 }, '', sp);
+              }
+              lastSyncPath = sp;
+            } catch (e) {}
+          }
+          if (j.type === 'bg') {
+            // v0.32.2 消白闪：快照期底色修正（覆盖 meta 期早采样值）
+            try {
+              document.documentElement.style.setProperty('background', j.bg, 'important');
+              document.body.style.setProperty('background', j.bg, 'important');
+              const mb = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot && document.querySelector('#mirrorHost').shadowRoot.getElementById('mirrorBody');
+              if (mb) mb.style.setProperty('background', j.bg, 'important');
+            } catch (e) {}
+          }
+          if (j.type === 'nav-blocked') {
+            lastErr = j.msg || '导航被拒绝';
+            setStatus('目标不在允许范围', false);
+            setTimeout(() => { if (lastErr === (j.msg || '导航被拒绝')) { lastErr = ''; setStatus('会话在线', true); } }, 2600);
+          }
+          if (j.type === 'doc-class' && mirrorBody) {
+            // 主题/状态类切换：直改镜像根类名（轻量，不重建）
+            mirrorBody.className = 'xy-body ' + (j.cls || '');
+            // v0.60：暗色主题等类切换常伴随滚动条配色变化，随之重取
+            syncDocScrollerStyle();
+          }
+          if (j.type === 'dom-props') {
+            // v0.17：程序化表单态（源站 JS 直改 checked/value，MutationObserver 盲区，
+            // 由原型 setter 劫持捕获下发）。静默应用（不派发事件，避免回环）；
+            // 焦点中的元素跳过 value（访客正在本地编辑，防打断）
+            rumApplied();
+            for (const p of (j.props || [])) {
+              try {
+                const el = mirrorFind(p.id);
+                if (!el || !el.tagName) continue;
+                if (p.checked !== undefined && (el.type === 'checkbox' || el.type === 'radio')) el.checked = !!p.checked;
+                if (p.sel !== undefined && Array.isArray(p.sel) && el.tagName === 'SELECT') {
+                  // 多选（option.selected 直改路径）：sel 可独立于 value 下发
+                  for (const o of el.options) o.selected = p.sel.includes(o.value);
+                  continue;
+                }
+                if (p.media !== undefined && (el.tagName === 'VIDEO' || el.tagName === 'AUDIO')) {
+                  // 媒态同步（v0.17）：暂停/进度/静音/音量跟随源站。有声 play 受
+                  // 自动播放策略限制可能被拒（catch 静默，进度仍同步）；镜像侧
+                  // 不主动拉流之外的字节（preload 保持源站原值）
+                  const m = p.media;
+                  try { el.muted = !!m.muted; el.volume = (m.vol == null ? el.volume : m.vol); } catch (e) {}
+                  if (typeof m.t === 'number' && isFinite(m.t) && Math.abs((el.currentTime || 0) - m.t) > 0.5) { try { el.currentTime = m.t; } catch (e) {} }
+                  if (m.paused === false && el.paused) { el.play().catch(() => { try { el.currentTime = m.t || 0; } catch (e2) {} }); }
+                  else if (m.paused === true && !el.paused) { try { el.pause(); } catch (e) {} }
+                  continue;
+                }
+                if (p.value !== undefined) {
+                  if (el.tagName === 'SELECT') {
+                    if (Array.isArray(p.sel)) { for (const o of el.options) o.selected = p.sel.includes(o.value); }
+                    else el.value = p.value;
+                  } else if (mirrorRoot.activeElement !== el) {
+                    const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                    const d = Object.getOwnPropertyDescriptor(proto, 'value');
+                    if (d && d.set) d.set.call(el, p.value); else el.value = p.value;
+                  }
+                }
+              } catch (e) {}
+            }
+          }
+          if (j.type === 'dom-sel') {
+            // v0.17：程序化选区跟随（搜索高亮/表格选择）。镜像在 shadow root 内，
+            // 文档级 Selection 无法跨边界设置——以页面坐标矩形渲染高亮层
+            // （挂在 .xy-body（position:relative）内，随镜像文档流滚动）
+            try {
+              if (mirrorBody && Array.isArray(j.rects)) {
+                let layer = mirrorBody.querySelector(':scope > [data-xy-sel]');
+                if (!layer) {
+                  layer = document.createElement('div');
+                  layer.setAttribute('data-xy-sel', '1');
+                  layer.style.cssText = 'position:absolute;left:0;top:0;right:auto;bottom:auto;pointer-events:none;z-index:2147483646';
+                  mirrorBody.appendChild(layer);
+                }
+                layer.textContent = '';
+                for (const rc of j.rects) {
+                  const d2 = document.createElement('div');
+                  d2.style.cssText = 'position:absolute;background:rgba(28,120,255,.30);border-radius:2px';
+                  d2.style.left = rc[0] + 'px';
+                  d2.style.top = rc[1] + 'px';
+                  d2.style.width = rc[2] + 'px';
+                  d2.style.height = rc[3] + 'px';
+                  layer.appendChild(d2);
+                }
+              }
+            } catch (e) {}
+          }
+          if (j.type === 'focus-sync') {
+            // v0.19：源站 JS 聚焦跟随（autofocus/校验定位）。访客正在文本输入
+            // （输入框/富文本持有焦点=打字中）时不抢；按钮等非输入焦点不阻塞——
+            // 点击"聚焦"按钮后程序化聚焦必须落到镜像输入框
+            try {
+              const el = (j.id !== null && j.id !== undefined) ? mirrorFind(j.id) : null;
+              const ae = mirrorRoot.activeElement;
+              const engaged = !!(ae && ae !== mirrorBody && ae.matches && ae.matches('input, textarea, select, [contenteditable="true"], [contenteditable=""]'));
+              if (el && el.focus && !engaged) el.focus({ preventScroll: true });
+              else if (!el && !engaged && ae && ae.blur) ae.blur();
+            } catch (e) {}
+          }
+          if (j.type === 'error') {
+            lastErr = j.msg; setStatus('错误: ' + j.msg, false);
+            if (j.terminal) {
+              // v0.50 resume 降级：令牌失效（引擎重启/过期被回收）时清令牌并自动
+              // 全新重连一次。不清令牌的话刷新永远带着死令牌，页面卡"已断开"，
+              // 用户以为服务故障——实际只需一次无 resume 的全新握手。
+              if (resumeToken) {
+                setResume(null);
+                retryAllowed = true;
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(connect, 800);
+                return;
+              }
+              retryAllowed = false;
+              clearTimeout(retryTimer);
+              availability(false, j.msg);
+              m('newSession').hidden = false;
+            }
+          }
+          if (j.type === 'mode') { setMode(j.mode); lastErr = ''; setStatus('会话在线', true); }
+          if (j.type === 'pong') { m('mRtt').textContent = Math.round(performance.now() - j.t); }
+          if (j.type === 'sstats') {
+            // v3 dom 无帧流：服务端指标=下行消息速率（帧语义只属于像素流模式）
+            m('mSrvFps').textContent = (j.mr != null ? j.mr : j.fps);
+            if (j.inLat != null) m('mInLat').textContent = j.inLat;
+            // 结构指纹比对：服务端元素数 vs 代理元素数。SPA 异步渲染后代理结构
+            // 过期，补丁路径会碰撞错位（瓦片落到错误元素）而不报 path miss——
+            // 用元素数漂移检测并请求全量重同步（10s 限频）
+            if (j.els && mirrorBody) {
+              const mine = mirrorBody.querySelectorAll('*').length;
+              const drift = Math.abs(j.els - mine);
+              if (drift > Math.max(8, j.els * 0.05) && Date.now() - lastFpResync > 10000) {
+                lastFpResync = Date.now();
+                console.log('[mirror] structure drift server=' + j.els + ' proxy=' + mine + ', resync');
+                send({ type: 'mode', mode: mode });
+              }
+            }
+          }
+        } catch {}
+      }
+    };
+  }
+  // v0.53 F5 零空窗：prod + 同路径 → 首帧同步重建上次快照（先于 WS 握手）。
+  // lastSnapKey 同步置位：后续服务端同内容快照命中去重，不重建→入口动画不重放
+  try {
+    const cachedSnap = JSON.parse(sessionStorage.getItem('xySnapCache') || 'null');
+    if (cachedSnap && cachedSnap.css && cachedSnap.html
+        && cachedSnap.path === location.pathname + location.search
+        && document.body.classList.contains('prod')) {
+      lastCss = cachedSnap.css;
+      lastSnapKey = cachedSnap.key;
+      snapshotReady = true; // 缓存内容已上屏，首帧即视为同步就绪（快照确认到达时走去重闭环）
+      setMode('dom');
+      buildMirror(cachedSnap.css, cachedSnap.html, cachedSnap.docClass, cachedSnap.docAttrs, cachedSnap.bodyId, cachedSnap.bodyStyle);
+      if (cachedSnap.title) document.title = cachedSnap.title;
+    }
+  } catch (e) {}
+  connect();
+
+  setInterval(() => {
+    const now = performance.now();
+    winBw = winBw.filter(x => now - x.t < 5000);
+    winFps = winFps.filter(x => now - x.t < 1000);
+    m('mFps').textContent = winFps.length;
+    m('mBw').textContent = (winBw.reduce((s, x) => s + x.v, 0) / 5 / 1024).toFixed(1);
+    m('mFrames').textContent = frames;
+    m('mTotal').textContent = (bytes / 1024).toFixed(1);
+    if (winFps.length === 0) m('mIdle').textContent = connected ? 'idle' : 'disconnected';
+    // v0.19：ping 携带镜像元素指纹（剔除引擎自建层：选区高亮/瓦片图层），
+    // 服务端与源站比对做分歧自愈（Timelapse/Dolos 思想）
+    if (connected && ws.readyState === 1) {
+      let fp = null;
+      try {
+        if (mirrorBody) {
+          const sr = mirrorRoot;
+          const art = sr.querySelectorAll('[data-xy-sel], .xy-tiles, [data-xy-sel] *');
+          fp = mirrorBody.querySelectorAll('*').length - art.length;
+        }
+      } catch (e) {}
+      const rumTick = (window.__rumTick = (window.__rumTick || 0) + 1);
+      const rumPayload = (rumTick === 1 || rumTick % 10 === 0) ? rumReport() : undefined; // 首拍即报（短会话也有心跳），此后 10s 一拍
+      const base = fp !== null ? { type: 'ping', t: performance.now(), fp } : { type: 'ping', t: performance.now() };
+      if (rumPayload) base.rum = rumPayload;
+      ws.send(JSON.stringify(base));
+    }
+  }, 1000);
+
+  document.querySelectorAll('.quality button[data-m]').forEach(b => b.addEventListener('click', () => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'mode', mode: b.dataset.m }));
+  }));
+  // v0.30 伪地址栏交互：跳转/前进/后退
+  const navGo = () => { const v = document.getElementById('navUrl').value.trim(); if (v) send({ type: 'navigate', url: v }); document.getElementById('navUrl').blur(); };
+  document.getElementById('navGo').addEventListener('click', navGo);
+  document.getElementById('navUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') navGo(); });
+  document.getElementById('navBack').addEventListener('click', () => send({ type: 'history', dir: 'back' }));
+  document.getElementById('navFwd').addEventListener('click', () => send({ type: 'history', dir: 'forward' }));
+  // v0.31 真路由：浏览器前进/后退驱动会话同址导航（path 恒在同源白名单内）
+  let lastSyncPath = location.pathname + location.search;
+  window.addEventListener('popstate', () => {
+    const sp = location.pathname + location.search;
+    if (sp !== lastSyncPath) { lastSyncPath = sp; send({ type: 'navigate', url: sp }); }
+  });
+  document.getElementById('reconn').addEventListener('click', () => {
+    if (!retryAllowed) return;
+    clearTimeout(retryTimer);
+    if (ws && ws.readyState === 1) ws.close(); else if (!ws || ws.readyState === 3) connect();
+  });
+  m('newSession').addEventListener('click', () => {
+    setResume(null); lastTyped.clear(); pendingFocusPatches = [];
+    retryAllowed = true; retryDelay = 500;
+    connect();
+  });
+
+  // ---------- 输入回传 ----------
+  let lastMove = 0;
+  function pageXY(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
+  }
+  function send(o) { if (connected && ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+  cv.addEventListener('mousemove', (e) => {
+    const now = performance.now();
+    if (now - lastMove < 33) return; lastMove = now;
+    const { x, y } = pageXY(e);
+    const box = document.getElementById('box').getBoundingClientRect();
+    curEl.style.display = 'block';
+    curEl.style.left = (e.clientX - box.left) + 'px';
+    curEl.style.top = (e.clientY - box.top) + 'px';
+    send({ type: 'mouse', action: 'move', x, y });
+  });
+  cv.addEventListener('mousedown', (e) => { const { x, y } = pageXY(e); cv.focus({ preventScroll: true }); send({ type: 'mouse', action: 'down', x, y, button: 'left' }); });
+  cv.addEventListener('mouseup', (e) => { const { x, y } = pageXY(e); send({ type: 'mouse', action: 'up', x, y, button: 'left' }); });
+  cv.addEventListener('contextmenu', (e) => e.preventDefault());
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const { x, y } = pageXY(e);
+    send({ type: 'mouse', action: 'wheel', x, y, dx: e.deltaX, dy: e.deltaY });
+  }, { passive: false });
+  // frame 模式滚动同步：镜像容器原生滚动（零延迟显示基础底板），滚动位置回传服务端，
+  // 差分循环再补齐视口内真实变化（懒加载内容/固定定位元素/动画）。40ms 节流。
+  (function () {
+    const ms = document.getElementById('mirrorScroll');
+    if (!ms) return;
+    // 滚轮转发（根治内层容器滚动失效）：真实应用多为 100vh 布局 + 内层 overflow
+    // 容器，页面级 scroll 同步永远不触发。wheel 直接送服务端 CDP mouseWheel——
+    // 滚哪个容器由服务端命中测试决定（与原生同语义）。容器级监听：静态元素，
+    // 脚本加载即挂，不依赖镜像 wiring 时序；preventDefault 防代理双滚。
+    // v3 dom：本地原生滚动（镜像含全页结构与内容，滚轮零延迟），滚动位置经
+    // scroll 事件上报、服务端跟随。frame（像素直出）保持转发 CDP mouseWheel。
+    ms.addEventListener('wheel', (e) => {
+      if (!frameMode) return; // dom：不拦截，原生滚动
+      e.preventDefault();
+      send({ type: 'mouse', action: 'wheel', x: e.clientX, y: e.clientY, dx: Math.round(e.deltaX), dy: Math.round(e.deltaY) });
+    }, { passive: false, capture: true });
+    let lastAt = 0, trailT = null;
+    const reportScroll = () => { rumInputSent(); send({ type: 'scroll', x: Math.round(ms.scrollLeft), y: Math.round(ms.scrollTop) }); };
+    ms.addEventListener('scroll', () => {
+      if (ms.__xySync) return; // 服务端反向同步触发的滚动不再回传（防回环）
+      ms.__xyLocalAt = Date.now(); // v0.67 本地滚动活跃标记
+      const now = Date.now();
+      if (trailT) clearTimeout(trailT);
+      trailT = setTimeout(reportScroll, 90); // 尾随补报：手势最后一段不会被 40ms 节流吞掉
+      if (now - lastAt < 40) return;
+      lastAt = now;
+      reportScroll();
+    }, { passive: true });
+  })();
+
+  const SPECIAL = new Set(['Backspace', 'Enter', 'Tab', 'Escape', 'Delete', 'ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown', 'Home', 'End']);
+  // v0.17：键盘分派已上移 document 捕获层（合成事件不聚焦，keydown 不过 shadow
+  // root）；此处仅兜底未被捕获标记的事件，防止双重转发
+  cv.addEventListener('keydown', (e) => {
+    if (e.__xyKeyFwd) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (SPECIAL.has(e.key)) { e.preventDefault(); send({ type: 'key', action: 'down', key: e.key }); return; }
+    if (e.key.length === 1) { e.preventDefault(); send({ type: 'key', action: 'down', text: e.key }); }
+  });
+  cv.addEventListener('keyup', (e) => {
+    if (e.__xyKeyFwd) return;
+    if (SPECIAL.has(e.key)) { send({ type: 'key', action: 'up', key: e.key }); return; }
+    if (e.key.length === 1) send({ type: 'key', action: 'up', text: e.key });
+  });
+})();
+</script>
+</body>
+</html>
