@@ -1176,9 +1176,9 @@ async function runSession(ws, req, lifecycle) {
                 // 页（beacon 事件列表 7↔8 行震荡）补丁在途滞后即假漂移，旧参数
                 // 每 10s 全量重拍 = 周期性整树重建（用户视角"白一下"+卡）。真
                 // 失步（结构性）通常是大差额，8% 依然秒抓
-                if (drift > Math.max(4, srvFp * 0.08)) {
+                if (drift > Math.max(4, srvFp * 0.05)) {
                   driftStreak++;
-                  if (driftStreak >= 3 && Date.now() - lastDriftHeal > 30000) {
+                  if (driftStreak >= 2 && Date.now() - lastDriftHeal > 10000) {
                     // v0.56 熔断：短窗内多次自愈未收敛 = 系统性口径差（快照就不含
                     // 那部分元素）。此时重拍永远无法收敛，只会把页面打成 10s 一次
                     // 整树重建（beacon 实测 snaps 每 10s +1，完全不可用）——静默
