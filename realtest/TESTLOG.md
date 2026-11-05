@@ -126,3 +126,11 @@
 - 批次 13:obf 字体端点 8 向量(未知 sid/长短/大写/负数/越界/空字节/穿越)
   全 404 SAFE ✓
 - 无来源/跨源 beacon 403 ✓(既有防线验证)
+
+### 补充发现(批次 14):代理响应体无上限缓冲(内存 DoS,已修)
+- proxyAsset cache 分支 up.on('data') → chunks.push 无大小限制——白名单源站
+  返回 200MB 响应 → 网关 RSS +482MB(全量缓冲实证,红测试)
+- 对照:fetchOriginAsset 有 4MB 上限(正确实现)
+- 修复:对齐 maxEntryBytes 上限,超限断上游+502;RSS 平稳(22MB),客户端
+  收 502 asset too large
+- TDD:test/proxy-asset-limit.test.js(流式 200MB mock 源站,断言 502+RSS)

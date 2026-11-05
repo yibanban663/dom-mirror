@@ -482,9 +482,26 @@ function proxyAsset(req, res) {
     }
     if (originAssetCache) {
       // 缓冲回填（/m/ 本就限图片/字体小资产）：入库由 put 的保守规则裁决
+      // 大小上限对齐 fetchOriginAsset 的 maxEntryBytes——超限即断上游并 502,
+      // 防"全量缓冲后再校验"的内存 DoS（实测 200MB 上游 → 网关 RSS +482MB）
       const chunks = [];
-      up.on('data', (c) => chunks.push(c));
+      let total = 0, over = false;
+      up.on('data', (c) => {
+        total += c.length;
+        if (total > originAssetCache.maxEntryBytes) {
+          over = true;
+          try { up.destroy(); } catch (e) {}
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }); } catch (e2) {} try { res.end('asset too large'); } catch (e3) {} } else { try { res.destroy(); } catch (e4) {} }
+        } else chunks.push(c);
+      });
       up.on('end', () => {
+        // 语义合并:v0.76 css 改写入库 + 超限 502(over 在 data handler 置位, 超限
+        // 资产不进改写/不入库, 断流即回 502——两修复语义正交相加)
+        if (over) {
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }); } catch (e) {} }
+          try { res.end('asset too large'); } catch (e2) {}
+          return;
+        }
         let body = Buffer.concat(chunks);
         // v0.76：css 响应改写后再入库/下发（缓存里存改写后形态，命中零成本）
         if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'))); } catch (e) {} }
