@@ -11,3 +11,5 @@ __pycache__/
 artifacts/
 *.tgz
 tools/NotoSansSC-*.ttf
+*.bak
+tools/.vik-*
