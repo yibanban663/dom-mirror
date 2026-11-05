@@ -1260,29 +1260,35 @@ async function runSession(ws, req, lifecycle) {
             let srvFp = null;
             try { srvFp = await withTimeout(page.evaluate((list) => window.__xy.fpMeasure(list), fpState.ids), 2500, 'fpMeasure').catch(() => null); } catch (e) {}
             if (!Array.isArray(srvFp)) break; // 会话浏览器忙/逐出：本轮作罢（下次快照再对）
-            let match = 0, total = 0;
+            let match = 0, judged = 0, unstable = 0;
             for (const s of srvFp) {
               if (!s || s.w < 0 || s.h < 0) continue; // live 已移除：不计
-              total++;
-              if (process.env.XY_FIDELITY_TRAP === '1' && total % 10 !== 0) { s.w += 64; s.h += 48; } // 测试钩子：模拟布局漂移
+              const snapD = fpState.dims ? fpState.dims.get(s.id) : null;
+              if (!snapD) continue;
+              const tolW = Math.max(6, Math.round(s.w * 0.04)), tolH = Math.max(6, Math.round(s.h * 0.04));
+              // 稳定性过滤：live 与快照基准不一致 = 页面自己改了这个元素——
+              // 它的正确性由补丁通道保证，不作为对账证据
+              if (Math.abs(s.w - (snapD.w || 0)) > tolW || Math.abs(s.h - (snapD.h || 0)) > tolH) { unstable++; continue; }
+              judged++;
+              if (process.env.XY_FIDELITY_TRAP === '1' && judged % 10 !== 0) { s.w += 64; s.h += 48; } // 测试钩子：模拟布局漂移
               const c = cmap.get(s.id);
               if (!c || !Number.isFinite(c.w) || !Number.isFinite(c.h)) continue;
-              const tolW = Math.max(6, Math.round(s.w * 0.04)), tolH = Math.max(6, Math.round(s.h * 0.04));
               if (Math.abs((c.w || 0) - (s.w || 0)) <= tolW && Math.abs((c.h || 0) - (s.h || 0)) <= tolH) match++;
             }
-            if (!total) break;
-            if (match / total >= 0.7) {
-              logger.log('[fidelity] layout ok ' + match + '/' + total);
+            if (!judged) break;
+            if (judged < 4) { logger.log('[fidelity] skip busy (judged=' + judged + ' unstable=' + unstable + ')'); fpState.fails = 0; break; }
+            if (match / judged >= 0.7) {
+              logger.log('[fidelity] layout ok ' + match + '/' + judged + (unstable ? ' (unstable ' + unstable + ')' : ''));
               fpState.fails = 0;
               break;
             }
             fpState.fails++;
-            logger.log('[fidelity] layout mismatch ' + match + '/' + total + ' (fail #' + fpState.fails + ')');
+            logger.log('[fidelity] layout mismatch ' + match + '/' + judged + ' (fail #' + fpState.fails + ')');
             if (fpState.fails >= 2) {
               fpState = null;
-              await fidelityDowngrade('layout ' + match + '/' + total);
+              await fidelityDowngrade('layout ' + match + '/' + judged);
             } else {
-              scheduleFp(fpState.ids, 1500, fpState.fails); // 复测一次：等晚到资源落位
+              scheduleFp(fpState.anchors, 1500, fpState.fails); // 复测一次：等晚到资源落位（带基准几何）
             }
             break;
           }
@@ -1564,10 +1570,15 @@ async function runSession(ws, req, lifecycle) {
   // 服务端与会话浏览器同 id 的 live 几何比对——dom 车道从"希望对"升级为
   // "验证对"。≥70% 样本落在 max(6px,4%) 容差内判通过；不过先复测一次（字体/
   // 图片晚到是常态），连续两败 → 本会话降级 frame + 记源站降级事件。
-  function scheduleFp(ids, delayMs, carryFails) {
-    if (FIDELITY_OFF || mode !== 'dom' || !Array.isArray(ids) || ids.length < 6) return;
+  function scheduleFp(anchors, delayMs, carryFails) {
+    if (FIDELITY_OFF || mode !== 'dom' || !Array.isArray(anchors) || anchors.length < 6) return;
     if (fpState && fpState.timer) clearTimeout(fpState.timer);
-    fpState = { seq: (fpState ? fpState.seq : 0) + 1, ids: ids.slice(0, 24), fails: carryFails || 0, timer: null, pending: true };
+    const anc = anchors.slice(0, 24).filter((x) => x && Number.isInteger(x.id));
+    // dims：快照时刻基准几何——对账先过"稳定性过滤"（live 漂移=页面自身改的，
+    // 剔除；vlist/SPA 持续增删行时两侧测量时刻不同，不过滤会把页面演化误判
+    // 成镜像漂移 → 误降级，CI 冷 runner 实测 gen_vlist 复现）
+    const dims = new Map(anc.map((x) => [x.id, x]));
+    fpState = { seq: (fpState ? fpState.seq : 0) + 1, ids: anc.map((x) => x.id), anchors: anc, dims, fails: carryFails || 0, timer: null, pending: true };
     fpState.timer = setTimeout(() => {
       if (!fpState || !fpState.pending) return;
       try {
@@ -1992,7 +2003,7 @@ async function runSession(ws, req, lifecycle) {
       } catch (e) {}
     }
     // v0.75 布局对账：快照落位（客户端构建+字体/图片在途）给 1.8s，随后抽查
-    if (mode === 'dom' && Array.isArray(snap.fpIds) && snap.fpIds.length >= 6) scheduleFp(snap.fpIds);
+    if (mode === 'dom' && Array.isArray(snap.fpFid) && snap.fpFid.length >= 6) scheduleFp(snap.fpFid);
     // v0.48 像素蒙皮：快照后立即截全页图发给客户端叠加在镜像 DOM 之上——
     // 文字是服务端 Linux Chromium 光栅化的位图，访客端不再自行渲染文字
     // → 视觉 100% 还原。DOM 层 pointer-events 正常处理交互（打字/点击/
