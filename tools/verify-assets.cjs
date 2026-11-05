@@ -134,8 +134,9 @@ async function main() {
     // "级联色就位"（link 段生效的确定性信号）
     await page.waitForFunction(() => {
       const root = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
-      const box = root && root.querySelector('.box');
-      try { return box && getComputedStyle(box).color === 'rgb(0, 128, 0)'; } catch (e) { return false; }
+      // #bg 的背景图是 link 段独有规则——非 none 即 @import 样式表已装载应用
+      const bg = root && root.querySelector('#bg');
+      try { return bg && getComputedStyle(bg).backgroundImage !== 'none'; } catch (e) { return false; }
     }, { timeout: 15000, polling: 300 }).catch(() => {});
     // 快照去重：同页导航（服务端 nav+600ms+1500ms 共 3 次相同快照）
     await page.evaluate(() => {
