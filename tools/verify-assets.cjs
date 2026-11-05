@@ -128,6 +128,15 @@ async function main() {
       return [...root.querySelectorAll('style')].some((st) => /@font-face[^}]*url\((['"]?)(\/m\/font\.woff2)\1/.test(st.textContent));
     });
 
+    // v0.76 样式表直通：@import 异步装载——构建完成探测（结构元素可见）可能
+    // 先于 css 应用通过，其后的坐标点击会落在样式前布局上（元素随后位移 =
+    // 点击丢失 → 无导航 → 0 快照，冷 runner 确定性复现）。点击前先等
+    // "级联色就位"（link 段生效的确定性信号）
+    await page.waitForFunction(() => {
+      const root = document.querySelector('#mirrorHost') && document.querySelector('#mirrorHost').shadowRoot;
+      const box = root && root.querySelector('.box');
+      try { return box && getComputedStyle(box).color === 'rgb(0, 128, 0)'; } catch (e) { return false; }
+    }, { timeout: 15000, polling: 300 }).catch(() => {});
     // 快照去重：同页导航（服务端 nav+600ms+1500ms 共 3 次相同快照）
     await page.evaluate(() => {
       const root = document.querySelector('#mirrorHost').shadowRoot;
