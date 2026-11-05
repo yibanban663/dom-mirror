@@ -152,9 +152,19 @@ async function main() {
     // v0.76：坐标点击依赖布局/样式装载时序（@import 异步 → 冷热环境各态）。
     // 改页面内合成点击：事件走客户端捕获链 → domclick → 会话浏览器导航，
     // 与布局零耦合（本用例验证的是服务端同页导航重拍与去重，不是点击命中）
-    await page.evaluate(() => { try { document.querySelector('#mirrorHost').shadowRoot.querySelector('#self').click(); } catch (e) {} });
+    results.D_clickDiag = await page.evaluate(() => {
+      try {
+        const el = document.querySelector('#mirrorHost').shadowRoot.querySelector('#self');
+        if (!el) return { found: false };
+        const diag = { found: true, tag: el.tagName, href: (el.getAttribute('href') || '').slice(0, 40) };
+        el.click();
+        return diag;
+      } catch (e) { return { found: false, err: String(e).slice(0, 60) }; }
+    });
+    console.log('D_clickDiag ' + JSON.stringify(results.D_clickDiag));
     await new Promise((r) => setTimeout(r, 3500));
-    const d = await page.evaluate(() => ({ snaps: window.__snapCount - window.__snapAtCount, rebuilds: window.__bursts, stillThere: !!(document.querySelector('#mirrorHost').shadowRoot.querySelector('#order')) }));
+    const d = await page.evaluate(() => ({ snaps: window.__snapCount - window.__snapAtCount, totalSnaps: window.__snapCount, rebuilds: window.__bursts, stillThere: !!(document.querySelector('#mirrorHost').shadowRoot.querySelector('#order')), loc: location.pathname, xyMode: (window.__xyModeCheck || 'n/a') }));
+    console.log('D_counts ' + JSON.stringify(d));
     results.D_snapshots = d.snaps;
     results.D_rebuilds = d.rebuilds;
     results.D_alive = !!d.stillThere;

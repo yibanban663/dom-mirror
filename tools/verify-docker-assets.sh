@@ -58,7 +58,8 @@ docker exec "$originb" node -e '
   })().catch(() => process.exit(1));
 '
 
-docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --name "$client" --network "$run_id" --memory 2g \
+# v0.76 诊断：失败时打印引擎日志尾巴（cleanup 只落盘不上传）
+docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" --rm --name "$client" --network "$run_id" --memory 2g \
   "${proxy_env[@]}" \
   -e MIRROR_URL=http://mirror:8088/ -e ORIGIN_B=http://origin-b:8000 -e EVIDENCE_DIR=/tmp/assets-evidence \
-  --entrypoint timeout "$image" 170 node tools/verify-assets.cjs
+  --entrypoint timeout "$image" 170 node tools/verify-assets.cjs || { echo '---- engine log tail ----'; docker logs "$server" 2>&1 | tail -30; exit 1; }
