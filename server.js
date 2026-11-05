@@ -2434,6 +2434,12 @@ async function runSession(ws, req, lifecycle) {
       ws.close(1011, 'browser closed');
     });
     if (!page) page = poolHandle ? await poolHandle.context.newPage() : await b.newPage();
+    // 源站页面的 alert/confirm/prompt/beforeunload 是同步阻塞对话框——headless
+    // 下无处理器则永久挂起 → 页面冻结 → 快照 evaluate 永不返回 → 镜像"连接中"
+    // (实测: 源站含一个 alert(1) 即复现)。自动关闭对话框, 镜像不因弹窗冻结
+    page.on('dialog', (d) => {
+      try { logger.log(`[dialog] ${d.type()} ${String(d.message()).slice(0, 60)}`); d.dismiss().catch(() => {}); } catch (e) {}
+    });
     reviveSource = poolHandle ? { context: poolHandle.context } : { browser: b }; // v0.39 复活用页面工厂
     if (dead) { await page.close(); return; }
     // v0.39 页面运行时装配提取为可重入函数：空闲逐出后的复活须对新页面
