@@ -1348,6 +1348,7 @@ async function runSession(ws, req, lifecycle) {
             await input.mouse(page, cdp, m);
             break;
           case 'domclick': {
+            try { logger.log('[dbg] domclick id=' + m.id); } catch (e3) {}
             // 合成点击等价转发：客户端 el.click() 无指针手势，服务端对同锚点
             // 元素执行 el.click()——与源站直连的程序化点击同语义
             noteInput();
