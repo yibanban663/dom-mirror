@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>beacon-mimic</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 16px; background: #fafafa; }
+  .card { background: #fff; border: 1px solid #dde; border-radius: 6px; padding: 8px; margin: 6px; }
+  .grid { display: flex; flex-wrap: wrap; }
+  .num { font-size: 26px; font-weight: 600; color: #235; }
+  canvas { border: 1px solid #ccd; }
+  #list div { border-bottom: 1px solid #eee; padding: 2px 4px; font-family: Consolas, monospace; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="card"><div>QPS</div><div class="num" id="n1">0</div></div>
+    <div class="card"><div>P95</div><div class="num" id="n2">0</div></div>
+    <div class="card"><div>ERR</div><div class="num" id="n3">0</div></div>
+    <div class="card"><div>ONLINE</div><div class="num" id="n4">0</div></div>
+  </div>
+  <div class="grid">
+    <div class="card"><canvas id="c1" width="420" height="220"></canvas></div>
+    <div class="card"><canvas id="c2" width="420" height="220"></canvas></div>
+  </div>
+  <div class="card"><div>EVENTS</div><div id="list"></div></div>
+<script>
+function draw(id, seed, fill) {
+  const cv = document.getElementById(id);
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.strokeStyle = '#468'; g.lineWidth = 2; g.beginPath();
+  for (var i = 0; i <= 40; i++) {
+    var y = 110 + Math.sin((i + seed) * 0.35) * 70 * Math.cos(i * 0.11 + seed * 0.7);
+    if (i === 0) g.moveTo(i * 10, y); else g.lineTo(i * 10, y);
+  }
+  g.stroke();
+  g.fillStyle = fill; g.fillRect(0, 0, 420, 16);
+  g.fillStyle = '#335'; g.font = '12px Consolas, monospace';
+  g.fillText('chart ' + id + ' t=' + seed.toFixed(1), 6, 12);
+  g.strokeStyle = '#bbb'; g.beginPath();
+  for (var j = 1; j < 5; j++) { g.moveTo(0, j * 44); g.lineTo(420, j * 44); }
+  g.stroke();
+}
+var t = 0;
+setInterval(function () {
+  t += 2;
+  document.getElementById('n1').textContent = (1200 + Math.round(Math.random() * 800));
+  document.getElementById('n2').textContent = (40 + Math.round(Math.random() * 60)) + 'ms';
+  document.getElementById('n3').textContent = (Math.random() * 9).toFixed(2) + '%';
+  document.getElementById('n4').textContent = (300 + Math.round(Math.random() * 50));
+  draw('c1', t, '#eef'); draw('c2', t * 1.3, '#efe');
+  var l = document.getElementById('list');
+  var row = document.createElement('div');
+  row.textContent = new Date().toISOString() + ' ev=' + Math.random().toString(36).slice(2, 10);
+  l.insertBefore(row, l.firstChild);
+  while (l.children.length > 8) l.removeChild(l.lastChild);
+}, 2000);
+draw('c1', 0, '#eef'); draw('c2', 0, '#efe');
+</script>
+</body>
+</html>

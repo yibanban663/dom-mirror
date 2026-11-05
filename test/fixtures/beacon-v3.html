@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>beacon-v3</title>
+<style>body{font:14px system-ui;margin:16px;background:#fafafa}canvas{border:1px solid #ccd}</style></head>
+<body><div>MEDIUM CHART (500ms，streak 2-4 档)</div><canvas id="cm" width="420" height="200"></canvas>
+<script>
+function draw(seed){var cv=document.getElementById('cm'),g=cv.getContext('2d');g.clearRect(0,0,cv.width,cv.height);
+g.strokeStyle='#468';g.lineWidth=2;g.beginPath();for(var i=0;i<=40;i++){var y=100+Math.sin((i+seed)*0.35)*70;if(i===0)g.moveTo(i*10,y);else g.lineTo(i*10,y);}g.stroke();
+g.fillStyle='#335';g.font='12px Consolas,monospace';g.fillText('medium t='+seed.toFixed(1),6,14);}
+var t=0;setInterval(function(){t+=0.5;draw(t);},500);draw(0);
+</script></body></html>

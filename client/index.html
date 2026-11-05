@@ -651,8 +651,22 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     // 影子树由 <template shadowrootmode> 重建。旧浏览器回退 innerHTML（无影子镜像）
     // v0.40 F4 纵深：快照整页同样过 parseHtml 的惰性预清洗（服务端 sanitize 为第一道）
     const safeHtml = scrubHtml(mirrorHtml);
-    if (typeof mirrorRoot.setHTMLUnsafe === 'function') mirrorRoot.setHTMLUnsafe(safeHtml);
-    else mirrorRoot.innerHTML = safeHtml;
+    // v0.77 双缓冲重建：先在游离容器解析（声明式 shadow 在解析期照常挂载，
+    // v0.27 起的既有机制），再 replaceChildren 一次性换入——旧树在解析期间
+    // 保持绘制，消灭整树重建的重绘空窗（大页漂移自愈/导航兜底重拍时的
+    // "白一下"）。异常回退直接替换路径
+    let swapped = false;
+    try {
+      const buf = document.createElement('div');
+      if (typeof buf.setHTMLUnsafe === 'function') buf.setHTMLUnsafe(safeHtml);
+      else buf.innerHTML = safeHtml;
+      mirrorRoot.replaceChildren(...buf.childNodes);
+      swapped = true;
+    } catch (e3) {}
+    if (!swapped) {
+      if (typeof mirrorRoot.setHTMLUnsafe === 'function') mirrorRoot.setHTMLUnsafe(safeHtml);
+      else mirrorRoot.innerHTML = safeHtml;
+    }
 
 
 
