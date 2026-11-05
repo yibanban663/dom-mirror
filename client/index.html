@@ -2077,6 +2077,32 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             }
           }
           if (j.type === 'mode') { setMode(j.mode); lastErr = ''; setStatus('会话在线', true); }
+          if (j.type === 'fp-req') {
+            // v0.75 布局指纹对账：按服务端抽查 id 上报镜像元素渲染尺寸（w/h 与
+            // 滚动无关）。先等字体就绪/首屏图片落位（有限等待），避免把"资源
+            // 还在路上"误报成布局漂移。
+            (async () => {
+              const ids = Array.isArray(j.ids) ? j.ids.slice(0, 24) : [];
+              if (!ids.length || !mirrorBody) return;
+              try { await Promise.race([(document.fonts && document.fonts.ready) || 1, new Promise((r) => setTimeout(r, 1200))]); } catch (e) {}
+              try {
+                const imgs = [...mirrorBody.querySelectorAll('img')].slice(0, 40);
+                await Promise.race([
+                  Promise.all(imgs.map((im) => im.complete ? 1 : new Promise((r) => {
+                    im.addEventListener('load', r, { once: true }); im.addEventListener('error', r, { once: true }); setTimeout(r, 900);
+                  }))),
+                  new Promise((r) => setTimeout(r, 1000)),
+                ]);
+              } catch (e) {}
+              const samples = [];
+              for (const id of ids) {
+                const el = mirrorIds.get(id);
+                if (!el || !el.getBoundingClientRect) continue;
+                try { const r = el.getBoundingClientRect(); samples.push({ id, w: Math.round(r.width), h: Math.round(r.height) }); } catch (e) {}
+              }
+              try { send({ type: 'fp', seq: j.seq, samples }); } catch (e) {}
+            })();
+          }
           if (j.type === 'pong') { m('mRtt').textContent = Math.round(performance.now() - j.t); }
           if (j.type === 'sstats') {
             // v3 dom 无帧流：服务端指标=下行消息速率（帧语义只属于像素流模式）

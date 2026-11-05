@@ -109,6 +109,8 @@ jobs:
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-enhance.sh
       - name: CSS 代理改写/多源会话/快照去重回归
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-assets.sh
+      - name: 布局指纹对账与保真自动降级回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-fidelity.sh
       - name: 通用性基准（六类业务形态等价断言）
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-generality.sh
       - name: 下拉框节点替换回归
