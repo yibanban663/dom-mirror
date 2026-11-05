@@ -711,7 +711,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         // 管线，曾在此被静默丢弃——源站直连可提交的按钮在镜像内点了没反应
         // （:82 登录实测）。按元素锚转发，服务端对同元素执行等价 el.click()
         if (!e.isTrusted) {
-          try { const aid = idOfMirror(t); console.log('[synthclick] id=' + aid + ' tag=' + (t.tagName || '?')); if (aid !== null) send({ type: 'domclick', id: aid }); } catch (e2) { console.log('[synthclick] err ' + e2); }
+          try { const aid = idOfMirror(t); window.__synthClick = { aid, tag: t.tagName || '?', at: Date.now() }; if (aid !== null) send({ type: 'domclick', id: aid }); } catch (e2) { window.__synthClick = { err: String(e2).slice(0, 80) }; }
         }
       });
       // 指针事件输入管线（点击/拖拽的唯一转发通道）：
