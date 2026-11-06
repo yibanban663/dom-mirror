@@ -1693,10 +1693,17 @@ async function runSession(ws, req, lifecycle) {
   const orgOf = () => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } };
   async function fidelityDowngrade(why) {
     if (mode !== 'dom') return;
-    // v0.80：默认观测模式——只告警日志，不 mark（mark 会触发站点冷却=变相
-    // 自动降级）、不切车道
+    // v0.80：默认观测模式——不切车道、不 mark（mark 会触发站点冷却=变相自动
+    // 降级）；但镜像已判失真时不该放任冻结——dom 内全量重同步重新收敛
+    //（限频 15s；dnd 结构小漂移（<结构阈值）正是靠本通道自愈的，v0.79 由
+    // frame 降级顺带完成，观测模式必须显式补上）
     if (!FIDELITY_DOWNGRADE) {
-      try { logger.log('[fidelity] OBSERVE-ONLY would-downgrade origin=' + orgOf() + ' why=' + why + ' (XY_FIDELITY_DOWNGRADE=1 启用切换)'); } catch (eD) {}
+      const nowOb = Date.now();
+      if (nowOb - (fidelityDowngrade.__lastResync || 0) > 15000) {
+        fidelityDowngrade.__lastResync = nowOb;
+        try { logger.log('[fidelity] OBSERVE resync-dom origin=' + orgOf() + ' why=' + why); } catch (eD) {}
+        startDomMirror().catch(() => {});
+      }
       return;
     }
     const org = (() => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } })();
@@ -2510,11 +2517,12 @@ async function runSession(ws, req, lifecycle) {
           // q85（每秒至多一两帧，带宽无压力，文字/图表必须清晰）；streak≥5 = 真动画
           // 才降半档走 ANIM_SCALE/ANIM_QUALITY（带宽优先）。beacon 实测模糊根因：
           // 仪表盘被误判进真动画档（半分辨率 q50 拉伸 2x）
+          const animHot = animFast && animStreakN >= 5;
           // v0.80：大画布（≥200k px²，beacon 覆盖层 996×600=597k）真动画档
           // 提质 0.75/q70——worker 渲染画布永远走位图，半分辨率 q50 在文字/弧线
           // 上就是"模糊条"本体；带宽代价受既有字节预算门约束
+          //（声明须在 animHot 之后——TDZ：先引用后声明会炸掉整个捕获循环）
           const animBig = animHot && it.w * it.h >= 200000;
-          const animHot = animFast && animStreakN >= 5;
           // v0.72 video fast lane：播放中（帧连续变化 streak≥1）JPEG@ANIM_QUALITY
           // 半分辨率；首帧/静止保持 PNG 全分辨率（海报帧保真）
           const vidFast = it.kind === 'video' && (animStreak.get(sigKey) || 0) >= 1;
