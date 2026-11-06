@@ -34,7 +34,7 @@ docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name
   "$image" timeout 300 node demo/server.js >/dev/null
 docker run --security-opt "seccomp=$repo/docker/seccomp-chromium.json" -d --name "$server_trap" --network "$run_id" --network-alias trap \
   "${proxy_env[@]}" --memory 2g --cpus 2 -e PROD_PRESENTATION=1 -e MAX_SESSIONS=8 \
-  -e ORIGIN_URL=http://127.0.0.1:8077/fidelity.html -e XY_FIDELITY_TRAP=1 \
+  -e ORIGIN_URL=http://127.0.0.1:8077/fidelity.html -e XY_FIDELITY_TRAP=1 -e XY_FIDELITY_DOWNGRADE=1 \
   "$image" timeout 300 node demo/server.js >/dev/null
 for f in fidelity.html img.png; do
   docker cp "$repo/test/fixtures/$f" "$server_ok:/app/protected/$f"

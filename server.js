@@ -348,6 +348,9 @@ for (const x of ALLOWED_ORIGINS) {
 // 事件——10 分钟窗口内 ≥3 次降级的源站，新会话直接以 frame 起步（站点级
 // 兜底，窗口滑出自动恢复）。XY_FIDELITY_OFF=1 整体停用（运维逃生门）。
 const FIDELITY_OFF = process.env.XY_FIDELITY_OFF === '1';
+// v0.80：保真对账默认只观测不降级（dom 是唯一产品车道，frame 仅人工/站点级
+// 兜底——对账失败=告警+记忆，不再自动切 frame）；XY_FIDELITY_DOWNGRADE=1 恢复
+const FIDELITY_DOWNGRADE = process.env.XY_FIDELITY_DOWNGRADE === '1';
 const fidelityStore = createFidelityStore(require('node:path').join(__dirname, 'fidelity-origins.json'));
 const httpBoth = { http: require('http'), https: require('https') };
 const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? httpBoth.https : httpBoth.http;
@@ -1687,8 +1690,22 @@ async function runSession(ws, req, lifecycle) {
       } catch (e) { fpState.pending = false; }
     }, delayMs || 1800);
   }
+  const orgOf = () => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } };
   async function fidelityDowngrade(why) {
     if (mode !== 'dom') return;
+    // v0.80：默认观测模式——不切车道、不 mark（mark 会触发站点冷却=变相自动
+    // 降级）；但镜像已判失真时不该放任冻结——dom 内全量重同步重新收敛
+    //（限频 15s；dnd 结构小漂移（<结构阈值）正是靠本通道自愈的，v0.79 由
+    // frame 降级顺带完成，观测模式必须显式补上）
+    if (!FIDELITY_DOWNGRADE) {
+      const nowOb = Date.now();
+      if (nowOb - (fidelityDowngrade.__lastResync || 0) > 15000) {
+        fidelityDowngrade.__lastResync = nowOb;
+        try { logger.log('[fidelity] OBSERVE resync-dom origin=' + orgOf() + ' why=' + why); } catch (eD) {}
+        startDomMirror().catch(() => {});
+      }
+      return;
+    }
     const org = (() => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } })();
     fidelityStore.mark(org);
     logger.log('[fidelity] downgrade dom->frame origin=' + org + ' why=' + why);
@@ -2449,7 +2466,14 @@ async function runSession(ws, req, lifecycle) {
         }
         const nowMs = Date.now();
         while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
+        // v0.80 诊断：每个位图兜底画布的 opaque 原因一次性记录（why 由
+        // listCanvases 携带：2D 包装器写入的 __xyOpaqueWhy2d / native=未包装）
+        if (!startCanvasWatch.__whyLog) startCanvasWatch.__whyLog = new Set();
         for (const it of list) {
+          if (it.why !== undefined && it.id !== undefined && !startCanvasWatch.__whyLog.has(it.id)) {
+            startCanvasWatch.__whyLog.add(it.id);
+            try { logger.log('[canvas] bitmap-fallback id=' + it.id + ' why=' + it.why); } catch (eL) {}
+          }
           // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
           // （v0.14：键改为节点 id——影子内画布 path 可为 null）
           const sigKey = it.id !== undefined ? it.id : it.path;
@@ -2494,6 +2518,11 @@ async function runSession(ws, req, lifecycle) {
           // 才降半档走 ANIM_SCALE/ANIM_QUALITY（带宽优先）。beacon 实测模糊根因：
           // 仪表盘被误判进真动画档（半分辨率 q50 拉伸 2x）
           const animHot = animFast && animStreakN >= 5;
+          // v0.80：大画布（≥200k px²，beacon 覆盖层 996×600=597k）真动画档
+          // 提质 0.75/q70——worker 渲染画布永远走位图，半分辨率 q50 在文字/弧线
+          // 上就是"模糊条"本体；带宽代价受既有字节预算门约束
+          //（声明须在 animHot 之后——TDZ：先引用后声明会炸掉整个捕获循环）
+          const animBig = animHot && it.w * it.h >= 200000;
           // v0.72 video fast lane：播放中（帧连续变化 streak≥1）JPEG@ANIM_QUALITY
           // 半分辨率；首帧/静止保持 PNG 全分辨率（海报帧保真）
           const vidFast = it.kind === 'video' && (animStreak.get(sigKey) || 0) >= 1;
@@ -2550,8 +2579,8 @@ async function runSession(ws, req, lifecycle) {
             // 保真优先；流量优化由 v0.58 canvas-ops 泄漏修复承担（实测 -50%）
             shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
               format: (animFast || vidFast) ? 'jpeg' : 'png',
-              ...((animFast || vidFast) ? { quality: (animHot || vidFast) ? ANIM_QUALITY : 85 } : {}),
-              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * ((animHot || vidFast) ? ANIM_SCALE : 1) },
+              ...((animFast || vidFast) ? { quality: (animBig || vidFast) ? 70 : ((animHot || vidFast) ? ANIM_QUALITY : 85) } : {}),
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * (animBig ? Math.max(ANIM_SCALE, 0.75) : ((animHot || vidFast) ? ANIM_SCALE : 1)) },
               captureBeyondViewport: true,
             })), 3000, 'canvasShot').catch(() => null);
           }
@@ -2571,7 +2600,7 @@ async function runSession(ws, req, lifecycle) {
             if (usedData) {
               const n = (dataUrlBlank.get(sigKey) || 0) + 1;
               dataUrlBlank.set(sigKey, n);
-              if (n >= 2 && rafActive) { glSticky.add(sigKey); dataUrlBlank.delete(sigKey); try { logger.log('[canvas] dataUrl stale x' + n + ' + rAF active -> screenshot mode id=' + sigKey); } catch (e) {} }
+              if (n >= 2 && rafActive) { glSticky.add(sigKey); dataUrlBlank.delete(sigKey); try { logger.log('[canvas] dataUrl stale x' + n + ' + rAF active -> screenshot mode id=' + sigKey + ' why=' + (it.why || '-')); } catch (e) {} }
             } else dataUrlBlank.delete(sigKey);
             continue;
           }
@@ -3225,7 +3254,7 @@ async function runSession(ws, req, lifecycle) {
     // 直接 frame 起步（每页先碎一次再降级对用户是重复伤害）
     if (mode === 'dom' && !FIDELITY_OFF) {
       try {
-        if (fidelityStore.hot(new URL(sessionOrigin).origin)) {
+        if (FIDELITY_DOWNGRADE && fidelityStore.hot(new URL(sessionOrigin).origin)) {
           mode = 'frame';
           logger.log('[fidelity] origin cooldown -> frame ' + sessionOrigin);
         }
