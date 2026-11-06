@@ -200,3 +200,20 @@
 - **诊断教训三连**: 探针 ws.off 摘掉 pong handler 后忘重挂(三轮假阴性 -1);
   8099 端口被两个源站脚本混用(环境串扰致回归假红); 服务端"no pong 15s"
   是 WS 协议层 ping/pong 帧(ws 库自动应答)而非应用层消息。
+
+---
+
+## 第 9 轮:批次 16——限流合法性边界 + 会话生命周期稳定性
+
+- **A) 合法负载回归**: 30s 真实访客行为频率(mouse 589 + scroll 59 + domclick 29
+  + navigate 1)→ **RATE 零误伤** ✓——批次 15 限流参数对正常交互完全透明
+- **B) 会话生命周期 × 6**: 连接→交互→销毁循环 6/6 成功, RSS [87,87,88,89,90,
+  91,91,91] 末段平稳, 总增 4MB → **无慢性泄漏** ✓(pool context/快照缓存/
+  会话表释放均正常回收)
+- **顺带审计确认防线完好**: 下载管线(DOWNLOAD_MAX 进度中取消 + stat 前置 +
+  readFile 后双检)、origin-asset-cache(shouldStore 裁决 + nosniff)、
+  static 遍历(Node parser 400 拦死)、xframe SSRF(crossOriginFrameOrigins
+  静态白名单 + /api/sites token 闸)
+- **工程教训**: bash `cd X && 启动 & echo pid` 的 & 把 cd 连带后台化(主 shell
+  未 cd)——PID 文件写错目录、探针 RSS 采错进程; demo 环境验证必须
+  lsof 端口定位而非 PID 文件
