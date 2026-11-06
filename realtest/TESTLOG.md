@@ -155,3 +155,24 @@
   观察项: headless 合成点击(a.click)未引发源站导航(元素锚转发链路,
   既有行为, 与本次修复无关)——真机点击路径此前批次(v2ex/runoob)实测正常。
 - 全量 npm test 82/82;npm run check 通过。
+
+---
+
+## 第 7 轮:导航回流冻结 bug 的诊断与修复(红绿闭环)
+
+- **现象**: 点击镜像内链接 → 源站导航成功(源站日志 GET /page2)→ 镜像冻结旧页;
+  合成点击路径 domclick→find→el.click 全链路通;framenavigated 触发、门控全过;
+  location×2 + dom-snapshot×2 到达 client——但镜像不更新, pageerror=
+  `TypeError: Cannot read properties of null (reading 'replace')` at buildMirror css2。
+- **根因链**: 源站无样式表 → 首条快照 css=''(空串)→ client `if (css) lastCss=css`
+  的 falsy 判断把空样式表当"没有 css"丢弃 → lastCss 保持 null → 导航后服务端
+  cssSame 省略字段 → client 回退 lastCss=null → buildMirror(null).css.replace 抛
+  TypeError → 整树重建中断 → 镜像冻结旧页(任何"点击导航"体感失效的直接原因)。
+- **修复**(client/index.html 两处):
+  ① `if (css != null) lastCss = css`——空串是合法缓存值, 与服务端 cssSame
+  省略语义(省略=与上次相同)严格对齐;
+  ② buildMirror 纵深 `(css || '').replace`——任何漏网路径不抛错中断重建。
+- **红绿**: 修复前镜像冻结旧页+pageerror(红, 多轮复现)→ 修复后 PAGE2-MARK
+  渲染 ✓ + active 进度条 ✓ + 零 pageerror ✓(绿)。
+- 诊断方法沉淀: evaluateOnNewDocument 包装 WebSocket 记录 client 实收消息
+  (区分"服务端没发"vs"client 收了没处理"), pageerror stack 定位抛点。

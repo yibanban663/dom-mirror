@@ -701,7 +701,9 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     // 选择器映射：:root/html/body（含复合选择器 html[data-theme]、html.foo 等）→ .xy-body
     // （Shadow DOM 内 :root/html 匹配不到镜像根；复合形式不映射则按属性切换的主题全部失配，
     // 实测受保护站点 data-theme 亮色变量整组失效、输入框白底变暗——踩过）
-    const css2 = css
+    // 纵深：css 为 null/undefined（任何缓存回退漏网路径）按空样式表处理，
+    // 不得抛错中断整树重建（同上：导航回流冻结根因的兜底防线）
+    const css2 = (css || '')
       .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
       .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
       .replace(/(^|[\s,{}>+~])body(?=[\[{.,:\s)])/g, '$1.xy-body');
@@ -1919,7 +1921,10 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             Promise.all(preload).then(async () => {
               if (ws !== socket || socket.readyState !== 1 || serial !== snapshotSerial) return;
               if (tiles.length && (!tiles[0].img || !tiles[0].img.complete)) return; // 会话已切换，丢弃过期快照
-              if (css) lastCss = css;
+              // null/undefined 才不更新缓存——空串是合法值（无样式表页面的 css=''），
+              // 丢弃它会让下次服务端 cssSame 省略时回退到 null → buildMirror(null)
+              // 抛 TypeError → 导航回流快照渲染中断、镜像冻结旧页（实测根因）
+              if (css != null) lastCss = css;
               buildMirror(css, j.html, j.docClass, j.docAttrs, j.bodyId, j.bodyStyle);
               // v0.75 语义恢复：快照就绪=镜像已构建，online/交互通道立即恢复。
               // v0.76 首版曾把 import 等待插在 snapshotReady 之前——慢环境下
