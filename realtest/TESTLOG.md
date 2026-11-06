@@ -238,3 +238,18 @@
   限流与 idle 复活/resume 交互无害; >128B ping 走队列=攻击者自损。
   **观察项**: 限流检查在出队时(队列前有慢命令时 RATE 反馈被延迟)——
   恶意场景无影响, 合法用户不触发, 记录不改(YAGNI)。
+
+---
+
+## 第 11 轮:整合审查——rebase 到维护者 v0.77(main 已前进)
+
+- **风险识别**: origin/main 前进至 babcde3(v0.76 css 直通改写 + v0.77 beacon
+  三联症), 双方同改 client/index.html + server.js——维护者 merge 时会踩冲突。
+- **rebase 干跑 → 实解**: 14 提交仅 1 处代码冲突——代理响应体上限(5fc1c0a)
+  × v0.76 css 改写入库(同 end 块)。语义合并: 超限检查优先(over→502 不进
+  改写不入库) + css 改写其次 + 缓存 key 采维护者 cacheKey——两修复正交相加。
+- **验证**: npm test 82/82(含 proxy-asset-limit 在新 main 依然绿)、check 通过、
+  语义合并块在位、force-with-lease 推送更新 PR #68。
+- **语义交集观察**: c96f3a0(维护者)修 domclick 在 snapshotReady 前被丢——
+  与我们 domclick 软组限流正交(限流在命令层, 丢窗修复在 client 就绪层);
+  v0.77 beacon 重构区域(快车道/双缓冲)与我们 ping/fp 旁路无代码交集。
