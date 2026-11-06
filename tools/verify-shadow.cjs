@@ -108,12 +108,26 @@ async function main() {
     results.steps.push({ step: 'late-shadow-host', pass: true });
 
     // 影子内 canvas 捕获（递归穿透 + 按 id 回填 img）
-    await page.waitForFunction(() => {
+    // v0.78 早注入+journal：影子内 canvas 走指令流保留真画布（历史 journal
+    // 重放）；位图 img 兜底仅在流不可用（预算/溢出）时出现——两者皆可，
+    // 流画布须实际有内容（采样非空白）
+    const shadowCanvasOk = await page.waitForFunction(() => {
       const b = document.querySelector('#mirrorHost').shadowRoot.querySelector('.xy-body');
       const c1 = b.querySelector('#c1');
-      const img = c1 && c1.shadowRoot ? c1.shadowRoot.querySelector('img[data-xy-canvas]') : null;
-      return img && img.src && img.src.startsWith('data:image/png');
-    }, { timeout: 15000 });
+      const root2 = c1 && c1.shadowRoot;
+      if (!root2) return false;
+      const img = root2.querySelector('img[data-xy-canvas]');
+      if (img && img.src && img.src.startsWith('data:image/png')) return true;
+      const cv = root2.querySelector('canvas[data-xy-canvas-stream]');
+      if (!cv) return false;
+      try {
+        const g = cv.getContext('2d');
+        const d = g.getImageData(20, 10, 40, 10).data;
+        for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 60) return true;
+      } catch (e) {}
+      return false;
+    }, { timeout: 15000, polling: 500 }).then(() => true).catch(() => false);
+    if (!shadowCanvasOk) throw new Error('shadow canvas content missing (stream or bitmap)');
     results.steps.push({ step: 'shadow-canvas', pass: true });
 
     results.pass = results.steps.every(s => s.pass);
