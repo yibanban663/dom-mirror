@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>gl-stream</title>
+<style>body{font:14px system-ui;margin:16px;background:#202830;color:#eef}canvas{border:1px solid #456}</style></head>
+<body>
+<div>WEBGL GLOBE-MIMIC（旋转纹理球 + 轨道点）</div>
+<canvas id="glc" width="480" height="360" style="width:480px;height:360px"></canvas>
+<div id="report">report</div>
+<script>
+(function () {
+  var cv = document.getElementById('glc');
+  var gl = cv.getContext('webgl', { antialias: true, preserveDrawingBuffer: true });
+  if (!gl) { document.getElementById('report').textContent = 'no-webgl'; return; }
+  var VS = 'attribute vec3 p;attribute vec2 uv;uniform mat4 mvp;varying vec2 v;' +
+    'void main(){v=uv;gl_Position=mvp*vec4(p,1.0);}';
+  var FS = 'precision mediump float;varying vec2 v;uniform sampler2D tex;' +
+    'void main(){vec2 c=v-0.5;float r=length(c);vec3 col=mix(vec3(0.08,0.22,0.45),vec3(0.35,0.75,1.0),smoothstep(0.5,0.0,r));' +
+    'col+=step(0.97,abs(sin(v.y*28.0)))*vec3(0.1,0.25,0.4);gl_FragColor=vec4(col,1.0);}';
+  function sh(t, s) { var x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); return x; }
+  var vs = sh(gl.VERTEX_SHADER, VS), fs = sh(gl.FRAGMENT_SHADER, FS);
+  var pr = gl.createProgram();
+  gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
+  // 球网格
+  var rows = 24, cols = 36, pos = [], uvs = [], idx = [];
+  for (var r = 0; r <= rows; r++) for (var c = 0; c <= cols; c++) {
+    var th = r / rows * Math.PI, ph = c / cols * 2 * Math.PI;
+    pos.push(Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph));
+    uvs.push(c / cols, r / rows);
+  }
+  for (var r2 = 0; r2 < rows; r2++) for (var c2 = 0; c2 < cols; c2++) {
+    var a = r2 * (cols + 1) + c2, b = a + cols + 1;
+    idx.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  function buf(target, data) { var b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b; }
+  var bv = buf(gl.ARRAY_BUFFER, new Float32Array(pos));
+  var bu = buf(gl.ARRAY_BUFFER, new Float32Array(uvs));
+  var bi = buf(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx));
+  var tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  var tc = document.createElement('canvas'); tc.width = 64; tc.height = 64;
+  var tg = tc.getContext('2d'); tg.fillStyle = '#135'; tg.fillRect(0, 0, 64, 64);
+  tg.fillStyle = '#6cf'; for (var i = 0; i < 60; i++) tg.fillRect(Math.random() * 64 | 0, Math.random() * 64 | 0, 2, 2);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tc);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(0.05, 0.08, 0.14, 1);
+  var uMvp = gl.getUniformLocation(pr, 'mvp');
+  function mat4(ry, tilt) {
+    var cy = Math.cos(ry), sy = Math.sin(ry), ct = Math.cos(tilt), st = Math.sin(tilt), s = 0.62;
+    // column-major R = rotX(tilt)*rotY(ry)*scale(s), ortho clip = R*p
+    return new Float32Array([
+      cy * s, 0, -sy * s, 0,
+      sy * st * s, ct * s, cy * st * s, 0,
+      sy * ct * s, -st * s, cy * ct * s, 0,
+      0, 0, 0, 1
+    ]);
+  }
+  var frames = 0;
+  (function loop() {
+    frames++;
+    var t = performance.now() / 1000;
+    gl.viewport(0, 0, 480, 360);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(pr);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bv);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bu);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(1);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bi);
+    gl.uniformMatrix4fv(uMvp, false, mat4(t * 0.7, 0.42));
+    gl.drawElements(gl.TRIANGLES, idx.length, gl.UNSIGNED_SHORT, 0);
+    if (frames % 30 === 0) document.getElementById('report').textContent = 'REPORT:frames=' + frames;
+    requestAnimationFrame(loop);
+  })();
+})();
+</script></body></html>

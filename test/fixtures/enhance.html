@@ -20,7 +20,10 @@
   sheet.replaceSync('#target{background-color:#51cf66}');
   document.adoptedStyleSheets = [sheet];
   const flip = () => sheet.replaceSync('#target{background-color:#ff6b6b}');
-  const waitXy = () => { if (window.__xy) setTimeout(flip, 1500); else setTimeout(waitXy, 200); };
+  // v0.78 早注入：__xy 自文档起点即存在（原时机假设失效，warm 期即翻红）
+  // ——改绑首次快照信号 __xyCssDiag（snapshotReal 采集 css 后写入），
+  // 保证访客首帧仍为绿
+  const waitXy = () => { if (window.__xyCssDiag) setTimeout(flip, 1500); else setTimeout(waitXy, 200); };
   waitXy();
 </script>
 </body>

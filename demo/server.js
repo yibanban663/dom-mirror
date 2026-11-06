@@ -60,6 +60,8 @@ async function startDemo(createMirror = require('..').createMirror) {
       // 库层默认仍为 true（宿主显式关）；运行面显式开是运维自觉的 WAF 姿态
       obfuscate: process.env.OBFUSCATE === '1',
       canvasStream: process.env.CANVAS_STREAM !== '0',
+      glOpsBudget: process.env.XY_GL_OPS_BUDGET !== undefined ? Number(process.env.XY_GL_OPS_BUDGET) : 2000000,
+      glStream: process.env.XY_GL_STREAM === '1',
       elbit: process.env.XY_ELBIT !== '0',
       chromiumSandbox: process.env.CHROMIUM_SANDBOX !== '0',
       // v0.38 租户制：并发会话共享常驻 Chromium（BrowserContext 隔离）——池默认

@@ -42,8 +42,9 @@ async function main() {
     // 镜像中 canvas 元素不带原 id（位图通道替换为 img；流通道保留 canvas）：
     // 按引擎标记定位。fixture = 1 个位图画布 + 1 个点击后创建的画布
     await page.waitForFunction(() => {
+      // v0.78：helpers 早注入+journal 后，加载期画布也走指令流（不再必现位图 img）
       const b = document.querySelector('#mirrorHost')?.shadowRoot?.querySelector('.xy-body');
-      return b && b.querySelector('#mk') && b.querySelector('img[data-xy-canvas]');
+      return b && b.querySelector('#mk');
     }, { timeout: 20000 });
     await page.click('#mirrorHost >>> #mk');
     if (expectStream) {
@@ -62,7 +63,9 @@ async function main() {
       const b = document.querySelector('#mirrorHost').shadowRoot.querySelector('.xy-body');
       if (stream) {
         const c = b.querySelector('canvas[data-xy-canvas-stream]');
-        return { live: c ? 'CANVAS' : 'none', legacy: b.querySelector('img[data-xy-canvas]') ? 'IMG' : 'none', w: c ? c.width : 0, h: c ? c.height : 0 };
+        // v0.78：legacy（加载期创建）现也走流（早注入+journal 全量重放）；
+        // 位图兜底由 heavy 预算翻转用例覆盖
+        return { live: c ? 'CANVAS' : 'none', legacy: b.querySelector('canvas[data-xy-canvas-stream], img[data-xy-canvas]') ? 'CANVAS' : 'none', w: c ? c.width : 0, h: c ? c.height : 0 };
       }
       const imgs = b.querySelectorAll('img[data-xy-canvas]');
       return { live: imgs.length >= 2 ? 'IMG' : 'none', legacy: imgs.length >= 1 ? 'IMG' : 'none' };
@@ -70,7 +73,7 @@ async function main() {
     results.kind = kind;
     if (expectStream && kind.live !== 'CANVAS') throw new Error('live canvas should stay CANVAS in stream mode, got ' + kind.live);
     if (!expectStream && kind.live !== 'IMG') throw new Error('live canvas should be IMG in bitmap mode, got ' + kind.live);
-    if (kind.legacy !== 'IMG') throw new Error('legacy canvas should be IMG (bitmap fallback), got ' + kind.legacy);
+    if (kind.legacy === 'none') throw new Error('legacy canvas missing entirely');
     results.steps = (results.steps || []).concat(['kinds:' + kind.live + '/' + kind.legacy]);
 
     // v0.29 指令流字节预算：#mkheavy 画布持续 putImageData 大块数据（单批远超
@@ -83,7 +86,7 @@ async function main() {
       // img[data-xy-canvas]（流模式基线只有 legacy 1 个，heavy 到位后 ≥2）
       const heavy = await page.waitForFunction(() => {
         const b = document.querySelector('#mirrorHost')?.shadowRoot?.querySelector('.xy-body');
-        return b && b.querySelectorAll('img[data-xy-canvas]').length >= 2;
+        return b && b.querySelectorAll('img[data-xy-canvas]').length >= 1;
       }, { timeout: 15000 }).then(() => true).catch(() => false);
       results.heavyBudgetFlip = heavy;
       if (!heavy) throw new Error('heavy canvas should flip to bitmap (img) after ops budget exceeded');
@@ -94,7 +97,9 @@ async function main() {
     // 首批指令可能晚于 canvas 元素插入到达：带重试（最多 ~3s）等首批重放落笔。
     const sample = () => page.evaluate((stream) => {
       const b = document.querySelector('#mirrorHost').shadowRoot.querySelector('.xy-body');
-      const el = stream ? b.querySelector('canvas[data-xy-canvas-stream]') : b.querySelectorAll('img[data-xy-canvas]')[1];
+      // v0.78：legacy 也走流后，querySelector 首个命中是 legacy(220x40)——
+      // 采样坐标按 live(320x120) 设计，必须选 320 宽的流画布
+      const el = stream ? [...b.querySelectorAll('canvas[data-xy-canvas-stream]')].find(c => c.width === 320) : b.querySelectorAll('img[data-xy-canvas]')[1];
       const off = document.createElement('canvas');
       off.width = 320; off.height = 120;
       const c = off.getContext('2d');

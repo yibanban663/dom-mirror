@@ -400,6 +400,11 @@
   window.addEventListener('pagehide', () => {
     if (!lastSnapData) return;
     try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
+    // v0.78 草稿持久化：F5 尾键在途竞态根治——在途 input 事件在断连瞬间丢失
+    // 时，服务端 live 页与快照/重放全部缺尾且无自愈源；客户端 lastTyped 是
+    // 用户输入的第一真相，随快照一并落盘，重建后回灌（服务端补丁为权威，
+    // 草稿只保住在途输入的视觉真相；后续输入/同步自然对账）
+    try { sessionStorage.setItem('xyDraft', JSON.stringify({ at: Date.now(), d: [...lastTyped.entries()].slice(0, 32) })); } catch (e2) {}
   });
   // 投机本地回显的当前孔（位图原件保存在 __xyLocalHole.saved，本地即时复原）
   function closeLocalHole() {
@@ -423,6 +428,10 @@
   // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
   // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
   const lastTyped = new Map();
+  // v0.78：F5 前的在途输入草稿（pagehide 落盘；60s 有效窗）
+  const __xyDraftInit = (() => { try { const d = JSON.parse(sessionStorage.getItem('xyDraft') || 'null'); if (d && d.d && Date.now() - (d.at || 0) < 60000) return new Map(d.d); } catch (e) {} return new Map(); })();
+  window.__xyDrafts = __xyDraftInit;
+  setTimeout(() => { try { sessionStorage.removeItem('xyDraft'); } catch (e) {} }, 15000);
   let viewW = 1280, viewH = 800;
   // v0.13 文件传输：上行分块状态机 + 下行装配缓冲（供回归/诊断观察）
   window.__xyUploads = [];
@@ -596,6 +605,86 @@ function hoistImportFonts(css) {
     } catch (e) { finish(); }
   });
 }
+// v0.78 WebGL 指令流重放：镜像真实画布 + 真实 GL 上下文按序重放。
+// '$$slot' 尾参 = 对象创建槽（shader/program/buffer/texture/location），
+// '@oid' = 对象引用，{__t,d} = typed array（base64），{__img} = 图源（异步解码）
+const glStreams = new WeakMap();
+function glStreamFor(el, type) {
+  let st = glStreams.get(el);
+  if (!st || st.glType !== type) {
+    const g = el.getContext(type);
+    st = { gl: g, glType: type, objs: new Map(), imgs: new Map(), queue: [], busy: false };
+    glStreams.set(el, st);
+  }
+  return st;
+}
+function glImg(st, src) {
+  let p = st.imgs.get(src);
+  if (!p) {
+    p = new Promise((res) => {
+      const im = new Image();
+      im.onload = im.onerror = () => res(im);
+      im.src = src;
+    });
+    st.imgs.set(src, p);
+  }
+  return p;
+}
+async function replayGlOps(st, ops, reset) {
+  if (reset) { st.objs.clear(); st.queue = []; }
+  for (const op of ops) st.queue.push(op);
+  if (st.busy) return;
+  st.busy = true;
+  const g = st.gl;
+  try {
+    while (st.queue.length) {
+      const op = st.queue.shift();
+      try {
+        const m = op[0];
+        let args = op.slice(1);
+        let slot = null;
+        if (args.length && typeof args[args.length - 1] === 'string' && args[args.length - 1].indexOf('$$') === 0) {
+          slot = args[args.length - 1];
+          args = args.slice(0, -1);
+        }
+        const dargs = [];
+        let hasImg = false;
+        for (let i = 0; i < args.length; i++) {
+          const v = args[i];
+          if (v === null || v === undefined) { dargs.push(v); continue; }
+          if (typeof v === 'object') {
+            if (v.__t) {
+              const bin = atob(v.d);
+              const u8 = new Uint8Array(bin.length);
+              for (let j = 0; j < bin.length; j++) u8[j] = bin.charCodeAt(j);
+              const C = { f32: Float32Array, i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f64: Float64Array }[v.__t];
+              dargs.push(v.__t === 'ab' ? u8.buffer : new C(u8.buffer, u8.byteOffset, Math.floor(u8.byteLength / C.BYTES_PER_ELEMENT)));
+              continue;
+            }
+            if (v.__img) { dargs.push(await glImg(st, v.__img)); hasImg = true; continue; }
+          }
+          // v0.78 键对齐：引用编码 '@o2'，创建槽存储键 '$$o2'——查表须还原槽键
+          //（此前直查 '@o2' 永远 miss → useProgram(null)=INVALID_OPERATION 静默，
+          // 一切带对象引用的指令全部无效）
+          if (typeof v === 'string' && v.charAt(0) === '@' && v.charAt(1) === 'o') { dargs.push(st.objs.get('$$' + v.slice(1)) || null); continue; }
+          dargs.push(v);
+        }
+        const res = g[m] ? g[m].apply(g, dargs) : null;
+        if (slot) st.objs.set(slot, res);
+        // v0.78 布局对齐：按服务端布局表强制 bindAttribLocation 后重链
+        if (m === '__xyAttribs') {
+          try {
+            const prog = dargs[0];
+            for (const pair of (dargs[1] || [])) { try { g.bindAttribLocation(prog, pair[1], pair[0]); } catch (eB) {} }
+            try { g.linkProgram(prog); } catch (eB2) {}
+          } catch (eB3) {}
+        }
+        if (hasImg && g.generateMipmap) { try { /* 纹理上传后 mip 由后续指令处理 */ } catch (e2) {} }
+      } catch (e3) {}
+    }
+  } finally { st.busy = false; }
+}
+
 function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     const host = document.getElementById('mirrorHost');
     if (!host.shadowRoot) mirrorRoot = host.attachShadow({ mode: 'open' });
@@ -662,6 +751,15 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     if (bodyStyle && mirrorBody) { try { mirrorBody.style.cssText += ';' + bodyStyle; } catch (e) {} }
     bodyId = (typeof newBodyId === 'number' && Number.isFinite(newBodyId)) ? newBodyId : 1;
     mirrorIds.clear();
+    // v0.78：草稿回灌——重建（F5 缓存/server 重放/全量重拍）后按 id 恢复用户
+    // 在途输入（60s 内有效；仅补值不派事件，服务端权威不被打断）
+    try {
+      const dr = window.__xyDrafts;
+      if (dr && dr.size) for (const [did2, dval] of dr.entries()) {
+        const el2 = mirrorIds.get(did2);
+        if (el2 && (el2.tagName === 'INPUT' || el2.tagName === 'TEXTAREA') && typeof dval === 'string' && dval && el2.value !== dval && dval.length >= el2.value.length) el2.value = dval;
+      }
+    } catch (eD) {}
     // v0.47 原子渲染收尾：全部内容（HTML+CSS+图标+位图）就绪，一次性显示
 
     canvasStreams.clear();
@@ -1824,6 +1922,11 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               if (nowSnapSave - lastSnapSaveAt > 1500) {
                 lastSnapSaveAt = nowSnapSave;
                 try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
+    // v0.78 草稿持久化：F5 尾键在途竞态根治——在途 input 事件在断连瞬间丢失
+    // 时，服务端 live 页与快照/重放全部缺尾且无自愈源；客户端 lastTyped 是
+    // 用户输入的第一真相，随快照一并落盘，重建后回灌（服务端补丁为权威，
+    // 草稿只保住在途输入的视觉真相；后续输入/同步自然对账）
+    try { sessionStorage.setItem('xyDraft', JSON.stringify({ at: Date.now(), d: [...lastTyped.entries()].slice(0, 32) })); } catch (e2) {}
               }
               const restoredScroll = document.getElementById('mirrorScroll');
               restoredScroll.__xySync = true;
@@ -1987,12 +2090,15 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               for (const b of (j.batches || [])) {
                 const el = mirrorFind(b.id);
                 if (!el || el.tagName !== 'CANVAS') continue;
+                // v0.78：WebGL 指令流批次——真实 GL 上下文重放（reset=资源 journal 重建）
+                if (b.gl) { try { replayGlOps(glStreamFor(el, b.gl), b.ops || [], !!b.reset); } catch (eG) {} continue; }
                 let st = canvasStreams.get(el);
                 if (!st) { st = { ring: [], grads: { __n: 0 }, imgs: {}, applied: 0, ctx: el.getContext('2d') }; canvasStreams.set(el, st); }
-                const fromReset = !!b.reset && !st.resetSeen;
-                if (b.reset) {
-                  if (!st.resetSeen) { st.ring = []; st.grads = { __n: 0 }; st.applied = 0; st.resetSeen = true; }
-                }
+                // v0.78：reset 批恒清环重放（服务端 journal 全量语义——重臂的
+                // 每次 reset 都携带完整历史；旧 resetSeen 单次守卫会造成二次
+                // reset 时 journal 追加重放 = 叠加伪影）
+                const fromReset = !!b.reset;
+                if (b.reset) { st.ring = []; st.grads = { __n: 0 }; st.applied = 0; st.resetSeen = true; }
                 for (const op of (b.ops || [])) st.ring.push(op);
                 if (st.ring.length > 1024) st.ring.splice(0, st.ring.length - 1024);
                 replayCanvasOps(st, fromReset);

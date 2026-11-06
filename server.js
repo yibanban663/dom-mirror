@@ -106,6 +106,7 @@ const originAssetCache = config.originAssetCacheMb > 0
   ? createOriginAssetCache({ maxBytes: config.originAssetCacheMb * 1024 * 1024, defaultTtlMs: config.originAssetCacheTtl })
   : null;
 const warmPages = createWarmPageManager({
+    helpers: (origin) => { try { return pageHelpersFor(origin); } catch (e) { return null; } },
   browserPool, warmup: config.sessionWarmup, ttlMs: config.sessionWarmupTtl, requestAllowed, logger,
   // v0.32.5 底色预热：热页就绪即采样回填注入缓存——服务重启后第一访也零白/黑闪
   onReady: (entry) => {
@@ -1298,12 +1299,11 @@ async function runSession(ws, req, lifecycle) {
             const v = fidelityJudge(srvFp.samples, cmap, fpState.dims, {
               trap: process.env.XY_FIDELITY_TRAP === '1',
             });
-            const hInfo = ((Number.isFinite(srvFp.docH) ? srvFp.docH : 0) + '/' + ((Number.isFinite(m.dh) && m.dh > 0) ? m.dh : 0));
             const match = v.match, judged = v.judged;
             if (!judged) break;
             if (judged < FIDELITY_MIN_JUDGED) { logger.log('[fidelity] skip busy (judged=' + judged + ' unstable=' + v.unstable + ')'); fpState.fails = 0; break; }
             if (match / judged >= FIDELITY_PASS) {
-              logger.log('[fidelity] layout ok ' + match + '/' + judged + ' h=' + hInfo + (v.unstable ? ' (unstable ' + v.unstable + ')' : ''));
+              logger.log('[fidelity] layout ok ' + match + '/' + judged + (v.unstable ? ' (unstable ' + v.unstable + ')' : ''));
               fpState.fails = 0;
               // v0.76 持续对账：静默会话 45s 后再抽查一轮（新快照/降级/断开重置
               // fpState，链条自然断开；SPA 路由切换后的晚到碎裂由此覆盖）
@@ -1311,7 +1311,7 @@ async function runSession(ws, req, lifecycle) {
               break;
             }
             fpState.fails++;
-            logger.log('[fidelity] layout mismatch ' + match + '/' + judged + ' h=' + hInfo + ' (fail #' + fpState.fails + ')');
+            logger.log('[fidelity] layout mismatch ' + match + '/' + judged + ' (fail #' + fpState.fails + ')');
             if (fpState.fails >= 2) {
               const whyFp = 'layout ' + match + '/' + judged;
               fpState = null;
@@ -1365,7 +1365,6 @@ async function runSession(ws, req, lifecycle) {
             await input.mouse(page, cdp, m);
             break;
           case 'domclick': {
-            try { logger.log('[dbg] domclick id=' + m.id); } catch (e3) {}
             // 合成点击等价转发：客户端 el.click() 无指针手势，服务端对同锚点
             // 元素执行 el.click()——与源站直连的程序化点击同语义
             noteInput();
@@ -2846,6 +2845,11 @@ async function runSession(ws, req, lifecycle) {
         }, true);
       };
       if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(winOpenOverride);
+      // v0.78：helpers 同样早注册——此前仅导航后 page.evaluate 补注，页面脚本
+      // 先于注入跑（hasXy=0 实测），canvas getContext 全部错过指令流包装，
+      // 2D 靠 warm 侥幸、WebGL 直接全量位图（beacon 地球模糊的时序根因）。
+      // 脚本自带幂等守卫，双注无害
+      if (typeof page.evaluateOnNewDocument === 'function') { try { await page.evaluateOnNewDocument(sessHelpers); } catch (eH) {} }
       try { await page.evaluate(winOpenOverride); } catch (e) {}
       page.on('request', (r) => {
         // v0.45 P4 修复：API 文档拦截必须在 requestAllowed 之前——
