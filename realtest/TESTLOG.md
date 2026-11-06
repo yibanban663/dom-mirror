@@ -176,3 +176,27 @@
   渲染 ✓ + active 进度条 ✓ + 零 pageerror ✓(绿)。
 - 诊断方法沉淀: evaluateOnNewDocument 包装 WebSocket 记录 client 实收消息
   (区分"服务端没发"vs"client 收了没处理"), pageerror stack 定位抛点。
+
+---
+
+## 第 8 轮:会话内命令零限流的发现与修复(第一性审查批次 15)
+
+- **审查路径**: 信任边界已审面之外的状态生命周期——static 遍历(Node parser 层
+  400 拦死, 不可达, 记纵深建议)/ xframe SSRF 合谋链(crossOriginFrameOrigins
+  静态白名单 + /api/sites token 闸, 双闸封死)/ pool context close 5s 超时
+  慢性泄漏(记录待修)——最终命中: wsRateLimiter 只限建连, **会话内命令零限流**。
+- **红实证**: 200 条合法 mode 洪发 → cmdChain 200 次全量快照串行(单次 ~2.2s),
+  基线 ping 1ms → 洪发后排队 20s+(放大面: 6KB 输入 → 数分钟网关满负荷);
+  enqueue 无积压上限(闭包持 raw 无界堆积)。
+- **修复三件套**(server.js):
+  ① 重命令滑窗限流——硬组 mode/navigate/history 3 条/2s, 软组 repaint/repair/
+  fp/domclick 12 条/2s, 超出丢弃+RATE 错误; 轻命令(ping/mouse/scroll)不限;
+  ② enqueue 背压 pendingCmds≥400 丢弃(防无界堆积);
+  ③ **ping 旁路**——活性探测不入串行链: 原实现积压时 pong 迟到会触发服务端
+  15s 协议层活性检查误杀健康会话(积压→判死, 自我强化)。
+- **绿实证**: 200 mode → 4 次快照(handleCommand 级, 削减 97.7%)+ 188 条 RATE
+  即时反馈 + 洪发后 ping 1ms(旁路)+ 会话存活; 正常导航回归(nav-regression)
+  通过; npm test 82/82。
+- **诊断教训三连**: 探针 ws.off 摘掉 pong handler 后忘重挂(三轮假阴性 -1);
+  8099 端口被两个源站脚本混用(环境串扰致回归假红); 服务端"no pong 15s"
+  是 WS 协议层 ping/pong 帧(ws 库自动应答)而非应用层消息。

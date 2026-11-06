@@ -1174,6 +1174,22 @@ async function runSession(ws, req, lifecycle) {
   const queue = [];
   let dispatchReady = false;
   const handleCommand = async (m) => {
+    // 重命令滑窗限流：mode/repaint/navigate/history 每条触发全量快照/全页截图/
+    // 回源导航（CPU/带宽放大面），repair/fp 触发页内遍历。实测 200 条合法 mode
+    // 洪发把 cmdChain 占死 20s+（基线 ping 1ms → 20s 无响应）——单连接可用性剥夺。
+    // 分组限频：会话级滑窗，超出丢弃并回 RATE 错误；轻命令（ping/mouse/scroll）不受限
+    if (m && typeof m === 'object') {
+      const now = Date.now();
+      if (HEAVY_CMDS_HARD.has(m.type)) {
+        heavyHardRing = heavyHardRing.filter((t2) => now - t2 < HEAVY_WIN_MS);
+        if (heavyHardRing.length >= HEAVY_HARD_MAX) { sendJson({ type: 'error', code: 'RATE', msg: '操作过于频繁，请稍后再试' }); return; }
+        heavyHardRing.push(now);
+      } else if (HEAVY_CMDS_SOFT.has(m.type)) {
+        heavySoftRing = heavySoftRing.filter((t2) => now - t2 < HEAVY_WIN_MS);
+        if (heavySoftRing.length >= HEAVY_SOFT_MAX) { sendJson({ type: 'error', code: 'RATE', msg: '操作过于频繁，请稍后再试' }); return; }
+        heavySoftRing.push(now);
+      }
+    }
     // v0.39 空闲逐出后的透明复活：除 ping 外的任何命令先复活（客户端周期
     // ping 每 10s 一次——若触发复活则逐出永不生效）
     if (pageEvicted && m && m.type !== 'ping') {
@@ -1541,9 +1557,33 @@ async function runSession(ws, req, lifecycle) {
   };
   let snapReplay = null; // v0.52 快照重放缓存（本会话最近一次全量帧+DOM签名）
   let lastSnapDomSig = null; // v0.55 导航重拍链门控：最近一次全量快照完成时的 DOM 签名
+  // 重命令限流参数（见 handleCommand 开头注释）：硬组=重资源回源/重建，软组=页内遍历
+  const HEAVY_WIN_MS = 2000, HEAVY_HARD_MAX = 3, HEAVY_SOFT_MAX = 12;
+  const HEAVY_CMDS_HARD = new Set(['mode', 'navigate', 'history']);
+  const HEAVY_CMDS_SOFT = new Set(['repaint', 'repair', 'fp', 'domclick']);
+  let heavyHardRing = [], heavySoftRing = [];
   let cmdChain = Promise.resolve();
-  const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
-  ws.on('message', (raw) => { lastAliveAt = Date.now(); if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
+  // 命令队列背压：串行链积压上限——洪发时闭包持有 raw 无界堆积 = 内存 DoS 面；
+  // 正常交互积压个位数，400 足够安全余量
+  let pendingCmds = 0;
+  const enqueue = (raw) => {
+    if (pendingCmds >= 400) return;
+    pendingCmds++;
+    cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}).finally(() => { pendingCmds--; });
+  };
+  ws.on('message', (raw) => {
+    lastAliveAt = Date.now();
+    // ping 旁路：活性探测不排串行命令链——cmdChain 积压时 pong 延迟会触发
+    // 服务端 15s 活性检查误杀健康会话（积压 → pong 迟到 → 判死回收，自我强化）。
+    // ping 消息极小（<100B），双解析成本可忽略
+    if (raw.length <= 128) {
+      try {
+        const p = JSON.parse(raw.toString());
+        if (p && p.type === 'ping') { sendJson({ type: 'pong', t: p.t }); return; }
+      } catch (e) {}
+    }
+    if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw));
+  });
   const noteInput = () => { lastInputAt = Date.now(); armIdleEvict(); };
   ws.on('close', () => { if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; } });
   ws.on('resume', () => {
