@@ -46,8 +46,8 @@ replace('diffFrame(pf.data)', 'diffFrame(pf.data, pf)');
 replace('pendingFrame = { data, at: now };', 'pendingFrame = { data, at: now, profile: __perf.receivedFrame(!!pendingFrame) };');
 replace('      return { tiles };', '      return { tiles, profile: __perf.traceFrame(data, info, pf, perfDecodeStart) };');
 replace("tiles: out.tiles || [], holes:", "_profile: out.profile, tiles: out.tiles || [], holes:");
-replace('const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };',
-  'const enqueue = (raw) => { const receivedAt = performance.now(); cmdChain = cmdChain.then(() => { __perf.queued(raw, receivedAt); return handleRaw(raw); }).catch(() => {}); };');
+replace('  const enqueue = (raw) => {\n    if (pendingCmds >= 400) return;\n    pendingCmds++;\n    cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}).finally(() => { pendingCmds--; });\n  };',
+  '  const enqueue = (raw) => {\n    if (pendingCmds >= 400) return;\n    pendingCmds++;\n    const receivedAt = performance.now();\n    cmdChain = cmdChain.then(() => { __perf.queued(raw, receivedAt); return handleRaw(raw); }).catch(() => {}).finally(() => { pendingCmds--; });\n  };');
 for (const type of ['dom-patches', 'anim-tiles']) {
   // v0.37 dom-patches 出现两处：主发送通道 + repair 定点修复回包（两处都计量）
   replace("JSON.stringify({ type: '" + type + "'", "__perf.json({ type: '" + type + "'", type === 'anim-tiles' ? 2 : (type === 'dom-patches' ? 2 : 1));
