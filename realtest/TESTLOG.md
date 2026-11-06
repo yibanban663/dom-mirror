@@ -217,3 +217,24 @@
 - **工程教训**: bash `cd X && 启动 & echo pid` 的 & 把 cd 连带后台化(主 shell
   未 cd)——PID 文件写错目录、探针 RSS 采错进程; demo 环境验证必须
   lsof 端口定位而非 PID 文件
+
+---
+
+## 第 10 轮:严苛自审——抓到批次 15 修复引入的真回归(已闭环)
+
+- **回归**: ping 旁路(v0 批次 15 修复件③)只回 pong 不入队, 但 handleCommand
+  的 ping case 有两大副作用: ①客户端 10s 心跳的 rum 性能数据落 [rum] 日志;
+  ②m.fp 指纹分歧检测(v0.18 漂移自动重同步)——旁路把它们全部丢弃。
+- **红**(缺陷版 git show HEAD:server.js 反转跑): [rum] 日志 0 行(3 条 rum
+  ping 副作用全丢) + fp ping 洪发 20 条无限流(页内全元素统计 evaluate
+  CPU 放大通道重现)。
+- **修复**: ①旁路条件收紧——仅纯活性 ping(rum/fp 字段均缺省)走旁路,
+  带负载 ping 走 handleCommand 完整处理; ②'ping' 加入软组限流 12/2s
+  (心跳 10s 一次不受影响, 防带 fp 洪发放大)。
+- **绿**: [rum] 日志 3 行(链路恢复) + fp 洪发 RATE 11(限流生效) +
+  纯 ping 5ms(旁路保持)。
+- **同轮其余审查结论**: lastCss 恢复路径(cachedSnap.css 可能 null →
+  纵深 (css||'') 兜底, 不 crash); 背压计数器 finally 必达无泄漏;
+  限流与 idle 复活/resume 交互无害; >128B ping 走队列=攻击者自损。
+  **观察项**: 限流检查在出队时(队列前有慢命令时 RATE 反馈被延迟)——
+  恶意场景无影响, 合法用户不触发, 记录不改(YAGNI)。

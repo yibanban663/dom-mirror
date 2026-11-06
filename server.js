@@ -1560,7 +1560,7 @@ async function runSession(ws, req, lifecycle) {
   // 重命令限流参数（见 handleCommand 开头注释）：硬组=重资源回源/重建，软组=页内遍历
   const HEAVY_WIN_MS = 2000, HEAVY_HARD_MAX = 3, HEAVY_SOFT_MAX = 12;
   const HEAVY_CMDS_HARD = new Set(['mode', 'navigate', 'history']);
-  const HEAVY_CMDS_SOFT = new Set(['repaint', 'repair', 'fp', 'domclick']);
+  const HEAVY_CMDS_SOFT = new Set(['repaint', 'repair', 'fp', 'domclick', 'ping']);
   let heavyHardRing = [], heavySoftRing = [];
   let cmdChain = Promise.resolve();
   // 命令队列背压：串行链积压上限——洪发时闭包持有 raw 无界堆积 = 内存 DoS 面；
@@ -1573,13 +1573,15 @@ async function runSession(ws, req, lifecycle) {
   };
   ws.on('message', (raw) => {
     lastAliveAt = Date.now();
-    // ping 旁路：活性探测不排串行命令链——cmdChain 积压时 pong 延迟会触发
+    // ping 旁路：纯活性 ping 不排串行命令链——cmdChain 积压时 pong 延迟会触发
     // 服务端 15s 活性检查误杀健康会话（积压 → pong 迟到 → 判死回收，自我强化）。
-    // ping 消息极小（<100B），双解析成本可忽略
+    // 携带负载的 ping（rum 性能数据 / fp 分歧指纹）不入此路——它们有副作用
+    // （[rum] 日志聚合 / 漂移自动重同步），必须走 handleCommand 完整处理；
+    // ping 已入软组限流，防带 fp 洪发重放页内全元素统计的 CPU 放大
     if (raw.length <= 128) {
       try {
         const p = JSON.parse(raw.toString());
-        if (p && p.type === 'ping') { sendJson({ type: 'pong', t: p.t }); return; }
+        if (p && p.type === 'ping' && p.rum === undefined && p.fp === undefined) { sendJson({ type: 'pong', t: p.t }); return; }
       } catch (e) {}
     }
     if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw));
