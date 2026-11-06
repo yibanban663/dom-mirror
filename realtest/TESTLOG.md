@@ -134,3 +134,24 @@
 - 修复:对齐 maxEntryBytes 上限,超限断上游+502;RSS 平稳(22MB),客户端
   收 502 asset too large
 - TDD:test/proxy-asset-limit.test.js(流式 200MB mock 源站,断言 502+RSS)
+
+---
+
+## 第 6 轮:严苛复核(反转验证 + 端到端红绿闭环)
+
+- **反转验证矩阵 4/4**(reversal-matrix.cjs):限流连坐/代理上限/rum 注入/uploads 纵深——
+  修复前源码 → 测试精确红;修复后 → 绿。排除恒绿假测试。
+- **弹窗冻结 DoS 端到端红绿闭环**(bisect-probe.cjs, 载荷 P1/P2):
+  🟢 修复代码 → GREEN ×2 | 撤 dialog handler → 🔴 RED ×2(18s+ 冻结)
+  | 恢复修复 → 🟢 GREEN ×1。因果关系确证(唯一变量 = handler)。
+- **接入向导端到端**(guide-e2e.cjs):白名单拦外域图床 ×4 →
+  清理时输出 `[policy] 被拦截资源域 Top1: <origin>×4` ✓
+  观察项: 探针 ws.close() 后 15s reaper 未触发(keepAlive 干扰嫌疑);
+  demo 真实场景日志确认 reaper 3s 正常(state=3 x3s)。
+- **导航乐观转场端到端**(nav-progress-e2e.cjs):
+  a 点击 → `active` ✓;无回流 → 8s 超时兜底清除 ✓;
+  done 挂钩(dom-snapshot/location/nav-blocked 三处)代码级确证,
+  端到端触发依赖既有导航管线(resize 不触发快照, 测试手段局限)。
+  观察项: headless 合成点击(a.click)未引发源站导航(元素锚转发链路,
+  既有行为, 与本次修复无关)——真机点击路径此前批次(v2ex/runoob)实测正常。
+- 全量 npm test 82/82;npm run check 通过。
