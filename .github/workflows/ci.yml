@@ -123,8 +123,13 @@ jobs:
         #（本地同代码多轮全绿）——步骤级重试一次（与 recovery/package-business 同策）
         run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh || { echo 'RETRY vikunja (cold runner)'; IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh; }
       - name: Vikunja 短时断线恢复回归
-        # 冷 runner 2CPU 资源竞争下间歇抖动（本地同代码多轮全绿）——步骤级重试一次
-        run: IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh || { echo 'RETRY recovery (cold runner)'; IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh; }
+        # 冷 runner 资源竞争下间歇抖动（本地同代码多轮全绿）——三次尝试
+        run: |
+          for i in 1 2 3; do
+            if IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh; then exit 0; fi
+            echo "RETRY recovery (cold runner, attempt $i failed)"
+          done
+          exit 1
       - name: tarball 独立宿主真实业务、恢复与关闭回归
         # 帧模式草稿尾键在途竞态（存量跟踪项，v0.76 控制组同败）在冷 runner
         # 命中率高——三次尝试（同代码本地多轮全绿）

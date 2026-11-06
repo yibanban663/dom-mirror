@@ -754,10 +754,15 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     // v0.78：草稿回灌——重建（F5 缓存/server 重放/全量重拍）后按 id 恢复用户
     // 在途输入（60s 内有效；仅补值不派事件，服务端权威不被打断）
     try {
-      const dr = window.__xyDrafts;
-      if (dr && dr.size) for (const [did2, dval] of dr.entries()) {
-        const el2 = mirrorIds.get(did2);
-        if (el2 && (el2.tagName === 'INPUT' || el2.tagName === 'TEXTAREA') && typeof dval === 'string' && dval && el2.value !== dval && dval.length >= el2.value.length) el2.value = dval;
+      // 双源：会话存储草稿（F5 新文档）+ 活内存 lastTyped（同文档 WS 重连——
+      // 短时断线恢复不触发 pagehide，存储源未更新，内存源才是当前真相）
+      const srcs = [window.__xyDrafts, lastTyped];
+      for (const dr of srcs) {
+        if (!dr || !dr.size) continue;
+        for (const [did2, dval] of dr.entries()) {
+          const el2 = mirrorIds.get(did2);
+          if (el2 && (el2.tagName === 'INPUT' || el2.tagName === 'TEXTAREA') && typeof dval === 'string' && dval && el2.value !== dval && dval.length >= el2.value.length) el2.value = dval;
+        }
       }
     } catch (eD) {}
     // v0.47 原子渲染收尾：全部内容（HTML+CSS+图标+位图）就绪，一次性显示
