@@ -26,6 +26,7 @@ const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
 
 const { normalizeOptions } = require('./lib/options');
+const { createBlockedOriginTracker } = require('./lib/policy-report');
 const { createStaticFiles } = require('./lib/static');
 const { createTimers } = require('./lib/timers');
 const { pageHelpers } = require('./lib/page-helpers');
@@ -482,9 +483,26 @@ function proxyAsset(req, res) {
     }
     if (originAssetCache) {
       // 缓冲回填（/m/ 本就限图片/字体小资产）：入库由 put 的保守规则裁决
+      // 大小上限对齐 fetchOriginAsset 的 maxEntryBytes——超限即断上游并 502,
+      // 防"全量缓冲后再校验"的内存 DoS（实测 200MB 上游 → 网关 RSS +482MB）
       const chunks = [];
-      up.on('data', (c) => chunks.push(c));
+      let total = 0, over = false;
+      up.on('data', (c) => {
+        total += c.length;
+        if (total > originAssetCache.maxEntryBytes) {
+          over = true;
+          try { up.destroy(); } catch (e) {}
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }); } catch (e2) {} try { res.end('asset too large'); } catch (e3) {} } else { try { res.destroy(); } catch (e4) {} }
+        } else chunks.push(c);
+      });
       up.on('end', () => {
+        // 语义合并:v0.76 css 改写入库 + 超限 502(over 在 data handler 置位, 超限
+        // 资产不进改写/不入库, 断流即回 502——两修复语义正交相加)
+        if (over) {
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }); } catch (e) {} }
+          try { res.end('asset too large'); } catch (e2) {}
+          return;
+        }
         let body = Buffer.concat(chunks);
         // v0.76：css 响应改写后再入库/下发（缓存里存改写后形态，命中零成本）
         if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'))); } catch (e) {} }
@@ -679,7 +697,8 @@ function handleRequest(req, res) {
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 8192) { body = body.slice(0, 8192); req.destroy(); } });
     req.on('end', () => {
-      try { logger.log('[rum-beacon] ' + body); } catch (e) {}
+      // 单行化: 防 CRLF 日志注入(审计完整性)
+      try { logger.log('[rum-beacon] ' + body.replace(/\r?\n/g, '\\n')); } catch (e) {}
       res.writeHead(204, { 'cache-control': 'no-store' });
       res.end();
     });
@@ -1049,6 +1068,10 @@ async function runSession(ws, req, lifecycle) {
   let lastSnapServerEls = null, driftHealFails = 0, driftMuteUntil = 0; // v0.56：快照口径基准 + 自愈熔断
   let lastCleanAt = 0; // v0.77：连续干净窗口起点（熔断计数衰减用）
   let xframeSecret = null; // v0.25 跨源 iframe 资产代理的会话作用域密钥
+  // v0.64 接入向导: 被拦资源域收集——布局漂移的根因是源站资源被拦致渲染
+  // 不完整(实测 ruanyifeng 图床被拦 → 偏移 173px), 拦截日志里就有答案。
+  // 只做发现+建议, 不自动放行(白名单边界不因流量自主扩大)
+  const blockedOrigins = createBlockedOriginTracker({ topN: 10 });
   let xframeBusy = false;
   let xframeTimer = null; // v0.26 跨源 iframe 周期刷新（变化推 outer 补丁）
   let cleanupPromise;
@@ -1080,6 +1103,7 @@ async function runSession(ws, req, lifecycle) {
         sessionUploadDir ? fsp.rm(sessionUploadDir, { recursive: true, force: true }) : null,
         sessionDownloadDir ? fsp.rm(sessionDownloadDir, { recursive: true, force: true }) : null,
       ]);
+      try { const s = blockedOrigins.summary(); if (s) logger.log('[policy] ' + s); } catch (e) {}
       logger.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
     })();
     cleanupPromise.finally(() => cleanups.delete(cleanup)).catch(() => {});
@@ -1150,6 +1174,22 @@ async function runSession(ws, req, lifecycle) {
   const queue = [];
   let dispatchReady = false;
   const handleCommand = async (m) => {
+    // 重命令滑窗限流：mode/repaint/navigate/history 每条触发全量快照/全页截图/
+    // 回源导航（CPU/带宽放大面），repair/fp 触发页内遍历。实测 200 条合法 mode
+    // 洪发把 cmdChain 占死 20s+（基线 ping 1ms → 20s 无响应）——单连接可用性剥夺。
+    // 分组限频：会话级滑窗，超出丢弃并回 RATE 错误；轻命令（ping/mouse/scroll）不受限
+    if (m && typeof m === 'object') {
+      const now = Date.now();
+      if (HEAVY_CMDS_HARD.has(m.type)) {
+        heavyHardRing = heavyHardRing.filter((t2) => now - t2 < HEAVY_WIN_MS);
+        if (heavyHardRing.length >= HEAVY_HARD_MAX) { sendJson({ type: 'error', code: 'RATE', msg: '操作过于频繁，请稍后再试' }); return; }
+        heavyHardRing.push(now);
+      } else if (HEAVY_CMDS_SOFT.has(m.type)) {
+        heavySoftRing = heavySoftRing.filter((t2) => now - t2 < HEAVY_WIN_MS);
+        if (heavySoftRing.length >= HEAVY_SOFT_MAX) { sendJson({ type: 'error', code: 'RATE', msg: '操作过于频繁，请稍后再试' }); return; }
+        heavySoftRing.push(now);
+      }
+    }
     // v0.39 空闲逐出后的透明复活：除 ping 外的任何命令先复活（客户端周期
     // ping 每 10s 一次——若触发复活则逐出永不生效）
     if (pageEvicted && m && m.type !== 'ping') {
@@ -1508,13 +1548,44 @@ async function runSession(ws, req, lifecycle) {
     if (!m || typeof m !== 'object' || Array.isArray(m)) return;
     try {
       await handleCommand(m);
-    } catch (e) { sendJson({ type: 'error', msg: '事件处理异常: ' + e.message }); }
+    } catch (e) {
+      // 不透传内部错误细节(CDP 方法名/协议错误可被访客探测实现)——完整错误
+      // 只进服务端日志, 访客侧收通用文案
+      try { logger.log('[cmd-err]', String(e && e.message).replace(/\r?\n/g, '\\n')); } catch (e2) {}
+      sendJson({ type: 'error', msg: '事件处理异常，本次操作已忽略' });
+    }
   };
   let snapReplay = null; // v0.52 快照重放缓存（本会话最近一次全量帧+DOM签名）
   let lastSnapDomSig = null; // v0.55 导航重拍链门控：最近一次全量快照完成时的 DOM 签名
+  // 重命令限流参数（见 handleCommand 开头注释）：硬组=重资源回源/重建，软组=页内遍历
+  const HEAVY_WIN_MS = 2000, HEAVY_HARD_MAX = 3, HEAVY_SOFT_MAX = 12;
+  const HEAVY_CMDS_HARD = new Set(['mode', 'navigate', 'history']);
+  const HEAVY_CMDS_SOFT = new Set(['repaint', 'repair', 'fp', 'domclick', 'ping']);
+  let heavyHardRing = [], heavySoftRing = [];
   let cmdChain = Promise.resolve();
-  const enqueue = (raw) => { cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}); };
-  ws.on('message', (raw) => { lastAliveAt = Date.now(); if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw)); });
+  // 命令队列背压：串行链积压上限——洪发时闭包持有 raw 无界堆积 = 内存 DoS 面；
+  // 正常交互积压个位数，400 足够安全余量
+  let pendingCmds = 0;
+  const enqueue = (raw) => {
+    if (pendingCmds >= 400) return;
+    pendingCmds++;
+    cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}).finally(() => { pendingCmds--; });
+  };
+  ws.on('message', (raw) => {
+    lastAliveAt = Date.now();
+    // ping 旁路：纯活性 ping 不排串行命令链——cmdChain 积压时 pong 延迟会触发
+    // 服务端 15s 活性检查误杀健康会话（积压 → pong 迟到 → 判死回收，自我强化）。
+    // 携带负载的 ping（rum 性能数据 / fp 分歧指纹）不入此路——它们有副作用
+    // （[rum] 日志聚合 / 漂移自动重同步），必须走 handleCommand 完整处理；
+    // ping 已入软组限流，防带 fp 洪发重放页内全元素统计的 CPU 放大
+    if (raw.length <= 128) {
+      try {
+        const p = JSON.parse(raw.toString());
+        if (p && p.type === 'ping' && p.rum === undefined && p.fp === undefined) { sendJson({ type: 'pong', t: p.t }); return; }
+      } catch (e) {}
+    }
+    if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw));
+  });
   const noteInput = () => { lastInputAt = Date.now(); armIdleEvict(); };
   ws.on('close', () => { if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; } });
   ws.on('resume', () => {
@@ -2771,6 +2842,12 @@ async function runSession(ws, req, lifecycle) {
       ws.close(1011, 'browser closed');
     });
     if (!page) page = poolHandle ? await poolHandle.context.newPage() : await b.newPage();
+    // 源站页面的 alert/confirm/prompt/beforeunload 是同步阻塞对话框——headless
+    // 下无处理器则永久挂起 → 页面冻结 → 快照 evaluate 永不返回 → 镜像"连接中"
+    // (实测: 源站含一个 alert(1) 即复现)。自动关闭对话框, 镜像不因弹窗冻结
+    page.on('dialog', (d) => {
+      try { logger.log(`[dialog] ${d.type()} ${String(d.message()).slice(0, 60)}`); d.dismiss().catch(() => {}); } catch (e) {}
+    });
     reviveSource = poolHandle ? { context: poolHandle.context } : { browser: b }; // v0.39 复活用页面工厂
     if (dead) { await page.close(); return; }
     // v0.39 页面运行时装配提取为可重入函数：空闲逐出后的复活须对新页面
@@ -2899,6 +2976,7 @@ async function runSession(ws, req, lifecycle) {
           r.continue().catch(() => {}); return;
         }
         logger.log('[policy] blocked', r.resourceType(), r.url().slice(0, 90));
+        try { blockedOrigins.record(new URL(r.url()).origin, r.resourceType()); } catch (e) {}
         // 主框架导航用 aborted：取消而不提交错误页，页面停留原处；子框架与子资源用
         // blockedbyclient（iframe 落到跨源错误页，镜像按跨源占位处理）
         const mainNav = r.isNavigationRequest() && r.frame() === page.mainFrame();

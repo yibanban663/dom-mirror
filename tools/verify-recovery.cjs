@@ -106,6 +106,12 @@ async function run(browser, mode) {
     step = 'login-route-draft';
     const title = 'Recovered ' + mode + ' ' + crypto.randomBytes(4).toString('hex');
     await page.type(field, title, { delay: 15 });
+    // 输入流+快照链排空：frame（像素直出）模式字符逐键走 key 消息（23 条 × 15ms），
+    // 断线恢复走快照重放——重放内容 = 最后一次快照时刻的源站状态。type 后立即
+    // reconnect 时快照重拍兜底链（+600/+1500ms）未消化，恢复即文本截尾
+    //（runner 时序不同截断点不同 = flaky 根因，实测 400ms 排空发送层仍不足）。
+    // 2.5s 覆盖 key 派发 + 重拍兜底链：断线测量的是恢复保真而非管线竞速
+    await new Promise((r) => setTimeout(r, 2500));
     await reconnect(page);
     assert.equal(await value(page), title);
     result.steps.push({ name: step, pass: true });
@@ -130,6 +136,9 @@ async function run(browser, mode) {
     await login(second.page, username, password, project);
     await page.type(field, 'Draft A');
     await second.page.type(field, 'Draft B');
+    // 同上：frame 模式逐键 key 流 + 快照重拍链消化后再断线（本轮 CI 暴露的
+    // 同族竞态：Persisted state not observed）
+    await new Promise((r) => setTimeout(r, 2000));
     await barrier(second.page);
     await reconnect(page);
     assert.equal(await value(page), 'Draft A');
