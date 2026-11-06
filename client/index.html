@@ -400,6 +400,11 @@
   window.addEventListener('pagehide', () => {
     if (!lastSnapData) return;
     try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
+    // v0.78 草稿持久化：F5 尾键在途竞态根治——在途 input 事件在断连瞬间丢失
+    // 时，服务端 live 页与快照/重放全部缺尾且无自愈源；客户端 lastTyped 是
+    // 用户输入的第一真相，随快照一并落盘，重建后回灌（服务端补丁为权威，
+    // 草稿只保住在途输入的视觉真相；后续输入/同步自然对账）
+    try { sessionStorage.setItem('xyDraft', JSON.stringify({ at: Date.now(), d: [...lastTyped.entries()].slice(0, 32) })); } catch (e2) {}
   });
   // 投机本地回显的当前孔（位图原件保存在 __xyLocalHole.saved，本地即时复原）
   function closeLocalHole() {
@@ -423,6 +428,10 @@
   // 重同步会整树重建镜像，克隆 HTML 不含当前值 → 半截输入被清空；
   // 焦点落回字段时用它找回，打字连续性不被 700ms 重同步打断。
   const lastTyped = new Map();
+  // v0.78：F5 前的在途输入草稿（pagehide 落盘；60s 有效窗）
+  const __xyDraftInit = (() => { try { const d = JSON.parse(sessionStorage.getItem('xyDraft') || 'null'); if (d && d.d && Date.now() - (d.at || 0) < 60000) return new Map(d.d); } catch (e) {} return new Map(); })();
+  window.__xyDrafts = __xyDraftInit;
+  setTimeout(() => { try { sessionStorage.removeItem('xyDraft'); } catch (e) {} }, 15000);
   let viewW = 1280, viewH = 800;
   // v0.13 文件传输：上行分块状态机 + 下行装配缓冲（供回归/诊断观察）
   window.__xyUploads = [];
@@ -742,6 +751,15 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     if (bodyStyle && mirrorBody) { try { mirrorBody.style.cssText += ';' + bodyStyle; } catch (e) {} }
     bodyId = (typeof newBodyId === 'number' && Number.isFinite(newBodyId)) ? newBodyId : 1;
     mirrorIds.clear();
+    // v0.78：草稿回灌——重建（F5 缓存/server 重放/全量重拍）后按 id 恢复用户
+    // 在途输入（60s 内有效；仅补值不派事件，服务端权威不被打断）
+    try {
+      const dr = window.__xyDrafts;
+      if (dr && dr.size) for (const [did2, dval] of dr.entries()) {
+        const el2 = mirrorIds.get(did2);
+        if (el2 && (el2.tagName === 'INPUT' || el2.tagName === 'TEXTAREA') && typeof dval === 'string' && dval && el2.value !== dval && dval.length >= el2.value.length) el2.value = dval;
+      }
+    } catch (eD) {}
     // v0.47 原子渲染收尾：全部内容（HTML+CSS+图标+位图）就绪，一次性显示
 
     canvasStreams.clear();
@@ -1904,6 +1922,11 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               if (nowSnapSave - lastSnapSaveAt > 1500) {
                 lastSnapSaveAt = nowSnapSave;
                 try { sessionStorage.setItem('xySnapCache', JSON.stringify(lastSnapData)); } catch (e) {}
+    // v0.78 草稿持久化：F5 尾键在途竞态根治——在途 input 事件在断连瞬间丢失
+    // 时，服务端 live 页与快照/重放全部缺尾且无自愈源；客户端 lastTyped 是
+    // 用户输入的第一真相，随快照一并落盘，重建后回灌（服务端补丁为权威，
+    // 草稿只保住在途输入的视觉真相；后续输入/同步自然对账）
+    try { sessionStorage.setItem('xyDraft', JSON.stringify({ at: Date.now(), d: [...lastTyped.entries()].slice(0, 32) })); } catch (e2) {}
               }
               const restoredScroll = document.getElementById('mirrorScroll');
               restoredScroll.__xySync = true;
