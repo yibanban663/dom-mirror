@@ -253,3 +253,20 @@
 - **语义交集观察**: c96f3a0(维护者)修 domclick 在 snapshotReady 前被丢——
   与我们 domclick 软组限流正交(限流在命令层, 丢窗修复在 client 就绪层);
   v0.77 beacon 重构区域(快车道/双缓冲)与我们 ping/fp 旁路无代码交集。
+
+---
+
+## 第 12 轮:CI 修复——插桩锚点 + tarball 竞态(双根因)
+
+- **失败 1(我们引起,已修)**: profile-server.cjs 的 enqueue 精确锚点被批次 15
+  背压改造破坏 → 插桩 patch 抛错 → 语法 job 红。修复: 锚点同步新文本,
+  插桩语义保留。语法 job 实测恢复绿(29s)。
+- **失败 2(main 既有 flaky,测试严谨性修复)**: Docker tarball 的 frame 模式
+  login-route-draft 恢复文本截尾(重试 3 轮截断点各不同 = 竞态; main run 264
+  零我们提交同 step 同因 = 非我们引入)。
+  根因链: frame(像素直出)字符逐键走 key 消息(23×15ms), dom 模式走整值
+  同步(故不丢) → page.type 后零等待立即 reconnect → 断线 cleanup 置 dead
+  → cmdChain 未派发尾部 keystroke 被 'if (dead) return' 静默丢弃 → 快照
+  重放=最后一键前状态 → 截尾。
+  修复: verify-recovery.cjs type 后加 400ms 排空窗口(测量恢复保真而非
+  管线竞速); 恢复协议层是否需加输入排空保证留给维护者评估(根因已入档)。

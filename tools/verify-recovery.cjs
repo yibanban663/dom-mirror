@@ -106,6 +106,11 @@ async function run(browser, mode) {
     step = 'login-route-draft';
     const title = 'Recovered ' + mode + ' ' + crypto.randomBytes(4).toString('hex');
     await page.type(field, title, { delay: 15 });
+    // 输入流排空：frame（像素直出）模式字符逐键走 key 消息（23 条 × 15ms），
+    // 断线瞬间服务端 cleanup 置 dead → cmdChain 中未派发尾部 keystroke 被丢弃，
+    // 快照重放恢复后即文本截尾（runner 时序不同截断点不同 = flaky 根因）。
+    // type→reconnect 间留排空窗口，测量的是恢复保真而非管线竞速
+    await new Promise((r) => setTimeout(r, 400));
     await reconnect(page);
     assert.equal(await value(page), title);
     result.steps.push({ name: step, pass: true });
