@@ -26,6 +26,7 @@ const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
 
 const { normalizeOptions } = require('./lib/options');
+const { createBlockedOriginTracker } = require('./lib/policy-report');
 const { createStaticFiles } = require('./lib/static');
 const { createTimers } = require('./lib/timers');
 const { pageHelpers } = require('./lib/page-helpers');
@@ -1067,6 +1068,10 @@ async function runSession(ws, req, lifecycle) {
   let lastSnapServerEls = null, driftHealFails = 0, driftMuteUntil = 0; // v0.56：快照口径基准 + 自愈熔断
   let lastCleanAt = 0; // v0.77：连续干净窗口起点（熔断计数衰减用）
   let xframeSecret = null; // v0.25 跨源 iframe 资产代理的会话作用域密钥
+  // v0.64 接入向导: 被拦资源域收集——布局漂移的根因是源站资源被拦致渲染
+  // 不完整(实测 ruanyifeng 图床被拦 → 偏移 173px), 拦截日志里就有答案。
+  // 只做发现+建议, 不自动放行(白名单边界不因流量自主扩大)
+  const blockedOrigins = createBlockedOriginTracker({ topN: 10 });
   let xframeBusy = false;
   let xframeTimer = null; // v0.26 跨源 iframe 周期刷新（变化推 outer 补丁）
   let cleanupPromise;
@@ -1098,6 +1103,7 @@ async function runSession(ws, req, lifecycle) {
         sessionUploadDir ? fsp.rm(sessionUploadDir, { recursive: true, force: true }) : null,
         sessionDownloadDir ? fsp.rm(sessionDownloadDir, { recursive: true, force: true }) : null,
       ]);
+      try { const s = blockedOrigins.summary(); if (s) logger.log('[policy] ' + s); } catch (e) {}
       logger.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
     })();
     cleanupPromise.finally(() => cleanups.delete(cleanup)).catch(() => {});
@@ -2928,6 +2934,7 @@ async function runSession(ws, req, lifecycle) {
           r.continue().catch(() => {}); return;
         }
         logger.log('[policy] blocked', r.resourceType(), r.url().slice(0, 90));
+        try { blockedOrigins.record(new URL(r.url()).origin, r.resourceType()); } catch (e) {}
         // 主框架导航用 aborted：取消而不提交错误页，页面停留原处；子框架与子资源用
         // blockedbyclient（iframe 落到跨源错误页，镜像按跨源占位处理）
         const mainNav = r.isNavigationRequest() && r.frame() === page.mainFrame();

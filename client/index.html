@@ -19,6 +19,14 @@
   #navWrap button:hover { border-color: var(--accent); }
   #navUrl { flex:1; min-width:120px; background:var(--bg); border:1px solid var(--line); color:var(--txt); border-radius:14px; padding:6px 12px; font-size:12.5px; outline:none; }
   #navUrl:focus { border-color: var(--accent); }
+  /* v0.64 导航乐观转场：点击镜像内链接后立即出现的顶部进度条——真实浏览器从不
+     等服务器返回才给反馈；服务端跳转+快照回流期间画面静止是体感延迟主源 */
+  #navProgress { position:fixed; top:0; left:0; height:3px; width:0; z-index:2147483647;
+    background:linear-gradient(90deg, var(--accent), #7cc4ff); box-shadow:0 0 6px rgba(59,130,246,.7);
+    transition:width .25s ease-out, opacity .3s; opacity:0; pointer-events:none; }
+  #navProgress.active { opacity:1; width:70%; animation:navPulse 1.2s ease-out infinite alternate; }
+  #navProgress.done { width:100%; opacity:0; }
+  @keyframes navPulse { from { margin-left:0; } to { margin-left:30%; } }
   /* v0.32.5 消黑闪：prod 模式客户端壳不画自己的深色底——白底中性（与原生浏览器
      首绘一致）；源站底色由网关注入（缓存热后首绘即正确色）/meta.bg 接管。
      曾因壳深色底在白与浅色源站页之间插进一帧 #0f1420 黑闪（:82 实测） */
@@ -76,6 +84,7 @@
 </head>
 <body>
 <div id="navHot" hidden></div>
+  <div id="navProgress"></div>
 <div id="navWrap" hidden>
   <button id="navBack" title="后退">←</button>
   <button id="navFwd" title="前进">→</button>
@@ -746,6 +755,22 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
 
 
     mirrorBody = mirrorRoot.querySelector('.xy-body');
+    // v0.64 导航乐观转场：start 于镜像内 a/form 点击；done 于 location/快照
+    // 回流/nav-blocked；8s 超时强制结束（防永久挂起）
+    const navBar = document.getElementById('navProgress');
+    let navTimer = null;
+    function navProgressStart() {
+      if (!navBar) return;
+      clearTimeout(navTimer);
+      navBar.className = 'active';
+      navTimer = setTimeout(() => { navBar.className = ''; }, 8000);
+    }
+    function navProgressDone() {
+      if (!navBar) return;
+      clearTimeout(navTimer);
+      navBar.className = 'done';
+      navTimer = setTimeout(() => { navBar.className = ''; }, 400);
+    }
     // v0.20：源站 body 的可继承计算样式钉到镜像根——裸元素不再继承客户端外壳
     // 的字体/颜色（body{} 选择器映射只覆盖源站显式设置的属性）
     if (bodyStyle && mirrorBody) { try { mirrorBody.style.cssText += ';' + bodyStyle; } catch (e) {} }
@@ -804,7 +829,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         // SPA 链接/表单导航一律拦截在本地，真实路由变化由服务端执行后以补丁回来
         // （点击本身已由 pointer 管线转发，这里只拦本地导航副作用）
         const t = realTarget(e);
-        if (t.closest && t.closest('a, form')) e.preventDefault();
+        if (t.closest && t.closest('a, form')) { e.preventDefault(); navProgressStart(); }
         // 合成点击（脚本/自动化/a11y 的 el.click()，isTrusted=false）不经过指针
         // 管线，曾在此被静默丢弃——源站直连可提交的按钮在镜像内点了没反应
         // （:82 登录实测）。按元素锚转发，服务端对同元素执行等价 el.click()
@@ -1838,6 +1863,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               }
             }
           }
+          try { if (j.type === 'dom-snapshot') navProgressDone(); } catch (e) {}
           if (j.type === 'dom-snapshot') {
             // 同内容快照去重：服务端导航后 +600ms/+1500ms 兜底重拍在静态页上产出
             // 字节级相同的快照，整树重建=整页闪动（"每个页面像刷新了 3 次"的直接
@@ -2126,7 +2152,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             } catch (e) {}
             rumApplied(); // v0.21 RUM：滚动同步应用=闭环
           }
-            if (j.type === 'location') {
+            if (j.type === 'location') { try { navProgressDone(); } catch (e) {}
             // v0.30 伪路由：地址栏跟随（输入聚焦时不打断编辑）
             const nu = m('navUrl');
             if (document.activeElement !== nu) nu.value = j.url || '';
@@ -2152,6 +2178,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
               if (mb) mb.style.setProperty('background', j.bg, 'important');
             } catch (e) {}
           }
+          try { if (j.type === 'nav-blocked') navProgressDone(); } catch (e) {}
           if (j.type === 'nav-blocked') {
             lastErr = j.msg || '导航被拒绝';
             setStatus('目标不在允许范围', false);
