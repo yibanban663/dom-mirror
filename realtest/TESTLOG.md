@@ -293,3 +293,21 @@
   推送; CI 在 v0.78 基线实测**双绿**(语法 + Docker 全 24 步回归)。
 - 小模块快审: input.js(锚点平移/iframe 坐标累加/React-Vue 原型 setter,
   语义完善)、timers.js(closed 后禁创建, 全清干净)——无问题。
+
+---
+
+## 第 15 轮:未审模块清零——warm-pages/frame-codec/canvas/v0.78 草稿持久化
+
+- **warm-pages(188 行)**: 预热 context 独占(取走归访客,不跨访客共享存储)、
+  yield 在线优先、坏页不入库、networkidle0 静止、TTL 清仓、键数有界
+  (recentKeys 4 + inventory 键经周期 ensure 清仓)——隔离与容量纪律完整 ✓
+- **frame-codec(56 行)**: PNG 手工 IHDR 判定保守正确(非标准变体走原管线);
+  scanDirtyRows 依赖调用方 CH=4 与等长 raw 约束(现有调用满足, 记录);
+  dirtyRects 行段合并+8 段上限 ✓
+- **canvas(106 行)**: 候选三级(canvas 3/elbit 6/video 8)上限+视口过滤+
+  指数退避(450ms×2^n 封顶 3600)+elbit 500ms floor ✓ 全 try/catch 兜底 ✓
+- **v0.78 草稿持久化(维护者 +23 行)**: lastTyped 落盘(sessionStorage 同源
+  隔离, 32 条 60s 窗)+回灌条件 dval.length>=当前值(只保长不覆盖权威;
+  Enter 提交时 lastTyped.delete 使回灌自然失效)——语义闭环正确 ✓
+- **结论**: 四模块零缺陷。审查覆盖至此: server.js 全部路由/命令/恢复链、
+  lib 15 模块、client 关键路径(快照/输入/草稿)、CI 全链路。
