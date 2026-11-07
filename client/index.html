@@ -258,12 +258,14 @@
     if (!el || el.nodeType !== 1 || !el.querySelectorAll) return;
     const selfId = idOfMirror(el);
     if (selfId !== null) mirrorIds.set(selfId, el);
+    // v0.81：影子递归覆盖全部后代宿主——v0.14 只递归入参自身的 shadowRoot，
+    // 内部宿主（快照内的 #c1 等）影子树从未登记，canvas-ops 批次按 id 找不到
+    // 镜像画布被静默丢弃（shadow 套件实测 px=0），补丁也只能靠 miss 重同步兜底
     for (const c of el.querySelectorAll('[data-xy-id]')) {
       const v = parseInt(c.getAttribute('data-xy-id'), 10);
       if (Number.isFinite(v)) mirrorIds.set(v, c);
+      if (c.shadowRoot) for (const gc of c.shadowRoot.children) registerSubtree(gc);
     }
-    // v0.14：递归进入 open shadow root（声明式 template 已由解析器重建影子树，
-    // 影子内元素同样登记 id——补丁/输入/锚点按 id 命中）
     if (el.shadowRoot) for (const c of el.shadowRoot.children) registerSubtree(c);
   }
   function unregisterSubtree(el) {
@@ -273,6 +275,7 @@
     for (const c of el.querySelectorAll('[data-xy-id]')) {
       const v = parseInt(c.getAttribute('data-xy-id'), 10);
       if (Number.isFinite(v)) mirrorIds.delete(v);
+      if (c.shadowRoot) for (const gc of c.shadowRoot.children) unregisterSubtree(gc);
     }
     if (el.shadowRoot) for (const c of el.shadowRoot.children) unregisterSubtree(c);
   }
