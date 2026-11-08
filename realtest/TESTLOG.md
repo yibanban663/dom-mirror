@@ -311,3 +311,26 @@
   Enter 提交时 lastTyped.delete 使回灌自然失效)——语义闭环正确 ✓
 - **结论**: 四模块零缺陷。审查覆盖至此: server.js 全部路由/命令/恢复链、
   lib 15 模块、client 关键路径(快照/输入/草稿)、CI 全链路。
+
+---
+
+## 第 16 轮:合并后实测——发现 v0.79-81 快照管线重大性能回归(新 bug)
+
+- **现象(v0.81 main, ruanyifeng 真实站点)**: 5 轮冷启动实测——2 轮首访白屏
+  (snapshot evaluate 10s 超时), 2 轮首帧 15-17.6s, 1 轮未知——**约 40% 首访
+  严重劣化**(批次 3 时同页面快照正常 42.8KB)。
+- **定位链(逐层排除)**: ①直测页内 snapshotReal 343ms ✓(页内函数不慢);
+  ②CSS_PASS 直通路径 5ms ✓; ③装配序列模拟 3 连 212/6/4ms ✓(序列无锁);
+  ④超时后 1+1 evaluate 1ms ✓(CDP/主线程健康); ⑤**超时后重跑同一
+  snapshotReal: 11905ms 完成(html 8728B 完整)**——非死锁, 是 35 倍性能回归。
+- **差异矩阵**: server 页 vs 裸页 = 双注入(warm evaluateOnNewDocument +
+  sessHelpers)/__XY_ORIGIN_PREFIX__ 带路径('.../blog/' vs 纯 origin)/
+  exposeFunction __xyPatch 补丁链活跃(被拦图床 error 重试 → DOM 持续变化
+  → 补丁收集)——v0.79-81 的 id 账本/登记递归在该组合下主遍历成本爆炸。
+- **顺带实测**: 热页 take 7.5s 龄接管 ✓/接入向导真实站点输出 Top1 ✓/
+  导航白名单(畸形 URL www.127.0.0.1 被 URL 解析器拒→安全拒绝 ✓)/
+  小页面首快照 125-208ms/导航回流 30ms ✓; 事件循环 p50=11ms(记录待查)。
+- **修复方向建议**(留维护者/或我们后续 PR):
+  ①快照超时后自动重拍(当前失败即白屏到下次交互——P0 体感);
+  ②snapshotReal 与补丁/id 账本的并发成本剖析(v0.79-81 diff 为靶区);
+  ③首屏管线跳过/beacon 页先例(server.js:177 有同类跳过先例可循)。
