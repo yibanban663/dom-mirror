@@ -733,8 +733,13 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
     // v0.76 样式表直通：css 分段（__xy_css_segment_v76__ 分隔）各成 <style>——
     // @import 段必须独占一个 sheet（CSS 规范：@import 须先于其它规则，混排
     // 会被浏览器丢弃）；分段顺序=文档序=级联序
-    const segs = String(css2).split('\n/*__xy_css_segment_v76__*/\n');
-    const cssTags = segs.length > 1 ? segs.map((s) => '<style>' + s + '</style>').join('') : ('<style>' + css2 + '</style>');
+    // v0.85：分段分隔符在源码中必须以 Unicode 转义构造——serveClientHtml 的
+    // 注释剥离器（v0.36/0.74）JS 无感知，任何完整或跨字面量拼接的注释定界
+    // 序列都会被剥除：v0.76 的分段 split 字面量自上线起就被剥成永不匹配的
+    // 空壳（直通模式 13 段连成一条样式表，@import 不在段首全被 CSS 解析器
+    // 丢弃，裸样式保真 0 16 → 重同步循环——Vikunja 直通回归失败的根因）
+    const CSS_SEG = '\n\u002f' + '*' + '__xy_css_segment_v76__' + '*' + '\u002f\n';
+    const segs = String(css2).split(CSS_SEG);    const cssTags = segs.length > 1 ? segs.map((s) => '<style>' + s + '</style>').join('') : ('<style>' + css2 + '</style>');
     const mirrorHtml = cssTags + '<div class="xy-body ' + (docClass || '') + '" ' + (docAttrs || '') + ' style="min-height:100%;box-sizing:border-box;position:relative">' + html + '</div>';
     // v0.71 @property 提升注册：CSS Houdini @property 在 shadow 作用域不被 Chromium
     // 注册（tailwind v4 全站使用）——未注册的自定义属性无初始值，var() 链在
