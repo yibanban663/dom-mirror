@@ -399,6 +399,31 @@ function cssProxyRewrite(cssText) {
     .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
     .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
     .replace(/(^|[\s,{}>+~])body(?=[\[{.,:\s)])/g, '$1.xy-body');
+  // v0.84 直通字体栈对齐：v0.76 直通遗漏了内联路径的 FONT_ALIGN（v0.35）——
+  // 原始字节里的本地字体名（system-ui/Segoe UI/微软雅黑…）在客户端按访客机器
+  // 解析、服务端按容器 fontconfig 解析，物理字体不同 → 排版度量漂移 → 保真
+  // 锚点失配（Vikunja 实测 3/19）→ 观测模式 15s 重同步死循环、镜像反复重建，
+  // 业务回归（create 后等 /m/projects 链接）超时。与内联路径同款替换 + 同款
+  // Noto @font-face 注入（重复声明无害，浏览器按 URL 去重）
+  if (config.fontAlign === true) {
+    const LOCAL_FONTS = 'PingFang SC|Hiragino Sans GB|Microsoft YaHei|微软雅黑|SimHei|黑体|SimSun|宋体|KaiTi|楷体|Source Han Sans SC|思源黑体|Source Han Serif SC|Noto Sans CJK SC|Noto Serif CJK SC|WenQuanYi[a-zA-Z ]*|Heiti SC|STHeiti|LiHei Pro|SF Pro (?:Text|Display)|Helvetica Neue|Segoe UI|Roboto|Ubuntu|Cantarell|system-ui|apple-system|BlinkMacSystemFont';
+    const famRe = new RegExp('(["\']?)(' + LOCAL_FONTS + ')\\1', 'i');
+    out = out.replace(/font-family\s*:\s*([^;}]+)/gi, (m0, list) => {
+      const out2 = [];
+      for (let pt of String(list).split(',')) {
+        const t = pt.trim();
+        if (!t) continue;
+        const mm = t.match(/^(['\"]?)([^'\"]+)\1$/);
+        const name = mm ? mm[2].trim() : t;
+        if (famRe.test(name) || name === 'system-ui' || name === '-apple-system' || name === 'BlinkMacSystemFont' || name === 'Segoe UI' || name === 'Roboto' || name === 'Ubuntu' || name === 'Cantarell' || name === 'Helvetica Neue') {
+          if (out2.indexOf('"Noto Sans SC"') < 0) out2.push('"Noto Sans SC"');
+        } else if (out2.indexOf(t) < 0) out2.push(t);
+      }
+      return 'font-family:' + out2.join(', ');
+    });
+    out += '\n@font-face{font-family:"Noto Sans SC";font-style:normal;font-weight:400;font-display:block;src:url(/f/noto-regular) format("woff2")}'
+      + '\n@font-face{font-family:"Noto Sans SC";font-style:normal;font-weight:700;font-display:block;src:url(/f/noto-bold) format("woff2")}';
+  }
   return out;
 }
 // v0.25 跨源 iframe 同源化：会话作用域资产代理。secret 为每会话随机值（同 obf
@@ -557,10 +582,10 @@ function proxyAsset(req, res) {
 // 字体由 tools/build_obf_font.py 在构建期烘焙（种子池 assets/obf/），会话创建即生效
 // （零预热）；种子池可扩容，动态按会话构建走同脚本（python3-fonttools）。
 const OBF_ON = config.obfuscate;
-// v0.76 样式表直通：默认关闭（opt-in XY_CSS_PASSTHROUGH=1）。机制完备且经
-// assets/fidelity/generality 全量验证，但 Vikunja 真实业务回归确定性失败
-//（路由切换后补丁 id miss → repair 不收敛，根因待查）——先以开关交付，
-// 内联路径维持 v0.75 行为，直通兼容性立为跟踪项
+// v0.76 样式表直通：默认关闭（opt-in XY_CSS_PASSTHROUGH=1）。v0.84 结案：当年
+// "路由切换后补丁 id miss" 真相是直通字节漏做字体栈对齐 → 保真锚点持续失配
+// → 观测模式重同步循环反复重建镜像（重建窗口补丁 miss 只是表象）——
+// cssProxyRewrite 已补 FONT_ALIGN 同款归一，Vikunja 直通回归转绿
 const CSS_PASS = process.env.XY_CSS_PASSTHROUGH === '1' && !OBF_ON;
 const OBF_POOL_DIR = path.join(__dirname, 'assets', 'obf');
 const OBF_FAMILIES = ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans SC'];
