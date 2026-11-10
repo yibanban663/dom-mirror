@@ -471,3 +471,26 @@
   忠实反映源站行为的副证)。
 - 结论: canvas 2D 指令流管线(v0.82 flush 具名化 + v0.83 离屏豁免后)
   内容级渲染正确; 直通模式共存无干扰。
+
+---
+
+## 第 22 轮:FONT_ALIGN 部分失效根因修复(重大)——中文场景字体对齐首次完整生效
+
+- **发现**(canvas 验证延伸): FONT_ALIGN=true 下镜像 css 的 t1(Microsoft
+  YaHei)/t2(SimSun)font-family 未替换, 仅 t3(system-ui)生效。
+- **根因(终极, 五层转义链)**: page-helpers.js 的 FONT_ALIGN 块位于巨型
+  模板字符串内, famRe 正则的反向引用 \\1 经「文件→模板解析→页内源码→
+  字符串字面量→字符串值」多层解析后变成八进制转义 \\x01 控制字符——
+  famRe 要求文本含 SOH 控制字符, **恒 false** → 所有走 famRe 的本地
+  字体名(中文字体主体)替换全部失效, 仅 system-ui/-apple-system/
+  Segoe UI/Roboto/Ubuntu/Cantarell/Helvetica Neue 等显式 === 判断的
+  字体生效。**v0.35 起既存**(字体对齐对中文部署几乎完全无效)。
+- **修复**: 文件层 \\1 → \\\\1(使页内字符串值为 \\1 反向引用)。
+  页内等价执行验证: test(Microsoft YaHei/SimSun/宋体)=true,
+  test(Georgia)=false ✓。
+- **端到端绿**: 镜像 css .t1/.t2/.t3 全部 font-family:"Noto Sans SC"
+  ✓(此前 t1/t2 原样), t4 Georgia 保留 ✓, @font-face×2 ✓, Noto
+  woff2 加载 200 ✓。
+- **意义**: FONT_ALIGN(v0.35)定位为"客户端重排布局漂移与字形不一致
+  的总根"解决方案——其主路径失效意味着**中文部署的布局漂移从未被
+  真正解决**(仅显式列表部分兜底)。本次修复使其首次完整工作。
