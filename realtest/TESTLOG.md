@@ -417,3 +417,23 @@
   + 1 轮探针 25s 窗口边界(服务端重拍链 22s+ 仍在进行)。
   **白屏率 80% → ≤20%, 最坏形态(永不出现首帧)消除**。
 - npm test 88/88; 全量回归无破坏。
+
+---
+
+## 第 21 轮:事件循环排查闭环——22ms=macOS 空闲定时器合并(测量假象), server 零额外阻塞
+
+- **分层二分**(el-bisect.cjs, monitorEventLoopDelay percentile):
+  A 纯 node 空转: p50=22.09ms | B createMirror 最小配置: p50=22.09ms
+  ——逐样本一致: 22ms = 本机 macOS 对空闲进程的定时器合并效应
+  (~20ms 粒度唤醒), 与 dom-mirror 代码无关。
+- **profile 11ms(活跃期)重定性**: 11ms 是活跃进程(有会话/补丁/快照
+  真实工作)的 EL 延迟, 对比空闲基线 22ms 反而更低——**server 层零
+  额外阻塞**, 11ms 量级对活跃镜像引擎(60ms 补丁/140ms 差分/事件流)
+  合理。方向 3 闭环: 无 bug。
+- **附带发现**: 实验环境 Chrome 泄漏 837 进程(历次 puppeteer 实验
+  累计)——精确清理 100 个临时 profile 主进程(837→25), 机器恢复。
+  **新纪律**: puppeteer 实验结束必须 browser.close + 进程审计
+  (user-data-dir=/var/folders|/tmp 为主进程特征)。
+- **profile-server 锚点 v0.85 同步**: P0 snapOnce 形态锚点更新
+  (measure 包住 snapOnce 整体), __profile record 循环在自动重拍
+  场景暂缺(页内分段数据缺失, 总时长保留)——记录为已知限制。

@@ -36,7 +36,10 @@ replaceHelpers("let docClass = '', docAttrs = '';", "const perfCssEnd = performa
 replaceHelpers("return { css, html: clone.innerHTML,", "return { __profile: { clone: perfCloneEnd - perfStart, css: perfCssEnd - perfCloneEnd, rest: performance.now() - perfCssEnd }, css, html: clone.innerHTML,");
 replace("await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })), 8000, 'frameSheet')", "await __perf.measure('snapshot.captureScreenshot', () => withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })), 8000, 'frameSheet'))");
 // v0.76：snapshotReal 增补 cssPass 形参（同源样式表直通开关）
-replace("await withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === 'frame', CSS_PASS), 10000, 'snapshot');", "await __perf.measure('snapshot.evaluate', () => withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === 'frame', CSS_PASS), 10000, 'snapshot'));\n    for (const [name, ms] of Object.entries(snap.__profile)) __perf.record('snapshot.page.' + name, ms);");
+// v0.85 锚点同步: P0 自动重拍(snapOnce 包装)后的快照调用形态——
+// measure 包住 snapOnce 整体(含重拍), 真实首帧成本完整入账
+replace('const snapOnce = () => withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === \'frame\', CSS_PASS), 10000, \'snapshot\');',
+  "const snapOnce = () => __perf.measure('snapshot.evaluate', () => withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === 'frame', CSS_PASS), 10000, 'snapshot'));");
 replace('const diffFrame = async (b64) => {', 'const diffFrame = async (b64, pf) => {\n      const perfDecodeStart = performance.now();\n      __perf.consumedFrame();');
 replace('const { info, data } = await img.raw().toBuffer({ resolveWithObject: true });', "const { info, data } = await img.raw().toBuffer({ resolveWithObject: true });\n      __perf.record('frame.decode', performance.now() - perfDecodeStart);\n      __perf.capture(b64);");
 replace('const { dirtyRows, any } = scanDirtyRows(', 'const perfScanStart = performance.now();\n      const { dirtyRows, any } = scanDirtyRows(');
