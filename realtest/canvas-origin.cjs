@@ -15,7 +15,7 @@ const PAGE = `<!DOCTYPE html><html><head><title>CANVAS-TEST</title>
   // 动态画布: 持续重绘(60ms 一次)
   const dc = document.getElementById('dynamic').getContext('2d');
   let f = 0;
-  setInterval(() => { dc.fillStyle = '#' + ((f++ % 16) + 10).toString(16) + '0000'; dc.fillRect(0, 0, 200, 120); }, 60);
+  setInterval(() => { const c = ((f++ % 14) + 10).toString(16); dc.fillStyle = '#' + c + c + '0000'; dc.fillRect(0, 0, 200, 120); }, 60);
 </script></body></html>`;
 http.createServer((req, res) => {
   if (req.url === '/main.css') {
