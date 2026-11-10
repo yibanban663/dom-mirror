@@ -371,6 +371,10 @@ async function launchSessionBrowser() {
 // 多源会话（x-rbi-origin 白名单）资产以 /m/o/<b64url(origin)>/path 下发，
 // 短式 /m/path 固定路由到 ORIGIN_URL 缺省源站（历史形态，缓存友好）。
 const ORIGIN_ALLOWED = new Set([ORIGIN_BASE.origin, ...ALLOWED_ORIGINS.map(x => String(x).replace(/\/+$/, ''))]);
+  // v0.85: REQUEST_ALLOWED_ORIGINS(页面请求白名单)同步纳入资产代理/直通改写的
+  // allowedHas——实测语义断裂: 配置域页面放行但 /m/o/ 资产代理 403、直通 css 的
+  // 该域 url() 不改写 → 图片/资源镜像端 404(ruanyifeng 图床遗留 404 同因)
+  const requestPolicyObj = createRequestPolicy(config.requestOrigins);
 // v0.67b 资产代理白名单补 vhost 形态：normalizeSessionOrigin 把会话源站改写为
 // vhost 后，客户端以 /m/o/<b64(vhost)>/ 请求资产，而 ORIGIN_ALLOWED 只有回源
 // IP 形态 → logo 等静态图 403（:91 实测）。为每个命中改写表的白名单源站
@@ -419,7 +423,7 @@ function absToProxy(u) {
   } catch (e) { return null; }
 }
 function cssProxyRewrite(cssText, cssBase) {
-  let out = cssProxyRewritePure(cssText, cssBase, ORIGIN_BASE.origin, (o) => ORIGIN_ALLOWED.has(o) || dynamicOrigins.has(o));
+  let out = cssProxyRewritePure(cssText, cssBase, ORIGIN_BASE.origin, (o) => ORIGIN_ALLOWED.has(o) || dynamicOrigins.has(o) || requestAllowed(o + '/', requestPolicyObj));
   // v0.84 直通字体栈对齐（config.fontAlign）
   if (config.fontAlign === true) {
     const LOCAL_FONTS = 'PingFang SC|Hiragino Sans GB|Microsoft YaHei|微软雅黑|SimHei|黑体|SimSun|宋体|KaiTi|楷体|Source Han Sans SC|思源黑体|Source Han Serif SC|Noto Sans CJK SC|Noto Serif CJK SC|WenQuanYi[a-zA-Z ]*|Heiti SC|STHeiti|LiHei Pro|SF Pro (?:Text|Display)|Helvetica Neue|Segoe UI|Roboto|Ubuntu|Cantarell|system-ui|apple-system|BlinkMacSystemFont';
@@ -489,7 +493,7 @@ function proxyAsset(req, res) {
   if (mo) {
     let org = null;
     try { org = new URL(Buffer.from(mo[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch (e) {}
-    if (!org || !/^https?:$/.test(org.protocol) || !(ORIGIN_ALLOWED.has(org.origin) || dynamicOrigins.has(org.origin))) { res.writeHead(403); res.end('asset origin'); return; }
+    if (!org || !/^https?:$/.test(org.protocol) || !(ORIGIN_ALLOWED.has(org.origin) || dynamicOrigins.has(org.origin) || requestAllowed(org.origin + '/', requestPolicyObj))) { res.writeHead(403); res.end('asset origin'); return; }
     base = new URL(org.origin + '/');
     rest = mo[2] || '/';
   }

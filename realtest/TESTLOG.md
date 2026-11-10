@@ -437,3 +437,24 @@
 - **profile-server 锚点 v0.85 同步**: P0 snapOnce 形态锚点更新
   (measure 包住 snapOnce 整体), __profile record 循环在自动重拍
   场景暂缺(页内分段数据缺失, 总时长保留)——记录为已知限制。
+
+---
+
+## 第 20 轮(续):REQUEST_ALLOWED_ORIGINS 语义断裂修复——遗留图片 404 根治
+
+- **发现链**: 直通 @import 修复实测中——REQUEST_ALLOWED_ORIGINS=beekka 配置下
+  遗留 2 张图仍被拦/403; 快照却稳定 154ms×3(对比此前 10-22s, 白名单化后
+  挂起消失——PR #75 根因链"被拦资源致 DOM 持续变化"的直接实证)。
+- **语义断裂(根因)**: REQUEST_ALLOWED_ORIGINS 只进页面请求拦截白名单
+  (policy/navOrigins); 三处资产面缺失:
+  ① /m/o/ 资产代理的 origin 检查(ORIGIN_ALLOWED||dynamicOrigins)
+  ② 直通改写薄壳 allowedHas 同缺
+  ③ warm 预热期拦截器(takeover 前的牺牲请求, 时序性)
+- **修复**: createRequestPolicy(config.requestOrigins) 建 policy 对象(含
+  通配 suffix)→ ① /m/o/ origin 检查 + ② 薄壳 allowedHas 均扩展
+  requestAllowed(o+'/', requestPolicyObj); ③ 属预热时序(页面加载后
+  懒加载图片走会话拦截器已放行)。
+- **红绿**: 遗留图1 200/1441B ✓ 图2 200/6392B ✓(此前 403); evil 域
+  403 ✓ 白名单外 google 403 ✓(安全边界完好); css-proxy-rewrite 8/8;
+  全量 90/90; check 通过。
+- **批次 3 遗留(ruanyifeng 图 404×2)至此根治闭环。**
