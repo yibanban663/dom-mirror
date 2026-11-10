@@ -41,6 +41,9 @@ const { listCanvases: canvasList, createCanvasSigs } = require('./lib/canvas');
 function cssProxyRewritePure(cssText, cssBase, originBase, allowedHas) {
   const ob = new URL(originBase).origin; // 规范化: 防调用方传带尾斜杠/路径的值
   const resolveToProxy = (u) => {
+    // 排除集对齐页内 toProxyUrl: 内联引用(fragment)/数据/协议化 URI 不走代理;
+    // 已改写的 /m/ 路径不再二次改写(幂等, 防 /m/m/ 病态)
+    if (/^(data:|blob:|#|mailto:|tel:|javascript:|about:|\/m\/)/i.test(String(u))) return null;
     try {
       const x = new URL(String(u), cssBase || undefined);
       if (!['http:', 'https:'].includes(x.protocol) || x.username || x.password) return null;

@@ -44,3 +44,14 @@ test('既有行为不回归: 字体对齐无关的普通规则/选择器替换',
   assert.ok(out.includes('.xy-body{--x:1}'), 'html→.xy-body');
   assert.ok(out.includes('.xy-body{--y:2}'), ':root→.xy-body');
 });
+
+test('fragment 引用(#)不改写——SVG filter/clip-path 引用断裂防护', () => {
+  const out = cssProxyRewritePure('a{clip-path:url(#myclip);filter:url(#f)}', BASE, ORIGIN + '/', allowedHas);
+  assert.ok(out.includes('url(#myclip)') && out.includes('url(#f)'), 'fragment 必须原样, 实际: ' + out);
+});
+
+test('幂等: 已改写的 /m/ 路径不二次改写(防 /m/m/ 病态)', () => {
+  const out = cssProxyRewritePure('a{background:url(/m/sub.css)}', BASE, ORIGIN + '/', allowedHas);
+  assert.ok(!out.includes('/m/m/'), '禁止双重改写, 实际: ' + out);
+  assert.ok(out.includes('url(/m/sub.css)'), '已改写路径原样保留: ' + out);
+});
