@@ -2085,7 +2085,21 @@ async function runSession(ws, req, lifecycle) {
         await page.evaluate((b64) => { window.__xyFrameShot = b64; }, shotF.data);
       } catch (e) { await page.evaluate(() => { window.__xyFrameShot = null; }).catch(() => {}); }
     }
-    const snap = await withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === 'frame', CSS_PASS), 10000, 'snapshot');
+    // v0.85 P0 缓解：首拍超时自动重拍一次——实测外网真实站点(被拦图床致 DOM
+    // 持续变化+补丁链活跃)首拍 evaluate 随机性暴涨至 10-22s(v0.78-84 均现，
+    // ruanyifeng 5 轮 2-4 白屏)，多为瞬态：延迟 2s 待页面/网络平息后重拍，
+    // 二次仍超时则抛(维持既有错误路径)。重拍期间无快照可丢，白屏时长不变短
+    // 但消掉“永不出现首帧”的最坏形态
+    const snapOnce = () => withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === 'frame', CSS_PASS), 10000, 'snapshot');
+    let snap;
+    try {
+      snap = await snapOnce();
+    } catch (e) {
+      if (!/timeout:snapshot/.test(String(e && e.message))) throw e;
+      logger.log('[snap ] first-shot timeout, auto-retry in 2s');
+      await new Promise((r2) => setTimeout(r2, 2000));
+      snap = await snapOnce();
+    }
     try {
       const diag = await page.evaluate(() => window.__xyCssDiag || null);
       if (diag) logger.log(`[snapcss] ${diag.url} links=${diag.hrefs.length}(${diag.hrefs.map(h => h.split('/').pop()).join(',')}) kf=${diag.kf} cssLen=${diag.styleLen + diag.linkLen}`);
