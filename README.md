@@ -7,7 +7,7 @@
 
 A **Node.js library** for embedding remote browser mirroring into your own application. Each session runs an independent Chromium; the client receives DOM/CSS snapshots and incremental updates, renders them locally, and sends interactions back. A standalone Demo is included for exploration and regression testing.
 
-**Source version: 0.28.0 · Node.js ≥ 22.12 · Apache-2.0**
+**Source version: 0.29.0 · Node.js ≥ 22.12 · Apache-2.0**
 
 The source version does not imply an npm release. This is an experimental library, with the compatibility and security boundaries described below.
 
@@ -25,7 +25,7 @@ flowchart LR
 
 | Mode | What happens |
 | --- | --- |
-| **`dom`** — default | Cleaned DOM/CSS is rendered in a client-side Shadow DOM. Mutations become patches; 2D/WebGL canvases replay draw instructions client-side (opt-in) or compress to image tiles with animation-aware quality tiers. |
+| **`dom`** — default | Cleaned DOM/CSS is rendered in a client-side Shadow DOM. Mutations become patches; 2D/WebGL canvases replay draw instructions client-side (opt-in, open shadow-root canvases included) or compress to image tiles with animation-aware quality tiers. |
 | **`frame`** — fallback | Chromium-generated PNG tiles provide the page appearance. Mirrored DOM and the interaction pipeline are still present. |
 
 - **Local rendering:** DOM-mode scrolling, CSS hover and animations can run locally; business interactions are sent back to Chromium.
@@ -48,7 +48,7 @@ npm pack
 Install the generated file in your host project:
 
 ```bash
-npm install /path/to/lizhen-xxaq-dom-mirror-0.28.0.tgz
+npm install /path/to/lizhen-xxaq-dom-mirror-0.29.0.tgz
 ```
 
 Chromium and its system libraries must be available in the host environment. If your environment manages Chromium separately, use `PUPPETEER_SKIP_DOWNLOAD=true` during installation and pass its path through `launchOptions.executablePath`.
@@ -78,7 +78,7 @@ The built-in client currently requires **the root path of a dedicated origin**, 
 
 See the [complete host example](examples/host.cjs), [API reference and migration notes — Chinese](docs/API.md), and [WebSocket protocol — Chinese](docs/PROTOCOL.md).
 
-New in 0.28: layout-fingerprint fidelity reconciliation with observe-only divergence handling, opt-in 2D/WebGL render-instruction streaming (server journals draw calls, the client replays them on its own GPU — no source code is shipped), animation-aware quality tiers for large canvases, typed-input draft persistence across page reloads and same-document reconnects, and layout-drift self-healing via DOM re-sync. 0.27 added stable node IDs, IME, uploads/downloads, Shadow DOM/iframe handling and canvas fidelity regressions; uploads use 32 KiB raw chunks with per-session byte, concurrency and expiry budgets. Node-side cross-origin iframe fetching is disabled unless the host explicitly sets `crossOriginFrameOrigins`; it shares the field-redaction policy. Hosts still control outbound network access. See the [API limits](docs/API.md).
+New in 0.29: open shadow-root canvases join the 2D/WebGL instruction stream (closed shadow roots stay on bitmap — the client cannot see them), draw-history re-sending after mirror rebuilds now covers static canvases, and the opt-in stylesheet passthrough engine option (`XY_CSS_PASSTHROUGH=1`, off by default) is production-ready — gateway-side URL and `html`/`:root`/`body` selector rewriting plus font-stack alignment, verified end-to-end against a real business suite. 0.28 added layout-fingerprint fidelity reconciliation (observe or downgrade), instruction streaming, animation-aware quality tiers, typed-input draft persistence and drift self-healing; 0.27 added stable node IDs, IME, uploads/downloads, Shadow DOM/iframe handling and canvas fidelity regressions; uploads use 32 KiB raw chunks with per-session byte, concurrency and expiry budgets. Node-side cross-origin iframe fetching is disabled unless the host explicitly sets `crossOriginFrameOrigins`; it shares the field-redaction policy. Hosts still control outbound network access. See the [API limits](docs/API.md).
 
 ## Run the Demo
 
