@@ -34,6 +34,41 @@ const input = require('./lib/input');
 const xframe = require('./lib/xframe');
 const { listCanvases: canvasList, createCanvasSigs } = require('./lib/canvas');
 
+// v0.85 直通 CSS 改写（纯函数，依赖注入可测）：相对路径按样式表地址解析——
+// 实测 @import url("/sub.css") 相对根路径在镜像端按壳解析 404 → @import 链断
+// → 子样式表规则全丢（h2 色实测 rgb(0,0,0) vs 期望 rgb(0,119,0)）。
+// 语义对齐页内 toProxyUrl：同源→/m/<path>，白名单跨源→/m/o/<b64>，其他→不改写
+function cssProxyRewritePure(cssText, cssBase, originBase, allowedHas) {
+  const ob = new URL(originBase).origin; // 规范化: 防调用方传带尾斜杠/路径的值
+  const resolveToProxy = (u) => {
+    try {
+      const x = new URL(String(u), cssBase || undefined);
+      if (!['http:', 'https:'].includes(x.protocol) || x.username || x.password) return null;
+      if (x.origin === ob) return '/m' + x.pathname + x.search;
+      if (allowedHas(x.origin)) {
+        return '/m/o/' + Buffer.from(x.origin).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + x.pathname + x.search;
+      }
+      return null;
+    } catch (e) { return null; }
+  };
+  let out = String(cssText).replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (whole, q, u) => {
+    const p = resolveToProxy(u);
+    return p ? 'url(' + q + p + q + ')' : whole;
+  });
+  out = out.replace(/(image-set\(|-webkit-image-set\()\s*(['"])([^'"]+)\2/g, (whole, fn, q, u) => {
+    const p = resolveToProxy(u);
+    return p ? fn + ' ' + q + p + q : whole;
+  });
+  out = out.replace(/@import\s+(?!url\()(['"])([^'"]+)\1/g, (whole, q, u) => {
+    const p = resolveToProxy(u);
+    return p ? '@import ' + q + p + q : whole;
+  });
+  out = out
+    .replace(/:root(?=[\[{.,:;\s)])/g, '.xy-body')
+    .replace(/(^|[\s,{}>+~;])html(?=[\[{.,:;\s)])/g, '$1.xy-body')
+    .replace(/(^|[\s,{}>+~;])body(?=[\[{.,:;\s)])/g, '$1.xy-body');
+  return out;
+}
 function createMirror(options) {
 const config = normalizeOptions(options);
 const {
@@ -380,31 +415,9 @@ function absToProxy(u) {
     return '/m/o/' + Buffer.from(x.origin).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + x.pathname + x.search;
   } catch (e) { return null; }
 }
-function cssProxyRewrite(cssText) {
-  let out = String(cssText).replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (whole, q, u) => {
-    const p = absToProxy(u);
-    return p ? 'url(' + q + p + q + ')' : whole;
-  });
-  out = out.replace(/(image-set\(|-webkit-image-set\()\s*(['"])([^'"]+)\2/g, (whole, fn, q, u) => {
-    const p = absToProxy(u);
-    return p ? fn + ' ' + q + p + q : whole;
-  });
-  out = out.replace(/@import\s+(?!url\()(['"])([^'"]+)\1/g, (whole, q, u) => {
-    const p = absToProxy(u);
-    return p ? '@import ' + q + p + q : whole;
-  });
-  // html/:root/body → .xy-body（与客户端 buildMirror 的映射同款，作用于
-  // 独立下发的样式表字节）
-  out = out
-    .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
-    .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
-    .replace(/(^|[\s,{}>+~])body(?=[\[{.,:\s)])/g, '$1.xy-body');
-  // v0.84 直通字体栈对齐：v0.76 直通遗漏了内联路径的 FONT_ALIGN（v0.35）——
-  // 原始字节里的本地字体名（system-ui/Segoe UI/微软雅黑…）在客户端按访客机器
-  // 解析、服务端按容器 fontconfig 解析，物理字体不同 → 排版度量漂移 → 保真
-  // 锚点失配（Vikunja 实测 3/19）→ 观测模式 15s 重同步死循环、镜像反复重建，
-  // 业务回归（create 后等 /m/projects 链接）超时。与内联路径同款替换 + 同款
-  // Noto @font-face 注入（重复声明无害，浏览器按 URL 去重）
+function cssProxyRewrite(cssText, cssBase) {
+  let out = cssProxyRewritePure(cssText, cssBase, ORIGIN_BASE.origin, (o) => ORIGIN_ALLOWED.has(o) || dynamicOrigins.has(o));
+  // v0.84 直通字体栈对齐（config.fontAlign）
   if (config.fontAlign === true) {
     const LOCAL_FONTS = 'PingFang SC|Hiragino Sans GB|Microsoft YaHei|微软雅黑|SimHei|黑体|SimSun|宋体|KaiTi|楷体|Source Han Sans SC|思源黑体|Source Han Serif SC|Noto Sans CJK SC|Noto Serif CJK SC|WenQuanYi[a-zA-Z ]*|Heiti SC|STHeiti|LiHei Pro|SF Pro (?:Text|Display)|Helvetica Neue|Segoe UI|Roboto|Ubuntu|Cantarell|system-ui|apple-system|BlinkMacSystemFont';
     const famRe = new RegExp('(["\']?)(' + LOCAL_FONTS + ')\\1', 'i');
@@ -533,7 +546,7 @@ function proxyAsset(req, res) {
         }
         let body = Buffer.concat(chunks);
         // v0.76：css 响应改写后再入库/下发（缓存里存改写后形态，命中零成本）
-        if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'))); } catch (e) {} }
+        if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'), u)); } catch (e) {} }
         originAssetCache.put(cacheKey, { status: up.statusCode || 200, headers: up.headers, body });
         if (!res.headersSent) {
           res.writeHead(up.statusCode || 200, {
@@ -553,7 +566,7 @@ function proxyAsset(req, res) {
       up.on('data', (c) => chunks2.push(c));
       up.on('end', () => {
         let b2 = Buffer.concat(chunks2);
-        try { b2 = Buffer.from(cssProxyRewrite(b2.toString('utf8'))); } catch (e) {}
+        try { b2 = Buffer.from(cssProxyRewrite(b2.toString('utf8'), u)); } catch (e) {}
         res.end(b2);
       });
       up.on('error', () => res.destroy());
@@ -3379,4 +3392,4 @@ function close() {
 return { handleRequest, handleUpgrade, revokeSession, revokeIdentity, close };
 }
 
-module.exports = { createMirror };
+module.exports = { createMirror, cssProxyRewritePure };

@@ -371,3 +371,33 @@
 - **已尝试清单**: 直测页内/直通路径/装配模拟/双注入/带路径前缀/拦截器/
   被拦图片/持续变化/大 DOM/exposeFunction/表达式形态/30s 阈值/1+1 探针/
   raw CDP 对照/页内计时包装/字段长度审计/并发探针——**17 项**。
+
+---
+
+## 第 19 轮:直通 @import 缺陷修复(红绿闭环)——真 bug 定位与修复
+
+- **发现**: CSS 直通(XY_CSS_PASSTHROUGH=1)下 @import 链断——实测 canvas
+  + 双 css 源站: main.css 生效但 @import 的 sub.css 规则全丢(h2 色黑)。
+- **根因两层**:
+  ① cssProxyRewrite(直通路径)的 url() 改写委托 absToProxy——相对路径
+  (/sub.css)不匹配 ^https?:// 直接 null → 不改写 → 镜像端按壳解析 404
+  (内联路径 toProxyUrl 有 base 解析, 直通路径漏——直通 v0.76-84 的
+  功能完整性缺口系列第二例, 第一例=字体对齐 v0.84 已修)。
+  ② 测试页自身 @import 位置违反 CSS 规范(规则后 @import 被浏览器忽略)
+  ——测量构造错误被"改写正确后仍不生效"暴露并修正。
+- **修复**(red→green 完整闭环):
+  ① 顶层纯函数 cssProxyRewritePure(cssText, cssBase, originBase,
+  allowedHas 依赖注入; 相对按 base 解析; 同源→/m/<path>; 白名单跨源
+  →/m/o/<b64>; 其他→不改写); createMirror 内 cssProxyRewrite 变薄壳
+  (委托 Pure + FONT_ALIGN)。注: server.js 的真实结构是 createMirror
+  巨函数包全部引擎函数(37-3396)——cssProxyRewritePure 等同为内部函数,
+  测试经 module.exports 语义等价导出(实际导出的 Pure 供外部复用)。
+  ② 选择器 lookahead 补 ';'(@import 改写后紧跟分号的 body 不替换——
+  v0.76 原版同款缺口顺带修复)。
+  ③ 调用点传响应 URL(base); Pure 内 originBase 规范化(防尾斜杠)。
+- **红绿**: 6 用例(红: @import 不改写 → 绿: 6/6)+ 全量 88/88 + check +
+  真实环境(/m/main.css 改写含 /m/sub.css ✓ + h2 色 rgb(0,119,0) ✓ +
+  画布×2 ✓)。
+- **过程教训**: 文件手术(行级 python)在巨函数文件上两次破坏结构——
+  最终以 write 纯文本块 + node 行级脚本(零转义)完成; server.js 真实
+  结构(createMirror 巨函数)此前被误判为顶层——深度分析脚本定位。
