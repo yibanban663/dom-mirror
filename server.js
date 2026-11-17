@@ -1086,13 +1086,18 @@ async function runSession(ws, req, lifecycle) {
 
   // ===== DL 模式（Display-List 指令流）：采集 → diff → 下发 =====
   // v2：MutationObserver 增量门（页面无变化时 collector 立即 skip）+ 空闲自适应间隔
-  let dlTimer = null, dlPrev = null, dlFirst = true, dlBusy = false, dlSkip = 0;
+  let dlTimer = null, dlPrev = null, dlFirst = true, dlBusy = false, dlSkip = 0, dlUrl = '';
   function startDlMirror() {
     if (dlTimer) return;
     const tickDl = async () => {
       if (dlBusy || !page || dead || mode !== 'dl') return { skipped: true };
       dlBusy = true;
       try {
+        // v4：导航检测——URL 变了(含 302 弹回)就重置为全量帧，客户端 store 清空重建
+        let curUrl = '';
+        try { curUrl = page.url(); } catch (e) {}
+        if (curUrl && dlUrl && curUrl !== dlUrl) { dlFirst = true; dlPrev = null; }
+        if (curUrl) dlUrl = curUrl;
         const data = await page.evaluate(`(${DL_COLLECTOR})(${viewW}, ${viewH})`);
         if (!data || data.skip || !Array.isArray(data.items)) return { skipped: true };
         const cur = new Map(); const changed = [];
