@@ -1174,6 +1174,13 @@ async function runSession(ws, req, lifecycle) {
     };
     step();
   }
+  // v6: 输入回显桥——把 activeElement 的 value 写进 data-xydl-val 属性，MutationObserver 即触发该元素重采
+  const __xyDlEchoVal = async (pg) => {
+    try {
+      await pg.evaluate("(() => { const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.value) a.setAttribute('data-xydl-val', String(a.value).slice(0, 120)); })()");
+    } catch (e) {}
+  };
+
   function stopDlMirror() {
     if (dlTimer) { clearTimeout(dlTimer); dlTimer = null; }
     dlPrev = null; dlFirst = true; dlSkip = 0;
@@ -1568,6 +1575,7 @@ async function runSession(ws, req, lifecycle) {
               delete m.x; delete m.y;
             }
             await input.composition(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition failed: ' + err.message }));
+            await __xyDlEchoVal(page); // v6: 把合成文本写入属性触发 DL 采集回显
             break;
           case 'composition-commit':
             noteInput();
@@ -1577,6 +1585,7 @@ async function runSession(ws, req, lifecycle) {
               delete m.x; delete m.y;
             }
             await input.compositionCommit(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition commit failed: ' + err.message }));
+            await __xyDlEchoVal(page); // v6: 上屏文本写入属性触发 DL 采集回显
             break;
           case 'upload-begin': {
             // 镜像文件上传（v0.13）：客户端 File → WS 分块 → 会话临时目录 →
