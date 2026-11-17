@@ -1,0 +1,45 @@
+{
+  "matrix": {
+    "modes": [
+      "dom",
+      "frame"
+    ],
+    "sessions": [
+      1,
+      3,
+      6
+    ],
+    "repetitions": 2
+  },
+  "limits": {
+    "mirrorCpus": 2,
+    "mirrorMemoryMiB": 2048,
+    "clientCpus": 4,
+    "clientMemoryMiB": 4096
+  },
+  "workload": {
+    "warmupPerSession": 3,
+    "measuredPerSession": 20,
+    "periodMs": 1000,
+    "viewport": [
+      1280,
+      900
+    ],
+    "sessionGraceMs": 3000,
+    "fixture": "synthetic dashboard, 150 rows, canvas redraw and per-operation source receipt"
+  },
+  "budgets": {
+    "coldReadyMaxMs": 15000,
+    "domP95Ms": 500,
+    "frameDrawP95Ms": 1000,
+    "memoryPeakMiB": 1638.4,
+    "postCleanupAnonGrowthMiB": 64,
+    "oomKillDelta": 0
+  },
+  "notes": [
+    "Performance misses are reported, never relaxed after observing results.",
+    "Stop escalation for a mode on functional failure or OOM.",
+    "Cold metric is mirror client DOM plus sync-ready, not first pixel.",
+    "No production capacity or long-soak claim."
+  ]
+}

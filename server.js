@@ -1,0 +1,3382 @@
+'use strict';
+/**
+ * dom-mirror 可嵌入 DOM 镜像引擎。进程、端口与 Demo 由宿主管理。
+ *
+ * 两种模式（客户端可运行时切换）：
+ *  - dom   : 真文本 DOM 镜像（默认）——服务端序列化 DOM+CSS，客户端原生渲染
+ *            （布局/CSS 动画/悬停/输入全部本地 60fps），增量补丁事件驱动，
+ *            结构补丁事件驱动；可选字体混淆（PUA 双映射）
+ *  - frame : 像素直出兜底——合成器帧驱动差分，整页 PNG 条带下发（无视频编解码）
+ *
+ * 链路：客户端浏览器 <--WS--> 宿主接入 --CDP--> 无头Chromium --HTTP--> 配置源站
+ */
+const fs = require('fs');
+const zlib = require('zlib');
+const fsp = require('fs/promises');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { WebSocketServer } = require('ws');
+const puppeteer = require('puppeteer').default;
+const { assetUrl, selectOrigin, createRequestPolicy, requestAllowed } = require('./lib/policy');
+const { fidelityJudge, createFidelityStore, FIDELITY_PASS, FIDELITY_MIN_JUDGED } = require('./lib/fidelity');
+const { stripClientComments } = require('./lib/text-utils');
+const { SessionStore } = require('./lib/sessions');
+const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
+const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
+
+const { normalizeOptions } = require('./lib/options');
+const { createBlockedOriginTracker } = require('./lib/policy-report');
+const { createStaticFiles } = require('./lib/static');
+const { createTimers } = require('./lib/timers');
+const { pageHelpers } = require('./lib/page-helpers');
+const input = require('./lib/input');
+const xframe = require('./lib/xframe');
+const { listCanvases: canvasList, createCanvasSigs } = require('./lib/canvas');
+
+function createMirror(options) {
+const config = normalizeOptions(options);
+const {
+  originUrl: ORIGIN_URL, width: VIEW_W, height: VIEW_H,
+  maxSessions: MAX_SESSIONS, sessionGraceMs: SESSION_GRACE_MS,
+  allowedOrigins: ALLOWED_ORIGINS, defaultMode: DEFAULT_MODE,
+} = config;
+const UPLOAD_MAX = config.upload.maxBytes;
+const UPLOAD_EXTS = new Set(config.upload.extensions);
+const DOWNLOAD_MAX = config.download.maxBytes;
+const ORIGIN_BASE = new URL(ORIGIN_URL);
+const logger = config.logger;
+let sharp = null; try { sharp = require('sharp'); } catch (e) { logger.log('[sharp ] unavailable:', e.message); }
+// chromiumSandbox=false 仅用于无法提供 user namespace 的环境（渲染进程被攻破即拿到宿主进程权限）
+const CHROME_ARGS = [
+  ...(config.chromiumSandbox ? [] : ['--no-sandbox', '--disable-setuid-sandbox']), '--disable-dev-shm-usage',
+  '--disable-gpu', '--hide-scrollbars', '--mute-audio',
+  '--force-color-profile=srgb', '--font-render-hinting=none',
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  // v0.72 HTTPS-First 探测禁用：全新（无访问历史）浏览器首访 http-only vhost 时
+  // Chromium 自动把导航升级到 https 试探，被拒后整次导航失败（ERR_BLOCKED_BY_CLIENT，
+  // yz 源站直开实测）。热页池的访问历史掩盖了冷启动场景——禁用后行为确定性
+  // 不依赖池状态；显式 https 链接不受影响
+  '--disable-features=CalculateNativeWinOcclusion,HttpsUpgrades,HttpsFirstBalancedMode,HttpsFirstModeV2ForEngagedSites',
+];
+let closed = false;
+let closePromise;
+const sessionTasks = new Set();
+const cleanups = new Set();
+const requests = new Set();
+function trackRequest(req) {
+  requests.add(req);
+  req.once('close', () => requests.delete(req));
+  return req;
+}
+
+const PAGE_HELPERS = pageHelpers(config);
+// 会话级 PAGE_HELPERS：按 sessionOrigin 替换源站前缀（多源会话的绝对地址改写与
+// /m/o/<b64> 资产下发都依赖它；替换失败时运行态回退仅影响绝对地址）。第二个
+// 占位符固定替换为 ORIGIN_URL 缺省源站——短式 /m 只路由到它。
+function pageHelpersFor(originPrefix) {
+  const esc = JSON.stringify(String(originPrefix)).slice(1, -1);
+  return PAGE_HELPERS
+    .split('__XY_DEFAULT_PREFIX__').join(JSON.stringify(ORIGIN_BASE.origin).slice(1, -1))
+    .split('__XY_ORIGIN_PREFIX__').join(esc);
+}
+
+// ---------- 静态文件 ----------
+const { sendFile, staticHandler, clear: clearStaticFiles } = createStaticFiles();
+
+// ---------- Chromium：每会话独立实例 ----------
+// 共享单例下多标签并发截图会间歇产出错位/幽灵瓦片（像素级实测：瓦片内容与坐标
+// 张冠李戴）。使用独立实例；实际容量由宿主按业务测量。
+const { createBrowserPool } = require('./lib/browser-pool');
+// v0.30 实例池（browserPoolSize=0 时为 null，保持一会话一浏览器）
+const sessionLaunch = () => puppeteer.launch({
+  headless: true,
+  args: CHROME_ARGS,
+  defaultViewport: { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 },
+  ...config.launchOptions,
+});
+const browserPool = config.browserPoolSize > 0
+  ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger, maxTenants: config.browserPoolTenants, idleHibernateMs: config.browserPoolHibernateMs })
+  : null;
+// v0.32 镜像复用：热页池（单访客专用预热页，免冷启动）+ 源站静态资产跨会话共享缓存
+const { createWarmPageManager } = require('./lib/warm-pages');
+const { createOriginAssetCache } = require('./lib/origin-asset-cache');
+const originAssetCache = config.originAssetCacheMb > 0
+  ? createOriginAssetCache({ maxBytes: config.originAssetCacheMb * 1024 * 1024, defaultTtlMs: config.originAssetCacheTtl })
+  : null;
+const warmPages = createWarmPageManager({
+    helpers: (origin) => { try { return pageHelpersFor(origin); } catch (e) { return null; } },
+  browserPool, warmup: config.sessionWarmup, ttlMs: config.sessionWarmupTtl, requestAllowed, logger,
+  // v0.32.5 底色预热：热页就绪即采样回填注入缓存——服务重启后第一访也零白/黑闪
+  onReady: (entry) => {
+    try {
+      pageBodyBg(entry.page).then((bg) => { if (bg) originBgCache.set(new URL(entry.url).origin, bg); }).catch(() => {});
+    } catch (e) {}
+  },
+});
+// v0.33.1 启动即预热全部允许源（warm 原本只在首会话才注册——重启后无人访问
+// 则底色缓存恒冷、注入恒缺失；现 boot 即热，首访也零闪）
+if (warmPages) {
+  for (const o of [ORIGIN_URL, ...(ALLOWED_ORIGINS || [])]) {
+    try { warmPages.register(o, o); } catch (e) {}
+  }
+  // 一键接入的新源即时 register；周期兜底补热
+  const dynTimer = setInterval(() => {
+    for (const o of dynamicOrigins) { try { warmPages.register(o, o + '/'); } catch (e) {} }
+  }, 30000);
+  if (dynTimer && typeof dynTimer.unref === 'function') dynTimer.unref();
+}
+// v0.32.2 消白闪：源站底色按源缓存——注入下发 index.html 首绘即源站色
+// （meta.bg 只救得了 meta 之后；HTML 自身首绘的白窗要靠注入消灭）
+const originBgCache = new Map(); // origin -> css color
+function pathname_api(req) { try { return new URL(req.url, 'http://x').pathname; } catch (e) { return ''; } }
+// v0.35 一键接入：动态源站注册表——POST /api/sites 即时放行新站点（热页/资产
+// 缓存/底色注入按源联动），无需重启改环境变量
+const dynamicOrigins = new Set();
+const liveAllowed = () => [...ALLOWED_ORIGINS, ...dynamicOrigins]; // selectOrigin 用 includes——必须数组
+// v0.66 回源 vhost 改写：ORIGIN_HOST_REWRITE="10.1.1.13:30080=>www.yuzhian.com.cn,..."
+// 用于按 Host 分发的回源（k8s ingress/nginx 虚机）：会话浏览器按 IP 访问会落默认 404。
+const originHostRewrite = new Map(String(process.env.ORIGIN_HOST_REWRITE || '').split(',').map(x => x.trim()).filter(Boolean).map(x => { const i = x.indexOf('=>'); return i > 0 ? [x.slice(0, i).trim(), x.slice(i + 2).trim()] : null; }).filter(Boolean));
+// v0.66 会话源站 vhost 规范化：白名单按原始形态校验（RBI_ALLOWED_ORIGINS 配回源地址），
+// 通过后导航/资产/会话内部一致改用 vhost 形态（容器 --add-host 把 vhost 解析到回源 IP），
+// Host 头天然正确——请求拦截覆盖 Host 对主导航不生效，暖池预热同样受益于此路径。
+function normalizeSessionOrigin(o) {
+  try {
+    const u = new URL(o);
+    const vh = originHostRewrite.get(u.host);
+    if (!vh) return o;
+    u.hostname = vh;
+    u.host = vh + (u.port ? ':' + u.port : '');
+    return u.origin;
+  } catch (e) { return o; }
+}
+const addDynamicOrigin = (origin) => {
+  try {
+    const u = new URL(origin);
+    if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password) return null;
+    const key = u.origin;
+    dynamicOrigins.add(key);
+    if (warmPages) { try { warmPages.register(key, key + '/'); } catch (e) {} }
+    return key;
+  } catch (e) { return null; }
+};
+
+// v0.32.2 消白闪：入口 HTML 注入源站底色（首绘即源站色；<head> 后插一行样式）
+let clientHtmlRaw = null;
+// v0.36 防泄漏：下发前剥注释（整行 // 与 /* */ 块、HTML 注释整段）——
+// 引擎内部版本史/设计注释不该暴露给访客；并注入控制台静默（?xydebug 开启）
+// v0.74 改状态机剥除：此前按行首标记过滤，多行 /* */ 的"非 * 开头续行"
+// （v0.55 CSS 中文注释实测）残留为裸文本——CSS 解析器把裸文本与下一条
+// 规则的选择器合并为非法选择器整条丢弃（body.prod #navWrap 失效 → prod
+// 工具栏不浮层化、被镜像层盖住，gen_nav 地址栏跳转点击全落空）。逐块
+// 扫 /* 开闭 + 行内完整对剥除 + 行首 // 保持原语义；客户端已核实无字符串
+// 内嵌 /* 风险（仅 4 处完整内联对）
+// v0.52 快照重放：F5/断线 resume 时 page 静止则原样重放上次快照帧——
+// 跳过 snapshotReal 全量（beacon 页实测 247KB CSS 收集 + 全 DOM 序列化 1-3s），
+// 刷新白窗从「全量快照耗时」降到一次 RTT。全局预算防 1000 会话各持大帧
+const SNAP_REPLAY_BUDGET = 256 * 1024 * 1024;
+let snapReplayBytes = 0;
+function quickDomSig(p) {
+  return p.evaluate(() => {
+    // v0.74 表单值指纹：.value 经原型 setter 写入不产生任何 DOM 变更（子文本/
+    // 属性都不动），url/els/len 对打字完全无感——resume 的 F5 快照重放曾据此把
+    // 打字中途的陈旧快照当"静止页"原样重放（Vikunja 草稿恢复实测：会话页
+    // .value 完整 25 字符、重放 payload 停在 10 字符）。指纹只串联各控件值
+    // 长度（不含明文），任何字段增删改都使指纹变化。
+    let vals = '';
+    try {
+      for (const el of document.body.querySelectorAll('input, textarea, select')) vals += String((el.value || '')).length + '.';
+    } catch (e2) { vals = 'E'; }
+    return {
+      url: location.pathname + location.search,
+      els: document.querySelectorAll('*').length,
+      len: (document.documentElement.outerHTML || '').length,
+      vals,
+    };
+  }).catch(() => null);
+}
+
+function serveClientHtml(req, res) {
+  try {
+    if (clientHtmlRaw === null) clientHtmlRaw = stripClientComments(fs.readFileSync(path.join(__dirname, 'client', 'index.html'), 'utf8'));
+    // req.rbiOrigin 只在 WS upgrade 设置；GET 请求直接从受信头选源（多租户）
+    let origin = ORIGIN_URL;
+    try { origin = normalizeSessionOrigin(new URL(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())).origin); } catch (e) {}
+    const bg = originBgCache.get(origin);
+    const bgSafe = bg ? bg.replace(/[^a-z0-9 (),.%#]/gi, '') : '';
+    let html = clientHtmlRaw;
+    // v0.51 无感模式：embedded 呈现预置 body.prod——此前 prod 类要等 WS meta
+    // 到达才追加，首屏 demo 壳（标题/指标/自检面板）闪现后才隐藏，客户可感知
+    if (config.presentation === 'embedded') {
+      html = html.replace('<body', '<body class="prod"');
+    }
+    if (bgSafe) {
+      // v0.35.2：注入必须同时压 html/body/#mirrorScroll——客户端壳自带
+      // body{background:var(--bg)=#0f1420 深色} 与 #mirrorScroll 内联 #fff，
+      // meta 到达（prod 类/背景修正）前的窗口里它们各自会盖出一记异色帧：
+      // :82（浅色源站）实测「白→黑→白」两跳，用户看到的就是「跳白两下」
+      html = html.replace('<html', '<html style="background:' + bgSafe + '"');
+      // .canvas-box 基础样式是 #000（像素画布容器）——meta 到达前它也是一块黑板；
+      // :82（浅色源站）实测白→黑→白两跳即此。一并纳入首绘底色
+      html = html.replace('<head>', '<head><style id="xyBgPre">html,body,#mirrorScroll,.canvas-box{background:' + bgSafe + ' !important}</style>');
+    }
+    // v0.36 WAF 加固：标题不泄露引擎身份（会话 meta 到达后换成业务页标题）；
+    // 控制台静默（内部日志不外泄；?xydebug 供排障）
+    html = html.replace(/<title>[^<]*<\/title>/, '<title></title>');
+    // v0.40 F7：调试输出只在 XY_DEBUG=1 的部署可用（审计：?xydebug 公开调试面）
+  if (process.env.XY_DEBUG !== '1') {
+    html = html.replace('<head>', '<head><script>for(const k of ["log","info","debug","trace"]){console[k]=function(){}}</script>');
+  } else {
+    html = html.replace('<head>', '<head><script>if(!/[?&]xydebug/.test(location.search)){for(const k of ["log","info","debug","trace"]){console[k]=function(){}}}</script>');
+  }
+    // v0.41 提速：gzip（90KB HTML → ~20KB，导航白窗与 DCL 双降）——90KB 明文
+    // 实测占 DCL 250ms 的相当份额；Accept-Encoding 不含 gzip 的客户端原样回退
+    // v0.42 信息泄漏：壳页注释里的版本演进史（v0.14~v0.35.1 实测 6 处）中性化
+    html = html.replace(/v0\.\d+(?:\.\d+)?/g, '');
+    const raw = Buffer.from(html, 'utf8');
+    const wantsGzip = /gzip/i.test(String(req.headers['accept-encoding'] || ''));
+    if (wantsGzip && raw.length > 1024) {
+      const gz = zlib.gzipSync(raw, { level: 6 });
+      if (gz.length < raw.length) {
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Content-Encoding': 'gzip',
+          'Vary': 'Accept-Encoding',
+          'Content-Length': gz.length,
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+          'X-Frame-Options': 'SAMEORIGIN',
+          'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+          'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
+        });
+        res.end(req.method === 'HEAD' ? undefined : gz);
+        return;
+      }
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Length': raw.length,
+      // v0.36 WAF 加固：安全响应头
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'X-Frame-Options': 'SAMEORIGIN',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
+    });
+    res.end(req.method === 'HEAD' ? undefined : raw);
+  } catch (e) {
+    try { console.error('[bgInject] fail:', e && e.message); } catch (e2) {}
+    res.writeHead(500); res.end();
+  }
+}
+
+// v0.32.2 消白闪：会话页主背景色——白屏期客户端预铺同色底，避免白→深色硬切
+// （:81 实测：首帧纯白、次帧完整深色，92.6% 像素跳变 = 用户感知的主闪）。
+// 取视口四边中点最上层不透明层的最深色；退化取 body 色
+const pageBodyBg = (pg) => pg.evaluate(() => {
+  try {
+    let best = '';
+    const pts = [[innerWidth / 2, 8], [8, innerHeight / 2], [innerWidth - 8, innerHeight / 2], [innerWidth / 2, innerHeight - 8]];
+    for (const [x, y] of pts) {
+      for (const el of document.elementsFromPoint(x, y)) {
+        if (!el || el === document.documentElement || el === document.body) continue;
+        const cs = getComputedStyle(el);
+        const m = cs.backgroundColor.match(/rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)/);
+        if (!m) continue;
+        const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+        if (a < 0.95) continue;
+        const lum = 0.2126 * m[1] + 0.7152 * m[2] + 0.0722 * m[3];
+        if (!best || lum < best.lum) best = { lum, css: cs.backgroundColor };
+        break;
+      }
+    }
+    if (best) return best.css;
+    return getComputedStyle(document.body).backgroundColor || '#ffffff';
+  } catch (e) { return '#ffffff'; }
+}).catch(() => '#ffffff');
+
+// v0.32 资产缓存回源抓取：10s 超时 + 单体上限（超限中断），失败由调用方放行
+const fetchOriginAsset = (u) => new Promise((resolve, reject) => {
+  let parsed;
+  try { parsed = new URL(u); } catch (e) { reject(e); return; }
+  const mod = parsed.protocol === 'https:' ? httpBoth.https : httpBoth.http;
+  const req = trackRequest(mod.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: '*/*' } }, (up) => {
+    if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300) { up.resume(); reject(new Error('asset status ' + up.statusCode)); return; }
+    const chunks = [];
+    let total = 0, over = false;
+    up.on('data', (c) => { total += c.length; if (total > originAssetCache.maxEntryBytes) { over = true; try { up.destroy(); } catch (e) {} } else chunks.push(c); });
+    up.on('end', () => { if (over) { reject(new Error('asset too large')); return; } resolve({ status: up.statusCode || 200, headers: up.headers, body: Buffer.concat(chunks) }); });
+    up.on('error', reject);
+  }));
+  req.setTimeout(10000, () => req.destroy(new Error('asset fetch timeout')));
+  req.on('error', reject);
+});
+
+async function launchSessionBrowser() {
+  const b = await puppeteer.launch({
+    headless: true,
+    args: CHROME_ARGS,
+    defaultViewport: { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 },
+    ...config.launchOptions,
+  });
+  b.on('disconnected', () => logger.log('[chrome] session browser disconnected'));
+  logger.log('[chrome] per-session launched:', await b.version());
+  return b;
+}
+
+// ---------- HTTP + WS ----------
+// /m/* —— 扩展名及响应类型受限的静态资源代理，不解析或剔除资源内数据。
+// 多源会话（x-rbi-origin 白名单）资产以 /m/o/<b64url(origin)>/path 下发，
+// 短式 /m/path 固定路由到 ORIGIN_URL 缺省源站（历史形态，缓存友好）。
+const ORIGIN_ALLOWED = new Set([ORIGIN_BASE.origin, ...ALLOWED_ORIGINS.map(x => String(x).replace(/\/+$/, ''))]);
+// v0.67b 资产代理白名单补 vhost 形态：normalizeSessionOrigin 把会话源站改写为
+// vhost 后，客户端以 /m/o/<b64(vhost)>/ 请求资产，而 ORIGIN_ALLOWED 只有回源
+// IP 形态 → logo 等静态图 403（:91 实测）。为每个命中改写表的白名单源站
+// 追加其 vhost 形态。
+for (const x of ALLOWED_ORIGINS) {
+  try {
+    const u = new URL(String(x).replace(/\/+$/, ''));
+    const vh = originHostRewrite.get(u.host);
+    if (vh) { u.hostname = vh; u.host = vh + (u.port ? ':' + u.port : ''); ORIGIN_ALLOWED.add(u.origin); }
+  } catch (e) {}
+}
+// v0.75 保真哨兵（布局指纹对账）/ v0.76 记忆落盘：按源站记录 dom 车道降级
+// 事件——10 分钟窗口内 ≥3 次降级的源站，新会话直接以 frame 起步（站点级
+// 兜底，窗口滑出自动恢复）。XY_FIDELITY_OFF=1 整体停用（运维逃生门）。
+const FIDELITY_OFF = process.env.XY_FIDELITY_OFF === '1';
+// v0.80：保真对账默认只观测不降级（dom 是唯一产品车道，frame 仅人工/站点级
+// 兜底——对账失败=告警+记忆，不再自动切 frame）；XY_FIDELITY_DOWNGRADE=1 恢复
+const FIDELITY_DOWNGRADE = process.env.XY_FIDELITY_DOWNGRADE === '1';
+const fidelityStore = createFidelityStore(require('node:path').join(__dirname, 'fidelity-origins.json'));
+const httpBoth = { http: require('http'), https: require('https') };
+const httpOrigin = ORIGIN_BASE.protocol === 'https:' ? httpBoth.https : httpBoth.http;
+// /m 代理路径 → 绝对 URL（obf 网站字体下载等 Node 侧消费方使用）；非代理形态原样返回
+function unproxyAsset(u) {
+  const s = String(u);
+  let mo = s.match(/^\/m\/o\/([A-Za-z0-9_-]+)(\/[^\s?#]*)?(\?[^\s#]*)?$/);
+  if (mo) {
+    let org = ''; try { org = Buffer.from(mo[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch (e) { return s; }
+    return org + (mo[2] || '/') + (mo[3] || '');
+  }
+  mo = s.match(/^\/m(\/[^\s?#]*)(\?[^\s#]*)?$/);
+  if (mo) return ORIGIN_URL.replace(/\/+$/, '') + mo[1] + (mo[2] || '');
+  return s;
+}
+// v0.76 样式表直通配套：css 文件以原始字节经 /m(/m/o) 下发，其中指向白名单
+// 源站的绝对 URL 必须改写回代理形态（否则访客端直连内网源站必败）；相对
+// URL 不动——浏览器按 css 文件自身地址（代理命名空间内）解析，天然正确。
+// html/:root/body 选择子映射同步在此承担（镜像根是 .xy-body div，原选择子
+// 在 shadow 内匹配不到——与客户端内联段同款映射，保持两路径一致）。
+function absToProxy(u) {
+  if (!/^https?:\/\//i.test(String(u))) return null;
+  try {
+    const x = new URL(String(u));
+    if (x.username || x.password) return null;
+    if (!(ORIGIN_ALLOWED.has(x.origin) || dynamicOrigins.has(x.origin))) return null;
+    return '/m/o/' + Buffer.from(x.origin).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + x.pathname + x.search;
+  } catch (e) { return null; }
+}
+function cssProxyRewrite(cssText) {
+  let out = String(cssText).replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (whole, q, u) => {
+    const p = absToProxy(u);
+    return p ? 'url(' + q + p + q + ')' : whole;
+  });
+  out = out.replace(/(image-set\(|-webkit-image-set\()\s*(['"])([^'"]+)\2/g, (whole, fn, q, u) => {
+    const p = absToProxy(u);
+    return p ? fn + ' ' + q + p + q : whole;
+  });
+  out = out.replace(/@import\s+(?!url\()(['"])([^'"]+)\1/g, (whole, q, u) => {
+    const p = absToProxy(u);
+    return p ? '@import ' + q + p + q : whole;
+  });
+  // html/:root/body → .xy-body（与客户端 buildMirror 的映射同款，作用于
+  // 独立下发的样式表字节）
+  out = out
+    .replace(/:root(?=[\[{.,:\s)])/g, '.xy-body')
+    .replace(/(^|[\s,{}>+~])html(?=[\[{.,:\s)])/g, '$1.xy-body')
+    .replace(/(^|[\s,{}>+~])body(?=[\[{.,:\s)])/g, '$1.xy-body');
+  // v0.84 直通字体栈对齐：v0.76 直通遗漏了内联路径的 FONT_ALIGN（v0.35）——
+  // 原始字节里的本地字体名（system-ui/Segoe UI/微软雅黑…）在客户端按访客机器
+  // 解析、服务端按容器 fontconfig 解析，物理字体不同 → 排版度量漂移 → 保真
+  // 锚点失配（Vikunja 实测 3/19）→ 观测模式 15s 重同步死循环、镜像反复重建，
+  // 业务回归（create 后等 /m/projects 链接）超时。与内联路径同款替换 + 同款
+  // Noto @font-face 注入（重复声明无害，浏览器按 URL 去重）
+  if (config.fontAlign === true) {
+    const LOCAL_FONTS = 'PingFang SC|Hiragino Sans GB|Microsoft YaHei|微软雅黑|SimHei|黑体|SimSun|宋体|KaiTi|楷体|Source Han Sans SC|思源黑体|Source Han Serif SC|Noto Sans CJK SC|Noto Serif CJK SC|WenQuanYi[a-zA-Z ]*|Heiti SC|STHeiti|LiHei Pro|SF Pro (?:Text|Display)|Helvetica Neue|Segoe UI|Roboto|Ubuntu|Cantarell|system-ui|apple-system|BlinkMacSystemFont';
+    const famRe = new RegExp('(["\']?)(' + LOCAL_FONTS + ')\\1', 'i');
+    out = out.replace(/font-family\s*:\s*([^;}]+)/gi, (m0, list) => {
+      const out2 = [];
+      for (let pt of String(list).split(',')) {
+        const t = pt.trim();
+        if (!t) continue;
+        const mm = t.match(/^(['\"]?)([^'\"]+)\1$/);
+        const name = mm ? mm[2].trim() : t;
+        if (famRe.test(name) || name === 'system-ui' || name === '-apple-system' || name === 'BlinkMacSystemFont' || name === 'Segoe UI' || name === 'Roboto' || name === 'Ubuntu' || name === 'Cantarell' || name === 'Helvetica Neue') {
+          if (out2.indexOf('"Noto Sans SC"') < 0) out2.push('"Noto Sans SC"');
+        } else if (out2.indexOf(t) < 0) out2.push(t);
+      }
+      return 'font-family:' + out2.join(', ');
+    });
+    out += '\n@font-face{font-family:"Noto Sans SC";font-style:normal;font-weight:400;font-display:block;src:url(/f/noto-regular) format("woff2")}'
+      + '\n@font-face{font-family:"Noto Sans SC";font-style:normal;font-weight:700;font-display:block;src:url(/f/noto-bold) format("woff2")}';
+  }
+  return out;
+}
+// v0.25 跨源 iframe 同源化：会话作用域资产代理。secret 为每会话随机值（同 obf
+// 字体路由的安全模型），注册表只收该会话源站页面实际嵌入过的源——防开放代理/
+// SSRF；扩展名与响应类型限制与 /m 一致
+const xframeOrigins = new Map(); // secret -> Set(origin)
+function proxyXframeAsset(req, res) {
+  let rest = req.url.slice(5); // 去 /m/x/
+  const mo = rest.match(/^([0-9a-f]{8,64})\/([A-Za-z0-9_-]+)(\/[^\s?#]*)(\?[^\s#]*)?$/);
+  if (!mo) { res.writeHead(403); res.end('xframe route'); return; }
+  const allowed = xframeOrigins.get(mo[1]);
+  let org = '';
+  try { org = Buffer.from(mo[2].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch (e) {}
+  if (!allowed || !org || !allowed.has(org)) { res.writeHead(403); res.end('xframe origin'); return; }
+  const mod = org.startsWith('https:') ? httpBoth.https : httpBoth.http;
+  let base;
+  try { base = new URL(org + '/'); } catch (e) { res.writeHead(403); res.end('xframe origin'); return; }
+  const u = assetUrl(mo[3] + (mo[4] || ''), base);
+  if (!u) { res.writeHead(403); res.end('asset allowlist'); return; }
+  const upstream = trackRequest(mod.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
+    const ct = (up.headers['content-type'] || '').toLowerCase();
+    if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300 || /text\/html|json|javascript|xml/.test(ct)) {
+      up.resume();
+      res.writeHead(403); res.end('asset allowlist');
+      return;
+    }
+    res.writeHead(up.statusCode || 502, {
+      'content-type': up.headers['content-type'] || 'application/octet-stream',
+      'cache-control': 'public, max-age=300',
+      'x-content-type-options': 'nosniff',
+    });
+    up.on('error', () => res.destroy());
+    up.pipe(res);
+  }));
+  upstream.setTimeout(12000, () => upstream.destroy(new Error('asset timeout')));
+  upstream.on('error', () => {
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(502); res.end('bad gateway');
+  });
+}
+function proxyAsset(req, res) {
+  // 白名单：只代理表现层静态资源（CSS url() 引用的图片/字体等）。
+  // 不加白名单时 GET /m/ 可直接拉到源站整页明文（含页面内密钥）——击穿"数据不出站"
+  let rest = req.url.slice(2);
+  let base = ORIGIN_BASE;
+  const mo = rest.match(/^\/o\/([A-Za-z0-9_-]+)(\/.*)?$/);
+  if (mo) {
+    let org = null;
+    try { org = new URL(Buffer.from(mo[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch (e) {}
+    if (!org || !/^https?:$/.test(org.protocol) || !(ORIGIN_ALLOWED.has(org.origin) || dynamicOrigins.has(org.origin))) { res.writeHead(403); res.end('asset origin'); return; }
+    base = new URL(org.origin + '/');
+    rest = mo[2] || '/';
+  }
+  const mod = base.protocol === 'https:' ? httpBoth.https : httpBoth.http;
+  const u = assetUrl(rest, base);
+  if (!u) { res.writeHead(403); res.end('asset allowlist'); return; }
+  // v0.76 修复：assetUrl 返回 URL 对象，而缓存 Map 按引用匹配——跨请求的新
+  // 对象永不命中，/m 路由的共享缓存自 v0.32 起实际零命中（历史 warm 断言的
+  // hit 全部来自会话浏览器拦截路径）。规范化为字符串键后首次真正生效。
+  const uKey = String(u);
+  // v0.76：css 经代理改写（选择子映射/绝对URL）后与源站原始字节不同——必须
+  // 与会话浏览器拦截路径（原始键）隔离存取，否则源站页面吃到 .xy-body 改写
+  // 版 css 即中毒（Vikunja 建项点击全错实测）
+  const cacheKey = /\.css(?:$|\?)/i.test(uKey) ? ('css-rw:' + uKey) : uKey;
+  // v0.32 镜像复用：/m/ 表现层资产跨访客共享缓存——命中免回源
+  if (originAssetCache) {
+    const hit = originAssetCache.get(cacheKey);
+    if (hit) {
+      try { logger.log('[cache ] m-hit', new URL(u).pathname.slice(0, 70)); } catch (e) {}
+      res.writeHead(hit.status, {
+        'content-type': hit.headers['content-type'] || 'application/octet-stream',
+        'cache-control': 'public, max-age=300',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(hit.body);
+      return;
+    }
+  }
+  const upstream = trackRequest(mod.get(u, { headers: { 'user-agent': 'rbi-mirror-asset', accept: req.headers.accept || '*/*' } }, (up) => {
+    const ct = (up.headers['content-type'] || '').toLowerCase();
+    if ((up.statusCode || 502) < 200 || (up.statusCode || 502) >= 300 || /text\/html|json|javascript|xml/.test(ct)) {
+      up.resume();
+      res.writeHead(403); res.end('asset allowlist');
+      return;
+    }
+    if (originAssetCache) {
+      // 缓冲回填（/m/ 本就限图片/字体小资产）：入库由 put 的保守规则裁决
+      // 大小上限对齐 fetchOriginAsset 的 maxEntryBytes——超限即断上游并 502,
+      // 防"全量缓冲后再校验"的内存 DoS（实测 200MB 上游 → 网关 RSS +482MB）
+      const chunks = [];
+      let total = 0, over = false;
+      up.on('data', (c) => {
+        total += c.length;
+        if (total > originAssetCache.maxEntryBytes) {
+          over = true;
+          try { up.destroy(); } catch (e) {}
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }); } catch (e2) {} try { res.end('asset too large'); } catch (e3) {} } else { try { res.destroy(); } catch (e4) {} }
+        } else chunks.push(c);
+      });
+      up.on('end', () => {
+        // 语义合并:v0.76 css 改写入库 + 超限 502(over 在 data handler 置位, 超限
+        // 资产不进改写/不入库, 断流即回 502——两修复语义正交相加)
+        if (over) {
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }); } catch (e) {} }
+          try { res.end('asset too large'); } catch (e2) {}
+          return;
+        }
+        let body = Buffer.concat(chunks);
+        // v0.76：css 响应改写后再入库/下发（缓存里存改写后形态，命中零成本）
+        if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'))); } catch (e) {} }
+        originAssetCache.put(cacheKey, { status: up.statusCode || 200, headers: up.headers, body });
+        if (!res.headersSent) {
+          res.writeHead(up.statusCode || 200, {
+            'content-type': up.headers['content-type'] || 'application/octet-stream',
+            'cache-control': 'public, max-age=300',
+            'x-content-type-options': 'nosniff',
+          });
+        }
+        res.end(body);
+      });
+      up.on('error', () => res.destroy());
+      return;
+    }
+    if (/^text\/css/.test(ct)) {
+      // v0.76：无缓存部署下 css 同样要过改写（缓冲后整段转换）
+      const chunks2 = [];
+      up.on('data', (c) => chunks2.push(c));
+      up.on('end', () => {
+        let b2 = Buffer.concat(chunks2);
+        try { b2 = Buffer.from(cssProxyRewrite(b2.toString('utf8'))); } catch (e) {}
+        res.end(b2);
+      });
+      up.on('error', () => res.destroy());
+      return;
+    }
+    res.writeHead(up.statusCode || 502, {
+      'content-type': up.headers['content-type'] || 'application/octet-stream',
+      'cache-control': 'public, max-age=300',
+      'x-content-type-options': 'nosniff',
+    });
+    up.on('error', () => res.destroy());
+    up.pipe(res);
+  }));
+  upstream.setTimeout(12000, () => upstream.destroy(new Error('asset timeout')));
+  upstream.on('error', () => {
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(502); res.end('bad gateway');
+  });
+}
+
+// ---------- 防抓取编码层：字体混淆（会话种子池轮换） ----------
+// 原理：镜像文本以 PUA 码点（0xF0000+，随会话种子置换）下发；混淆字体的 cmap 把
+// PUA 码点双映射回原字形（原码点保留）——渲染与原生逐位一致（CFF 轮廓原样），
+// 但 DOM 文本/复制/爬虫拿到的是乱码。ASCII/西文不混淆（等宽代码块、数字原样），
+// 域=CJK 标点(3000-303F)+基本区(4E00-9FFF)+全角(FF00-FFEF)。
+// 字体由 tools/build_obf_font.py 在构建期烘焙（种子池 assets/obf/），会话创建即生效
+// （零预热）；种子池可扩容，动态按会话构建走同脚本（python3-fonttools）。
+const OBF_ON = config.obfuscate;
+// v0.76 样式表直通：默认关闭（opt-in XY_CSS_PASSTHROUGH=1）。v0.84 结案：当年
+// "路由切换后补丁 id miss" 真相是直通字节漏做字体栈对齐 → 保真锚点持续失配
+// → 观测模式重同步循环反复重建镜像（重建窗口补丁 miss 只是表象）——
+// cssProxyRewrite 已补 FONT_ALIGN 同款归一，Vikunja 直通回归转绿
+const CSS_PASS = process.env.XY_CSS_PASSTHROUGH === '1' && !OBF_ON;
+const OBF_POOL_DIR = path.join(__dirname, 'assets', 'obf');
+const OBF_FAMILIES = ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans SC'];
+const obfPool = [];
+try {
+  for (const f of fs.readdirSync(OBF_POOL_DIR).filter(x => /^reg-s\d+\.json$/.test(x)).sort()) {
+    const seed = f.match(/s(\d+)\./)[1];
+    const permRaw = JSON.parse(fs.readFileSync(path.join(OBF_POOL_DIR, f), 'utf8'));
+    const plain = {};
+    for (const k of Object.keys(permRaw)) plain[parseInt(k, 16)] = parseInt(permRaw[k], 16);
+    obfPool.push({ seed, plain, permJson: path.join(OBF_POOL_DIR, f), reg: path.join(OBF_POOL_DIR, f.replace('.json', '.woff2')), bold: path.join(OBF_POOL_DIR, 'bold-s' + seed + '.woff2') });
+  }
+  logger.log(`[obf   ] pool: ${obfPool.length} seeds ${OBF_ON ? 'ON' : 'OFF'}${obfPool.length ? '' : '（assets/obf 缺失）'}`);
+} catch (e) { logger.log('[obf   ] pool unavailable:', e.message); }
+let obfRR = 0;
+const obfSessions = new Map();   // sid -> pool entry（含 .siteFonts 网站字体孪生）
+const obfFontCache = new Map();  // 文件路径 -> Buffer（LRU≤8，~3-8MB/项）
+const obfTwinCache = new Map();  // url|seed -> Buffer（网站字体 PUA 孪生，LRU≤12）
+// 下载源站字体文件（同源静态资源，服务端代取）
+function obfFetchFont(url, timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    try {
+      // 多源会话的网站字体可能跨协议（ORIGIN_URL 与 x-rbi-origin 源不同）
+      const mod = String(url).startsWith('https:') ? httpBoth.https : httpBoth.http;
+      const req = trackRequest(mod.get(url, { timeout: timeoutMs }, (r) => {
+        if ((r.statusCode || 0) >= 400) { r.resume(); resolve(null); return; }
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve(Buffer.concat(chunks)));
+        r.on('error', () => resolve(null));
+      }));
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    } catch (e) { resolve(null); }
+  });
+}
+// 网站自有字体（艺术字/品牌字/图标字）的 PUA 孪生构建：把会话置换码点追加进
+// 网站字体自身的 cmap——被编码的艺术字文本由【网站原字体】渲染，逐位还原。
+const { execFile } = require('child_process');
+const execFileP = (cmd, args) => new Promise((resolve) => {
+  execFile(cmd, args, { timeout: 20000 }, (err, stdout) => resolve({ ok: !err, stdout: String(stdout || '') }));
+});
+async function buildObfTwin(ent, url) {
+  const key = url + '|' + ent.seed;
+  if (obfTwinCache.has(key)) return obfTwinCache.get(key);
+  const buf = await obfFetchFont(url);
+  if (!buf || buf.length < 500) return null;
+  const h = crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
+  const src = `/tmp/obf-twin-${h}.src`;
+  const out = `/tmp/obf-twin-${h}.woff2`;
+  require('fs').writeFileSync(src, buf);
+  const r = await execFileP('python3', [path.join(__dirname, 'tools', 'build_obf_twins.py'), src, ent.permJson, out]);
+  if (!r.ok || !fs.existsSync(out)) { logger.log('[obf   ] twin build fail:', url.slice(-40), r.stdout.slice(0, 80)); return null; }
+  const outBuf = fs.readFileSync(out);
+  if (obfTwinCache.size >= 12) obfTwinCache.delete(obfTwinCache.keys().next().value);
+  obfTwinCache.set(key, outBuf);
+  return outBuf;
+}
+// 通用兜底字体族（页面 CSS 提取不到时的保险；PUA 专用面只接 U+F0000-10FFFF，
+// 对未编码字符零影响——任何站点的明文字符一律走访客本机字体，与原生一致）
+const OBF_FAMS_DEFAULT = [
+  'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Microsoft YaHei UI', '微软雅黑', '微软雅黑 UI',
+  'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Source Han Sans CN', '思源黑体',
+  'Segoe UI', 'Helvetica Neue', 'Arial', 'SimHei', 'SimSun', '黑体', '宋体',
+  'WenQuanYi Micro Hei', 'Droid Sans Fallback',
+];
+const OBF_FAM_SKIP = new Set(['inherit', 'initial', 'unset', 'revert', 'sans-serif', 'serif', 'monospace', 'cursive', 'fantasy', 'ui-serif', 'ui-monospace', 'ui-rounded', '-apple-system', 'BlinkMacSystemFont', 'math', 'emoji', 'fangsong', 'STKaiti', 'STSong']);
+function nextObfSession() {
+  if (!OBF_ON || !obfPool.length) return null;
+  const sid = crypto.randomUUID().slice(0, 8);
+  const ent = obfPool[obfRR++ % obfPool.length];
+  obfSessions.set(sid, ent);
+  return { sid, plain: ent.plain };
+}
+// 从页面 CSS 提取全部 font-family 族名（通用引擎：不写死站点字体栈）
+function obfFamiliesFromCss(css) {
+  const found = new Set(OBF_FAMS_DEFAULT);
+  const re = /font-family\s*:\s*([^;}]+)/g;
+  let m;
+  while ((m = re.exec(css || ''))) {
+    for (const raw of m[1].split(',')) {
+      const f = raw.trim().replace(/^['"]|['"]$/g, '').trim();
+      if (f && f.length <= 48 && !OBF_FAM_SKIP.has(f.toLowerCase()) && !f.startsWith('var(')) found.add(f);
+    }
+    if (found.size > 90) break;
+  }
+  return [...found].slice(0, 90);
+}
+// PUA 专用 @font-face：unicode-range 只接 U+F0000-10FFFF——混淆字体仅渲染被编码的
+// 码点，页面其余字符（英文/数字/标点/未编码 CJK）全部走访客本机字体 → 与原生一致。
+function obfFacesCss(sid, fams) {
+  return fams.map(f =>
+    '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/reg.woff2) format("woff2");font-weight:400;font-display:block;unicode-range:U+F0000-10FFFF}'
+    + '@font-face{font-family:"' + f + '";src:url(/m/obf/' + sid + '/bold.woff2) format("woff2");font-weight:700;font-display:block;unicode-range:U+F0000-10FFFF}').join('');
+}
+
+function handleRequest(req, res) {
+  if (closed) { res.writeHead(503); res.end('mirror closed'); return; }
+  if (req.url && req.url.startsWith('/m/obf/')) {
+    // 会话混淆字体（池内种子轮换；URL 含会话 id，跨会话不可互换）。
+    // site-<i> = 网站自有字体的 PUA 孪生（艺术字逐位还原）
+    const mSite = String(req.url).match(/^\/m\/obf\/([0-9a-z-]{4,40})\/site-(\d+)\.woff2$/);
+    if (mSite) {
+      const ent = obfSessions.get(mSite[1]);
+      const sf = ent && ent.siteFonts && ent.siteFonts[+mSite[2]];
+      if (!sf) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'private, max-age=3600' });
+      res.end(sf.buf);
+      return;
+    }
+    const m2 = String(req.url).match(/^\/m\/obf\/([0-9a-z-]{4,40})\/(reg|bold)\.woff2$/);
+    const ent = m2 && obfSessions.get(m2[1]);
+    if (!ent) { res.writeHead(404); res.end(); return; }
+    let buf = obfFontCache.get(m2[2] === 'bold' ? ent.bold : ent.reg);
+    if (!buf) {
+      try { buf = fs.readFileSync(m2[2] === 'bold' ? ent.bold : ent.reg); }
+      catch (e) { res.writeHead(404); res.end(); return; }
+      if (obfFontCache.size >= 8) obfFontCache.delete(obfFontCache.keys().next().value);
+      obfFontCache.set(m2[2] === 'bold' ? ent.bold : ent.reg, buf);
+    }
+    res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=86400, immutable' });
+    res.end(buf);
+    return;
+  }
+  // v0.21 RUM 尾包：pagehide 时 sendBeacon('/rum')（text/plain，同源免预检）。
+  // 只落日志聚合，不解析内容、无跨源暴露
+  if (req.method === 'POST' && String(req.url).split('?')[0] === '/rum') {
+    // v0.40 F6：rum 信标只收同源（浏览器必带 Origin/Referer 之一且匹配 Host；
+    // 裸 curl 灌数据 403）。审计实测：无鉴权收任意数据（204）
+    const host = String(req.headers.host || '').toLowerCase();
+    const org = String(req.headers.origin || '');
+    const ref = String(req.headers.referer || '');
+    let sameOrigin = false;
+    try { if (org && new URL(org).host.toLowerCase() === host) sameOrigin = true; } catch (e) {}
+    try { if (!sameOrigin && ref && new URL(ref).host.toLowerCase() === host) sameOrigin = true; } catch (e) {}
+    if (!sameOrigin) { res.writeHead(403, { 'cache-control': 'no-store' }); res.end(); return; }
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 8192) { body = body.slice(0, 8192); req.destroy(); } });
+    req.on('end', () => {
+      // 单行化: 防 CRLF 日志注入(审计完整性)
+      try { logger.log('[rum-beacon] ' + body.replace(/\r?\n/g, '\\n')); } catch (e) {}
+      res.writeHead(204, { 'cache-control': 'no-store' });
+      res.end();
+    });
+    return;
+  }
+  // v0.35 一键接入管理端点：POST /api/sites {"origin":"http://x"} 即时接入（热页
+  // 预热/资产缓存/底色注入按源联动）；SITE_API_TOKEN 可选防护
+  // v0.36 WAF 加固：镜像禁用爬虫索引（robots 全禁）
+  if (pathname_api(req) === '/robots.txt') {
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    res.end('User-agent: *\nDisallow: /\n');
+    return;
+  }
+  if (pathname_api(req) === '/api/sites') {
+    // v0.42 默认禁用：一键接入是运维动作不是公开能力——未配置 SITE_API_TOKEN
+    // 时整体 403（扫描实测：无鉴权可注册任意源+泄露内网源站拓扑）
+    const wantToken = process.env.SITE_API_TOKEN || '';
+    if (!wantToken) {
+      res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, error: 'site api disabled (set SITE_API_TOKEN)' }));
+      return;
+    }
+    if (wantToken && req.headers['x-site-token'] !== wantToken) { res.writeHead(403); res.end('token'); return; }
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body || '{}');
+          const key = addDynamicOrigin(String(parsed.origin || ''));
+          if (!key) { res.writeHead(400); res.end('bad origin'); return; }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, origin: key, warm: !!warmPages }));
+          logger.log('[sites ] registered', key);
+        } catch (e) { res.writeHead(400); res.end('bad json'); }
+      });
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ origins: [...liveAllowed()] }));
+    return;
+  }
+  if (req.url === '/favicon.ico') { res.writeHead(204); return res.end(); } // 网关壳无图标：204 消掉访客控制台每页一条的 404
+  if (req.url && req.url.startsWith('/m/x/')) return proxyXframeAsset(req, res);
+  // v0.44 P4：资产代理不转发 API 文档路径
+  if (req.url && req.url.startsWith('/m/')) {
+    try {
+      const mp = decodeURIComponent(req.url.split('?')[0]).toLowerCase();
+      if (/(?:^|[\\/])(?:openapi|swagger)\.(?:json|yaml)$/i.test(mp) || mp.includes('/docs') || mp.includes('/redoc') || mp.includes('/swagger')) {
+        res.writeHead(403, { 'cache-control': 'no-store' }); res.end(); return;
+      }
+    } catch (e) {}
+    return proxyAsset(req, res);
+  }
+  if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
+    // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
+    // CORS：源站页面（服务端 Chrome 内）注入的 @font-face 会跨源加载这两个文件
+    res.setHeader('access-control-allow-origin', '*');
+    // 演进：fontconfig TTC(21MB×2) → 提取 SC 单面 OTF → 与 Regular 同覆盖子集 + WOFF2（6.1/10.2MB）
+    sendFile(req, res, path.join(__dirname, 'assets', req.url.endsWith('-bold') ? 'NotoSansSC-Bold.woff2' : 'NotoSansSC-Regular.woff2'),
+      'font/woff2', 'public, max-age=86400, immutable');
+    return;
+  }
+  // v0.31 真路由：任意业务路径承载镜像客户端（/login、/dashboard/x 深链直开）。
+  // 静态文件优先命中；无扩展名或 .html 且未命中的路径回落 index.html，其余资源 404 保持
+  const clientRoot = path.join(__dirname, 'client');
+  const serveStatic = staticHandler(clientRoot);
+  if (req.method !== 'GET' && req.method !== 'HEAD') return serveStatic(req, res);
+  let spaPath = '';
+  try { spaPath = decodeURIComponent((req.url || '/').split('?')[0]); } catch { return serveStatic(req, res); }
+  const spaExt = path.extname(spaPath);
+  if (spaExt && spaExt !== '.html') return serveStatic(req, res);
+  const spaFile = path.join(clientRoot, path.normalize(spaPath === '/' ? '/index.html' : spaPath).replace(/^([/\\])+/, ''));
+  if (!spaFile.startsWith(clientRoot)) return serveStatic(req, res);
+  // v0.32.2 消白闪：入口 HTML 注入源站底色——HTML 首绘即源站色，白窗归零
+  if (spaPath === '/' || spaPath === '/index.html') return serveClientHtml(req, res);
+  fs.access(spaFile, (err) => {
+    if (!err) return serveStatic(req, res);
+    serveClientHtml(req, res);
+  });
+}
+// permessage-deflate：JSON 快照/补丁文本高度重复，deflate 通常 5-10× 缩减
+// （阈值 512B，小帧不压省 CPU）；浏览器 WS 客户端普遍支持，握手透明协商
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: { threshold: 512 } });
+const identities = new WeakMap();
+// v0.44 P3：location 消息只带 path+query——源站 IP/主机名不下发给访客
+//（审计实测：内网拓扑通过地址栏泄漏）
+function mirrorSafeUrl(fullUrl) {
+  try {
+    const u = new URL(fullUrl);
+    return u.pathname + (u.search || '');
+  } catch (e) { return String(fullUrl).slice(0, 200); }
+}
+
+function handleUpgrade(req, socket, head) {
+  if (closed) { socket.destroy(); return; }
+  let pathname = '';
+  try { pathname = new URL(req.url, 'http://x').pathname; }
+  catch { socket.destroy(); return; }
+  if (pathname !== '/ws') { socket.destroy(); return; }
+  // v0.40 F1：WS 升级鉴权（配置 sessionAuthToken 时强制）——x-rbi-gateway-token
+  // 头（可信代理注入）/ Authorization Bearer / cookie rbi_auth / ?tok= 任一匹配。
+  // 审计实测：无凭证裸连即得会话+完整快照+交互能力，maxSessions 还可被占满 DoS
+  if (config.sessionAuthToken) {
+    const want = config.sessionAuthToken;
+    let ok = false;
+    const h = req.headers;
+    if (h['x-rbi-gateway-token'] === want) ok = true;
+    else {
+      const auth = h.authorization || '';
+      if (/^Bearer\s+/i.test(auth) && auth.replace(/^Bearer\s+/i, '').trim() === want) ok = true;
+      else {
+        try {
+          const cookies = String(h.cookie || '');
+          const m = /(?:^|;\s*)rbi_auth=([^;]+)/.exec(cookies);
+          if (m && decodeURIComponent(m[1]) === want) ok = true;
+        } catch (e) {}
+        if (!ok) {
+          try { const q = new URL(req.url, 'http://x'); if (q.searchParams.get('tok') === want) ok = true; } catch (e) {}
+        }
+      }
+    }
+    if (!ok) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  }
+  // v0.40 F1-DoS：每源 IP 新建会话限流（滑窗分钟；resume 的既有会话不占预算）
+  // 全局兜底独立于 per-IP 开关：per-IP=0（不限）时 global 仍须生效——两者在
+  // options 注释中各自声明语义（"0=不限制"/"0=关"），嵌套会让全局被连坐关闭
+  if (config.sessionRatePerMin > 0 || config.sessionGlobalRatePerMin > 0) {
+    const ip = (req.socket && req.socket.remoteAddress) || '?';
+    const now = Date.now();
+    let ring = wsRateLimiter.get(ip);
+    if (!ring) { ring = []; wsRateLimiter.set(ip, ring); }
+    while (ring.length && now - ring[0] > 60000) ring.shift();
+    if (config.sessionRatePerMin > 0 && ring.length >= config.sessionRatePerMin) {
+      try { logger.log('[ws    ] rate-limited (per-ip)', ip); } catch (e) {}
+      socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+    // v0.42 全局兜底：DD proxy 多副本（4×endpoint）轮询转发时源 IP 被分摊，
+    // per-IP 阈值永不触发（扫描实测 100 连/4.2s 全 101）。全局滑窗不看来源，
+    // 单网关总新建速率封顶（默认 240/min=正常峰值 4 倍余量）
+    if (config.sessionGlobalRatePerMin > 0) {
+      const gring = wsRateLimiter.get('__global__');
+      if (gring) {
+        while (gring.length && now - gring[0] > 60000) gring.shift();
+        if (gring.length >= config.sessionGlobalRatePerMin) {
+          try { logger.log('[ws    ] rate-limited (global)', gring.length); } catch (e) {}
+          socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
+        gring.push(now);
+      } else wsRateLimiter.set('__global__', [now]);
+    }
+    ring.push(now);
+    if (wsRateLimiter.size > 4096) { // 有界：清最旧条目防内存膨胀
+      let k0 = wsRateLimiter.keys().next().value;
+      // __global__ 是全局限流唯一计数载体（建于首个连接，插入序最旧之列）：
+      // 驱逐它 = 全局窗口静默清零，窗口内全局限流形同虚设——跳过并驱逐下一个
+      if (k0 === '__global__') k0 = [...wsRateLimiter.keys()][1];
+      wsRateLimiter.delete(k0);
+    }
+  }
+  if (config.getSessionIdentity) {
+    try {
+      const identity = config.getSessionIdentity(req);
+      if (identity && typeof identity.then === 'function') {
+        Promise.resolve(identity).catch(() => {});
+        throw new TypeError('getSessionIdentity must be synchronous');
+      }
+      if (typeof identity !== 'string' || !identity.trim()) throw new TypeError('missing session identity');
+      identities.set(req, identity);
+    } catch {
+      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+  }
+  try { req.rbiOrigin = normalizeSessionOrigin(selectOrigin(req.headers['x-rbi-origin'], ORIGIN_URL, liveAllowed())); }
+  catch { try { logger.log('[ws    ] x-rbi-origin not allowed:', String(req.headers['x-rbi-origin']).slice(0, 60)); } catch (e) {} socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  // v0.38.1 WAF 防线：浏览器跨站 WS 劫持（CSRF/ws-cross-origin）——直连时
+  // Origin 头必须等于本服务源（浏览器不可伪造 Origin）。经 ingress 代理的
+  // 合法流量（带可信 x-rbi-origin 标记）跳过：代理链下浏览器 Origin(:81)与
+  // 引擎 Host(内网)天然不同。无 Origin 的非浏览器客户端属网络层暴露面：
+  // 引擎端口只应部署在 ingress 之后的内网
+  const wsOrigin = req.headers.origin;
+  if (wsOrigin && req.headers['x-rbi-origin'] && config.mirrorPublicOrigins.length) {
+    // v0.40 F3：可信代理路径下的浏览器 Origin 校验——公共镜像源清单（访客真实
+    // 访问的源，如 http://gw:81）。此前代理注入 x-rbi-origin 会连 Origin 一起
+    // 放行（CSWSH 面：加鉴权后任何站可打跨站 WS）。清单空=维持旧行为
+    let okP = false;
+    try { okP = config.mirrorPublicOrigins.includes(new URL(wsOrigin).origin); } catch (e) {}
+    if (!okP) { try { logger.log('[ws    ] origin not in public mirror origins:', String(wsOrigin).slice(0, 60)); } catch (e) {} socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  }
+  if (wsOrigin && !req.headers['x-rbi-origin']) {
+    const host = req.headers.host;
+    let ok = false;
+    try { ok = host && new URL(wsOrigin).host === String(host).toLowerCase(); } catch (e) {}
+    if (!ok) {
+      // 引擎直挂（无 ingress）且站点与网关同部署时，浏览器 Origin 可能是配置
+      // 源站之一——合法源站集合放行（攻击者域不在集合内，CSRF 防线不变）
+      try { const o = new URL(wsOrigin).origin; ok = ORIGIN_ALLOWED.has(o) || dynamicOrigins.has(o); } catch (e) {}
+    }
+    if (!ok) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+}
+
+// ---------- 会话 ----------
+const wsRateLimiter = new Map(); // v0.40 F1：每 IP 会话创建滑窗（ip→时间戳环）
+const sessionStore = new SessionStore({ limit: MAX_SESSIONS, graceMs: SESSION_GRACE_MS });
+const sessionLifecycles = new WeakMap();
+const socketIdentities = new WeakMap();
+let sessions = 0;
+wss.on('connection', (socket, req) => {
+  socketIdentities.set(socket, identities.get(req));
+  socket.on('error', () => {});
+  const reject = (code) => {
+    const messages = {
+      SESSION_EXPIRED: '会话已过期或不可恢复，请核对上次提交结果后重新开始',
+      SESSION_BUSY: '原连接尚未释放，正在重试',
+      SESSION_LIMIT: '会话已满，请稍后重试',
+      INVALID_HANDSHAKE: '连接握手无效，请重新开始',
+    };
+    const terminal = code === 'SESSION_EXPIRED' || code === 'INVALID_HANDSHAKE';
+    if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'error', code, terminal, msg: messages[code] }));
+    socket.close(terminal ? 1008 : 1013);
+  };
+  const timer = setTimeout(() => reject('INVALID_HANDSHAKE'), 3000);
+  socket.once('close', () => clearTimeout(timer));
+  socket.once('message', raw => {
+    clearTimeout(timer);
+    if (closed || socket.readyState !== 1) return;
+    let hello;
+    try { hello = JSON.parse(raw.toString()); } catch { reject('INVALID_HANDSHAKE'); return; }
+    if (!hello || hello.type !== 'hello') { reject('INVALID_HANDSHAKE'); return; }
+    const scope = JSON.stringify([req.rbiOrigin || ORIGIN_URL, req.headers.origin || '', identities.get(req) ?? null]);
+    let claimed;
+    try { claimed = sessionStore.claim(hello.resume, scope, socket); }
+    catch (error) { reject(error.message); return; }
+    const { session, resumed } = claimed;
+    if (!resumed) wss.emit('session', session, req);
+    // v0.40 F2：resume 令牌一次性轮换——旧值（可能已被 XSS 窃取）在认领瞬间
+    // 失效，新值仅下发给当前连接；客户端 session 消息处理器原位更新 sessionStorage
+    const issuedToken = resumed ? session.rotateToken() : session.token;
+    session.send(JSON.stringify({ type: 'session', token: issuedToken, resumed, graceMs: SESSION_GRACE_MS }));
+    session.emit('message', raw);
+    if (resumed) session.emit('resume');
+  });
+});
+wss.on('session', (ws, req) => {
+  const lifecycle = { identity: identities.get(req) };
+  sessionLifecycles.set(ws, lifecycle);
+  const task = runSession(ws, req, lifecycle);
+  lifecycle.task = task;
+  sessionTasks.add(task);
+  task.finally(() => sessionTasks.delete(task)).catch(error => logger.log('[sess  ] setup failed:', error.message));
+});
+async function runSession(ws, req, lifecycle) {
+  const timers = createTimers();
+  const { setTimeout, clearTimeout, setInterval, clearInterval } = timers;
+  sessions++;
+  logger.log(`[sess  ] open (${sessions}/${MAX_SESSIONS})`);
+
+  let page = null, cdp = null, mode = DEFAULT_MODE;
+  let fpState = null; // v0.75 布局对账：{seq, ids, timer, fails, pending}
+  let sessionBrowser = null;
+  let sessionExclusive = (fn) => fn(); // v0.30 池化：同浏览器截图互斥（无池=直通）
+  let sessionRelease = null;
+  const obfSess = nextObfSession(); // 防抓取字体混淆（dom 模式启用；无池则 null 透明降级）
+  let lastInputAt = 0, inputLatMs = null, frameTimes = [], statTimer = null;
+  // v0.13 文件传输：会话临时目录（上传暂存/下载落地），会话结束即删除
+  let sessionUploadDir = null, sessionDownloadDir = null;
+  let browserCdpDetached = null;
+  const sessionUploads = createUploads(config.upload);
+  setInterval(() => {
+    for (const tid of sessionUploads.expire()) sendJson({ type: 'upload-end', tid, ok: false, error: 'upload expired' });
+  }, Math.min(config.upload.idleTimeoutMs, 1000));
+  const sessionDownloads = new Map(); // guid -> {name,received}
+  // v0.39 会话空闲逐出：无输入超阈值的会话关闭其页面（渲染进程是内存大头），
+  // WS 与 BrowserContext 存储（cookie/localStorage）保留——下一命令透明复活。
+  // 真实生产 CCU 的空闲偏置（同时活跃 ~5-10%）由此从"每用户一渲染进程"变成
+  // 内存上只承载活跃少数；空闲会话只剩 WS 连接 + 会话槽（KB 级）
+  let pageEvicted = null; // { url, sx, sy }
+  let reviveSource = null; // { context } | { browser }：获取页面工厂（poolHandle/b 在内层块作用域，此处桥接）
+  let idleEvictT = null;
+  let navChain = Promise.resolve();
+  let attachPageRuntime = null; // 首次装配后赋值（revive 复用同一装配序列）
+  const armIdleEvict = () => {
+    if (idleEvictT) clearTimeout(idleEvictT);
+    if (!(config.sessionIdleEvictMs > 0) || dead) return;
+    idleEvictT = setTimeout(() => { evictIdlePage().catch(() => {}); }, config.sessionIdleEvictMs);
+  };
+  let evicting = false; // v0.39.1 逐出重入/看门狗状态
+  const evictIdlePage = async () => {
+    if (dead || pageEvicted || !page || ws.readyState !== 1) return;
+    if (evicting) { armIdleEvict(); return; }
+    if (Date.now() - lastInputAt < config.sessionIdleEvictMs) { armIdleEvict(); return; }
+    if (sessionDownloads.size > 0 || sessionUploads.hasPending()) { armIdleEvict(); return; } // 在途传输安全门
+    if (domStarting) { armIdleEvict(); return; }
+    evicting = true;
+    const evUrl = page.url();
+    try {
+      // 整体 15s 看门狗：swap 抖动/内存高压下 evaluate·detach·close 任一悬挂
+      // 都会冻住逐出链（1000 会话实测两轮卡死）——超时强制置逐出态，页面句柄
+      // 遗留给会话收尾回收，绝不阻塞其他会话的逐出
+      await Promise.race([
+        (async () => {
+          if (!evUrl || evUrl === 'about:blank') return;
+          let sx = 0, sy = 0;
+          try { const sc = await Promise.race([page.evaluate(() => [window.scrollX, window.scrollY]), new Promise((r2) => setTimeout(() => r2(null), 2000))]); if (sc) { sx = sc[0] | 0; sy = sc[1] | 0; } } catch (e) {}
+          if (canvasTimer) { clearInterval(canvasTimer); canvasTimer = null; }
+          if (titleTimer) { clearInterval(titleTimer); titleTimer = null; } // v0.72
+          if (structTimer) { clearTimeout(structTimer); structTimer = null; }
+          structBuf.clear(); lastPatchSent.clear();
+          try { await Promise.race([cdp.detach(), new Promise((r2) => setTimeout(r2, 5000))]); } catch (e) {}
+          cdp = null;
+          const p = page; page = null;
+          try { await Promise.race([p.close(), new Promise((r2) => setTimeout(r2, 5000))]); } catch (e) {}
+          pageEvicted = { url: evUrl, sx, sy };
+          logger.log('[idle  ] page evicted:', String(evUrl).slice(0, 60));
+        })(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('evict watchdog')), 15000)),
+      ]);
+    } catch (e) {
+      // 看门狗/异常兜底：强制完成逐出（幂等——正常路径已完成时跳过）
+      if (!pageEvicted) {
+        try { if (cdp) cdp.detach().catch(() => {}); } catch (e2) {}
+        cdp = null;
+        const p = page; page = null;
+        if (p) { try { p.close().catch(() => {}); } catch (e3) {} }
+        pageEvicted = { url: evUrl || 'about:blank', sx: 0, sy: 0 };
+        logger.log('[idle  ] evict forced:', String(evUrl).slice(0, 60), String(e && e.message).slice(0, 40));
+      }
+    } finally {
+      evicting = false;
+    }
+  };
+  const revivePage = async () => {
+    if (!pageEvicted || dead) return;
+    const ev = pageEvicted; pageEvicted = null;
+    const t0 = Date.now();
+    // 同一 BrowserContext 内重建页面——cookie/localStorage 原样存活（登录态不掉）
+    if (!reviveSource) throw new Error('no revive source');
+    page = reviveSource.context ? await reviveSource.context.newPage() : await reviveSource.browser.newPage();
+    domExposed = false; // exposeFunction 绑定到页面实例，须对新页面重挂
+    if (attachPageRuntime) await Promise.race([
+      attachPageRuntime(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('attachPageRuntime timeout (revive)')), 15000)),
+    ]);
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false }).catch(() => {});
+    await page.goto(ev.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+    try { await page.evaluate((x, y) => window.scrollTo(x, y), ev.sx, ev.sy); } catch (e) {}
+    if (mode === 'dom' || mode === 'frame') await startDomMirror().catch(() => {});
+    logger.log('[idle  ] revived in', Date.now() - t0, 'ms ->', String(ev.url).slice(0, 60));
+    armIdleEvict();
+  };
+
+  const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
+
+  // 逻辑会话终止时清理；普通 WS 断线由 SessionStore 保留到恢复或过期。
+  // setup 期间也要登记清理，避免浏览器晚启动后泄漏。
+  let dead = false;
+  let helloIv = null;
+  let lastAliveAt = Date.now(); // v0.30 ws 活性
+  let lastCssSig = null; // 样式表集合指纹（1Hz 兜底比对；每次全量快照后置 null 重定基线）
+  let lastCssSent = null; // v0.17 带宽：最近一次快照下发 css（相同则省略；hello/恢复后置 null 必发全量）
+  let driftStreak = 0, lastDriftHeal = 0; // v0.18 分歧自愈：连续漂移计数与限频
+  let lastSnapServerEls = null, driftHealFails = 0, driftMuteUntil = 0; // v0.56：快照口径基准 + 自愈熔断
+  let lastCleanAt = 0; // v0.77：连续干净窗口起点（熔断计数衰减用）
+  let xframeSecret = null; // v0.25 跨源 iframe 资产代理的会话作用域密钥
+  // v0.64 接入向导: 被拦资源域收集——布局漂移的根因是源站资源被拦致渲染
+  // 不完整(实测 ruanyifeng 图床被拦 → 偏移 173px), 拦截日志里就有答案。
+  // 只做发现+建议, 不自动放行(白名单边界不因流量自主扩大)
+  const blockedOrigins = createBlockedOriginTracker({ topN: 10 });
+  let xframeBusy = false;
+  let xframeTimer = null; // v0.26 跨源 iframe 周期刷新（变化推 outer 补丁）
+  let cleanupPromise;
+  let cancelHello = () => {};
+  const cleanup = () => {
+    if (cleanupPromise) return cleanupPromise;
+    dead = true;
+    cancelHello();
+    if (idleEvictT) { clearTimeout(idleEvictT); idleEvictT = null; } // v0.39 逐出定时器
+    timers.clear();
+    cleanupPromise = (async () => {
+      sessions--;
+      if (obfSess) obfSessions.delete(obfSess.sid);
+      if (xframeSecret) xframeOrigins.delete(xframeSecret);
+      if (xframeTimer) { clearInterval(xframeTimer); xframeTimer = null; }
+      domActive = false;
+      // pool-off 保持历史形态（page 与 browser 关闭并行发起——mock 编排按此时序
+      // 编写，实测串行拆分会悬挂 close 等待链）；池化时只关上下文不关浏览器
+      if (sessionRelease) {
+        await Promise.allSettled([page?.close()]);
+        await sessionRelease();
+      } else {
+        await Promise.allSettled([page?.close(), sessionBrowser?.close()]);
+      }
+      sessionUploads.clear();
+      sessionDownloads.clear();
+      if (browserCdpDetached) browserCdpDetached();
+      await Promise.allSettled([
+        sessionUploadDir ? fsp.rm(sessionUploadDir, { recursive: true, force: true }) : null,
+        sessionDownloadDir ? fsp.rm(sessionDownloadDir, { recursive: true, force: true }) : null,
+      ]);
+      try { const s = blockedOrigins.summary(); if (s) logger.log('[policy] ' + s); } catch (e) {}
+      logger.log(`[sess  ] close (${sessions}/${MAX_SESSIONS})`);
+    })();
+    cleanupPromise.finally(() => cleanups.delete(cleanup)).catch(() => {});
+    return cleanupPromise;
+  };
+  cleanups.add(cleanup);
+  lifecycle.cleanup = cleanup;
+  ws.on('close', cleanup);
+  ws.on('error', () => {});
+  // v0.30 会话活性探测：浏览器页销毁后 TCP 半开不触发 close（既有缺陷，
+  // 一会话一浏览器时靠 MAX_SESSIONS 冗余掩盖；池化后会占死池位）。
+  // 1s 轮询：readyState≥2 直调 cleanup；协议 ping 探活，15s 无活性兜底。
+  ws.on('pong', () => { lastAliveAt = Date.now(); });
+  // 仅池化模式创建（空转 interval 会吊住"无句柄自然退出"的测试进程——CI
+  // 语法 job 实测卡死；pool-off 路径与历史行为完全同构）
+  if (browserPool) {
+    // 收割条件：readyState=3（握手完毕）且连续 3 次轮询（3s）close 事件仍未
+    // 发出——只收"漏发 close"的僵死 socket。readyState=2（客户端主动断连握手
+    // 进行中）不干预：close 事件会自然发出走既有清理/宽限链路（恢复测试的
+    // 主动断连-重连即此形态，2CPU 下立即 terminate 会掐断恢复窗口）
+    let closedTicks = 0;
+    timers.setInterval(() => {
+      if (dead) return;
+      if (ws.readyState === 3) {
+        closedTicks++;
+        if (closedTicks >= 3) {
+          logger.log('[sess  ] closed-socket reaped (state=3 x' + closedTicks + 's, close event missed)');
+          try { ws.terminate(); } catch (e) {}
+          cleanup();
+        }
+        return;
+      }
+      closedTicks = 0;
+      if (Date.now() - lastAliveAt > 15000) {
+        logger.log('[sess  ] dead-connection reaped (no pong 15s)');
+        try { ws.terminate(); } catch (e) {}
+        cleanup();
+        return;
+      }
+      try { ws.ping(); } catch (e) {}
+    }, 1000);
+  }
+
+  // 会话源站：WAF proxy-endpoint 转发时注入 x-rbi-origin（受信内网头）；直连演示用 ORIGIN_URL
+  const sessionOrigin = req.rbiOrigin || ORIGIN_URL;
+    let sessHelpers;
+    try { sessHelpers = pageHelpersFor(new URL(sessionOrigin).origin); }
+    catch (e) { sessHelpers = pageHelpersFor(ORIGIN_BASE.origin); }
+    logger.log('[sess  ] origin =', sessionOrigin);
+    let prodMode = (sessionOrigin !== ORIGIN_URL) || config.presentation === 'embedded'; // 网关模式/专用实例：访客端隐藏演示壳，只呈现业务页面
+
+  // 交互后的节流全量重同步定时器
+  let domResyncTimer = null;
+  // 动画/悬停跟随：脏区域差分循环（仅 frame 模式）
+  let diffTimer = null, diffBusy = false, diffTick = 0;
+  // v3 dom 模式：canvas 元素按需捕获 / 结构补丁合并窗 / 滚动同步去重
+  let canvasTimer = null;
+  let titleTimer = null; // v0.72 title 持续同步（SPA 路由切换跟随）
+  let structTimer = null; const structBuf = new Map();
+  const lastPatchSent = new Map();
+  let lastScrollKey = '';
+  let navOrigins = null; // v0.30 伪路由：requestOrigins 构建后回填（作用域桥接）
+  let statLastChunks = 0;
+  let canvasSigsReset = null; // 全量重同步后 canvas 捕获基准失效（画面已变）
+  let repairTimes = null; // v0.37 定点修复限频窗口（10s 滑动）
+  // 消息队列必须先于一切 await 挂上：ws 库不缓存无监听期间到达的消息，
+  // 冷启动（Chrome 拉起数秒）期间的 hello/mode 一旦错过就永久丢失
+  const queue = [];
+  let dispatchReady = false;
+  const handleCommand = async (m) => {
+    // 重命令滑窗限流：mode/repaint/navigate/history 每条触发全量快照/全页截图/
+    // 回源导航（CPU/带宽放大面），repair/fp 触发页内遍历。实测 200 条合法 mode
+    // 洪发把 cmdChain 占死 20s+（基线 ping 1ms → 20s 无响应）——单连接可用性剥夺。
+    // 分组限频：会话级滑窗，超出丢弃并回 RATE 错误；轻命令（ping/mouse/scroll）不受限
+    if (m && typeof m === 'object') {
+      const now = Date.now();
+      if (HEAVY_CMDS_HARD.has(m.type)) {
+        heavyHardRing = heavyHardRing.filter((t2) => now - t2 < HEAVY_WIN_MS);
+        if (heavyHardRing.length >= HEAVY_HARD_MAX) { sendJson({ type: 'error', code: 'RATE', msg: '操作过于频繁，请稍后再试' }); return; }
+        heavyHardRing.push(now);
+      } else if (HEAVY_CMDS_SOFT.has(m.type)) {
+        heavySoftRing = heavySoftRing.filter((t2) => now - t2 < HEAVY_WIN_MS);
+        if (heavySoftRing.length >= HEAVY_SOFT_MAX) { sendJson({ type: 'error', code: 'RATE', msg: '操作过于频繁，请稍后再试' }); return; }
+        heavySoftRing.push(now);
+      }
+    }
+    // v0.39 空闲逐出后的透明复活：除 ping 外的任何命令先复活（客户端周期
+    // ping 每 10s 一次——若触发复活则逐出永不生效）
+    if (pageEvicted && m && m.type !== 'ping') {
+      try { await revivePage(); } catch (e) { logger.log('[idle  ] revive fail:', e && e.message); }
+    }
+    switch (m.type) {
+          case 'ping': {
+            sendJson({ type: 'pong', t: m.t });
+            // v0.21 RUM：客户端 10s 心跳携带真实会话性能数据（帧时间/交互延迟/
+            // 字节分布），落日志聚合（[rum] 行）；sendBeacon 尾包走 POST /rum
+            if (m.rum && typeof m.rum === 'object') {
+              try { logger.log('[rum] ' + JSON.stringify(m.rum)); } catch (e) {}
+            }
+            // v0.18：分歧检测（Timelapse/Dolos 思想）——客户端 ping 携带镜像元素
+            // 指纹，与源站比对；持续漂移两拍且距上次自愈 >10s → 自动全量重同步。
+            // 把"镜像悄悄坏了"变成"自愈+可观测"（sstats 前打一行日志）
+            if (m.fp !== undefined && Number.isFinite(m.fp) && mode === 'dom' && domActive && !dead) {
+              try {
+                const liveFp = await page.evaluate(() => document.body.getElementsByTagName('*').length - document.body.querySelectorAll('script, noscript, template, [data-xy-space]').length);
+                // v0.56 口径：实时数与快照基准差在 5% 内（轮询正常演进）用快照基准；
+                // 大跳变（导航/大块渲染）仍用实时数
+                const srvFp = (lastSnapServerEls !== null && Math.abs(liveFp - lastSnapServerEls) <= liveFp * 0.05) ? lastSnapServerEls : liveFp;
+                const drift = Math.abs(srvFp - m.fp);
+                // v0.77：阈值 2%→8%（下限 4）+ streak≥3 + 30s 间隔——轮询/流式
+                // 页（beacon 事件列表 7↔8 行震荡）补丁在途滞后即假漂移，旧参数
+                // 每 10s 全量重拍 = 周期性整树重建（用户视角"白一下"+卡）。真
+                // 失步（结构性）通常是大差额，8% 依然秒抓
+                if (drift > Math.max(4, srvFp * 0.05)) {
+                  driftStreak++;
+                  if (driftStreak >= 2 && Date.now() - lastDriftHeal > 10000) {
+                    // v0.56 熔断：短窗内多次自愈未收敛 = 系统性口径差（快照就不含
+                    // 那部分元素）。此时重拍永远无法收敛，只会把页面打成 10s 一次
+                    // 整树重建（beacon 实测 snaps 每 10s +1，完全不可用）——静默
+                    // 5 分钟，补丁通道继续保鲜内容
+                    if (driftHealFails >= 3 && Date.now() < driftMuteUntil) { driftStreak = 0; break; }
+                    if (Date.now() - lastDriftHeal < 120000) driftHealFails++;
+                    else driftHealFails = 1;
+                    lastDriftHeal = Date.now();
+                    driftStreak = 0;
+                    if (driftHealFails >= 3) driftMuteUntil = Date.now() + 300000;
+                    logger.log(`[drift ] self-heal: server=${srvFp}(live=${liveFp},snapBase=${lastSnapServerEls}) mirror=${m.fp} delta=${drift} attempt=${driftHealFails}${driftHealFails >= 3 ? ' MUTED 5min' : ''}`);
+                    startDomMirror().catch(() => {});
+                  }
+                } else {
+                  driftStreak = 0;
+                  // v0.77：连续干净 5 分钟才清熔断计数（原 ≤2 即清零：震荡页
+                  // 每次自愈"成功"都复位，10s 一拍永不升级熔断）
+                  if (drift <= 2) { if (!lastCleanAt) lastCleanAt = Date.now(); if (Date.now() - lastCleanAt > 300000) driftHealFails = 0; }
+                  else lastCleanAt = 0;
+                }
+              } catch (e) {}
+            }
+            break;
+          }
+          case 'hello': {
+            // 会话中 DPR/视口变化（缩放、跨屏、拉窗口）：重新模拟并全量重发瓦片；
+            // hello 同时是断线恢复握手——客户端 css 缓存已丢，置空必发全量
+            lastCssSent = null;
+            const nd = Math.max(1, Math.min(3, parseFloat(m.dpr) || DPR));
+            const nw = Math.max(320, Math.min(2560, parseInt(m.w, 10) || viewW));
+            const nh = Math.max(240, Math.min(1600, parseInt(m.h, 10) || viewH));
+            const changed = (nd !== DPR || nw !== viewW || nh !== viewH) && page;
+            DPR = nd; viewW = nw; viewH = nh;
+            if (changed) {
+              try {
+                await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
+                if (mode === 'dom' || mode === 'frame') await startDomMirror();
+                sendJson({ type: 'meta', w: viewW, h: viewH, prod: prodMode });
+              } catch (e) {}
+            }
+            break;
+          }
+          case 'mode': {
+            // dom（真文本镜像，默认）↔ frame（像素直出兜底）双向可切
+            const next = ['dom', 'frame'].includes(m.mode) ? m.mode : 'dom';
+            // frame → dom：帧差分循环与帧流必须死亡（dom 无帧率不变式）
+            if (mode === 'frame' && next !== 'frame') {
+              if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
+              cdp.send('Page.stopScreencast').catch(() => {});
+            }
+            mode = next;
+            try {
+              await cdp.send('Page.stopScreencast').catch(() => {});
+              await startDomMirror();
+              sendJson({ type: 'mode', mode });
+            } catch (e) {
+              sendJson({ type: 'error', msg: `模式 ${next} 启动失败: ${e.message}` });
+            }
+            break;
+          }
+          case 'dom': {
+            noteInput();
+            if (m.kind === 'click') logger.log('[dbg] dom click ref=' + (m.id !== undefined ? '#' + m.id : m.path));
+            const ok = await input.domAction(page, m);
+            if (!ok && mode === 'dom') {
+              // 防御不变式：失败只做瓦片化全量重同步；明文快照在任何模式下都不下发
+              await startDomMirror().catch(() => {});
+            }
+            // 输入后不再做防抖全量重发：差分循环（140ms）+ 结构补丁已覆盖一切视觉
+            // 跟进，而全量重建会吞掉重建窗口内的点击（实测登录按钮点击落在 700ms
+            // 防抖重建里被静默丢弃 → 登录"点了没反应"）。结构漂移由元素数指纹兜底。
+            break;
+          }
+          case 'repair': {
+            // v0.37 定点修复：客户端补丁 id miss 上报缺失 id，服务端对缺失节点的
+            // 父元素序列化 inner 补丁原位重建——代替全量重同步（实测仪表盘 25s
+            // 122 次 miss→3 次全量重建：图表闪黑+每次 2MB；修复收敛到 O(子树)）。
+            // 限频：≤8 次/10s；full:true（父级过大）时客户端自行回落全量
+            const nowRp = Date.now();
+            repairTimes = (repairTimes || []).filter((t) => nowRp - t < 10000);
+            if (repairTimes.length >= 8) break;
+            const ids = Array.isArray(m.ids) ? m.ids.filter((n) => Number.isInteger(n)).slice(0, 12) : [];
+            if (!ids.length || !page || mode !== 'dom' || !domActive) break;
+            repairTimes.push(nowRp);
+            try {
+              const patches = await withTimeout(page.evaluate((list) => window.__xy.repairNodes(list), ids), 1500, 'repair').catch(() => null);
+              try { logger.log('[repair] ids=' + ids.length + ' -> ' + (patches ? patches.length + ' patch' : 'null')); } catch (e) {}
+              if (patches && patches.length) {
+                const full = patches.some((p2) => p2.full);
+                const real = patches.filter((p2) => !p2.full && p2.id !== undefined && typeof p2.inner === 'string');
+                if (real.length && ws.readyState === 1) {
+                  const pl = JSON.stringify({ type: 'dom-patches', patches: real });
+                  ws.send(pl);
+                  ws._bytes = (ws._bytes || 0) + pl.length;
+                  ws._chunks = (ws._chunks || 0) + 1;
+                }
+                if (full) startDomMirror().catch(() => {}); // 父级过大：定点不可行，回落全量
+              }
+            } catch (e) {}
+            break;
+          }
+          case 'fp': {
+            // v0.75 布局对账回执：与 fpMeasure 的 live 几何比对；过期 seq（导航/
+            // 重拍后旧回执）直接忽略
+            if (FIDELITY_OFF || mode !== 'dom' || !domActive || !fpState || m.seq !== fpState.seq) break;
+            if (fpState.timer) { clearTimeout(fpState.timer); fpState.timer = null; }
+            const cmap = new Map();
+            for (const s of (Array.isArray(m.samples) ? m.samples : [])) {
+              if (s && Number.isInteger(s.id)) cmap.set(s.id, s);
+            }
+            let srvFp = null;
+            try { srvFp = await withTimeout(page.evaluate((list) => window.__xy.fpMeasure(list), fpState.ids), 2500, 'fpMeasure').catch(() => null); } catch (e) {}
+            if (!srvFp || !Array.isArray(srvFp.samples)) break; // 会话浏览器忙/逐出：本轮作罢（下次快照再对）
+            // v0.76 页总高：只作日志观测不参与判定——.xy-body 与源站 body 的
+            // scrollHeight 不是同构量（视口高布局 800 vs 406 实测），滚动时序再
+            // 掺入后误报率不可接受；整页塌陷由锚点几何全失配天然覆盖
+            const v = fidelityJudge(srvFp.samples, cmap, fpState.dims, {
+              trap: process.env.XY_FIDELITY_TRAP === '1',
+            });
+            const match = v.match, judged = v.judged;
+            if (!judged) break;
+            if (judged < FIDELITY_MIN_JUDGED) { logger.log('[fidelity] skip busy (judged=' + judged + ' unstable=' + v.unstable + ')'); fpState.fails = 0; break; }
+            if (match / judged >= FIDELITY_PASS) {
+              logger.log('[fidelity] layout ok ' + match + '/' + judged + (v.unstable ? ' (unstable ' + v.unstable + ')' : ''));
+              fpState.fails = 0;
+              // v0.76 持续对账：静默会话 45s 后再抽查一轮（新快照/降级/断开重置
+              // fpState，链条自然断开；SPA 路由切换后的晚到碎裂由此覆盖）
+              scheduleFp(fpState.anchors, 45000, 0);
+              break;
+            }
+            fpState.fails++;
+            logger.log('[fidelity] layout mismatch ' + match + '/' + judged + ' (fail #' + fpState.fails + ')');
+            if (fpState.fails >= 2) {
+              const whyFp = 'layout ' + match + '/' + judged;
+              fpState = null;
+              await fidelityDowngrade(whyFp);
+            } else {
+              scheduleFp(fpState.anchors, 1500, fpState.fails); // 复测一次：等晚到资源落位（带基准几何）
+            }
+            break;
+          }
+          case 'navigate': {
+            // v0.30 伪路由：地址栏跳转。仅允许会话源站白名单内的目标（与请求
+            // 拦截同语义）；相对地址按当前页解析，裸主机名自动补 http://
+            noteInput();
+            try {
+              let u = String(m.url || '').trim();
+              if (!u) break;
+              if (!/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith('/') && !u.startsWith('//') && /^[^/\s]+\.[^/\s]+/.test(u)) u = 'http://' + u;
+              const parsed = new URL(u, page.url());
+              if (!['http:', 'https:'].includes(parsed.protocol)) { sendJson({ type: 'nav-blocked', msg: '仅支持 http/https 地址' }); break; }
+              // v0.45 P4：navigate 通道同样拦截 API 文档路径
+              try {
+                const np = parsed.pathname.toLowerCase();
+                if (/(?:^|[\\/])(?:openapi|swagger)\.(?:json|yaml)$/i.test(np) || np === '/docs' || np === '/redoc' || np === '/swagger' || np.startsWith('/docs/') || np.startsWith('/redoc/')) {
+                  sendJson({ type: 'nav-blocked', msg: 'API 文档不可经镜像访问' });
+                  break;
+                }
+              } catch (e) {}
+              if (!navOrigins || !requestAllowed(parsed.href, navOrigins)) { sendJson({ type: 'nav-blocked', msg: '目标地址不在允许范围内' }); break; }
+              await page.goto(parsed.href, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+              sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) });
+            } catch (e) { sendJson({ type: 'nav-blocked', msg: '导航失败: ' + e.message }); }
+            break;
+          }
+          case 'history': {
+            noteInput();
+            try {
+              const fn = m.dir === 'forward' ? page.goForward : page.goBack;
+              await fn.call(page, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+              // 历史栈底防护：池化 context 的 newPage 初始 about:blank 残留在栈底，
+              // 业务首页再退会落入空白镜像（原生浏览器首页本就不可退）——原地弹回
+              if (page.url() === 'about:blank') {
+                const back = m.dir === 'forward' ? page.goBack : page.goForward;
+                await back.call(page, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+              }
+              sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) });
+            } catch (e) {}
+            break;
+          }
+          case 'mouse':
+            if (m.action !== 'move') noteInput();
+            await input.mouse(page, cdp, m);
+            break;
+          case 'domclick': {
+            // 合成点击等价转发：客户端 el.click() 无指针手势，服务端对同锚点
+            // 元素执行 el.click()——与源站直连的程序化点击同语义
+            noteInput();
+            try {
+              await page.evaluate((id) => {
+                try {
+                  let el = window.__xy ? window.__xy.find(id) : null;
+                  if (el && el.nodeType === 3) el = el.parentElement;
+                  if (el && el.click) el.click();
+                } catch (e) {}
+              }, m.id).catch(() => {});
+            } catch (e) {}
+            break;
+          }
+          case 'key':
+            noteInput();
+            await input.key(cdp, m);
+            break;
+          case 'dnd':
+            noteInput();
+            await input.dnd(page, m).catch(() => {});
+            break;
+          case 'touch':
+            noteInput();
+            await input.touch(cdp, m).catch(() => {});
+            break;
+          case 'composition':
+            noteInput();
+            await input.composition(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition failed: ' + err.message }));
+            break;
+          case 'composition-commit':
+            noteInput();
+            await input.compositionCommit(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition commit failed: ' + err.message }));
+            break;
+          case 'upload-begin': {
+            // 镜像文件上传（v0.13）：客户端 File → WS 分块 → 会话临时目录 →
+            // puppeteer uploadFile（DOM.setFileInputFiles）→ 远端 change
+            const tid = String(m.tid || '');
+            // v0.40 F5：文件名含路径分隔符显式拒绝（此前 basename 静默收口——
+            // 安全上等效，但对审计/客户端契约不透明；穿越尝试应当被看见）
+            const rawName = String(m.name || '');
+            if (rawName && (rawName.includes('/') || rawName.includes('\\') || rawName !== path.basename(rawName))) {
+              sendJson({ type: 'upload-accept', tid, ok: false, error: 'invalid filename' });
+              try { logger.log('[up    ] rejected traversal filename:', JSON.stringify(rawName.slice(0, 60))); } catch (e) {}
+              break;
+            }
+            const name = path.basename(rawName);
+            const size = m.size;
+            const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1] || '';
+            if (!tid || !name || !ext || !UPLOAD_EXTS.has(ext.toLowerCase())) {
+              sendJson({ type: 'upload-accept', tid, ok: false, error: 'extension not allowed' });
+              break;
+            }
+            try {
+              sessionUploads.begin(tid, { name, size, fid: m.fid });
+              sendJson({ type: 'upload-accept', tid, ok: true, maxChunk: UPLOAD_CHUNK_BYTES });
+            } catch (error) { sendJson({ type: 'upload-accept', tid, ok: false, error: error.message }); }
+            break;
+          }
+          case 'upload-chunk': {
+            const tid = String(m.tid || '');
+            try { sessionUploads.append(tid, m.b64); }
+            catch (error) { sendJson({ type: 'upload-end', tid, ok: false, error: error.message }); }
+            break;
+          }
+          case 'upload-end': {
+            const tid = String(m.tid || '');
+            noteInput();
+            try {
+              const st = sessionUploads.finish(tid);
+              const buf = Buffer.concat(st.chunks);
+              if (buf.length !== st.size) throw new Error('size mismatch');
+              if (!sessionUploadDir) sessionUploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-upload-'));
+              // 会话私有目录 + name 已 basename 收口：直接用原文件名，远端页面
+              // 读到的 files[0].name 与访客本地选择一致（uuid 前缀会污染业务文件名）
+              const fp = path.join(sessionUploadDir, st.name);
+              fs.writeFileSync(fp, buf);
+              // 按 id 找回源站 file input，CDP 设置文件并触发 change
+              const ref = st.fid;
+              const handle = await page.evaluateHandle((r) => window.__xy.find(r), ref);
+              const el = handle.asElement ? handle.asElement() : null;
+              if (!el || !el.uploadFile) { await handle.dispose(); throw new Error('file input not found'); }
+              await el.uploadFile(fp);
+              await handle.dispose();
+              await page.evaluate((r) => {
+                const el2 = window.__xy.find(r);
+                if (el2) el2.dispatchEvent(new Event('change', { bubbles: true }));
+              }, ref).catch(() => {});
+              logger.log('[up    ] stored:', st.name, buf.length, 'bytes');
+              sendJson({ type: 'upload-end', tid, ok: true, name: st.name, size: buf.length });
+            } catch (err) {
+              sendJson({ type: 'upload-end', tid, ok: false, error: String(err && err.message || err) });
+            }
+            break;
+          }
+          case 'scrolltop':
+            await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+            break;
+          case 'repaint': {
+            // 本地投机孔回落：客户端孔关闭后请求该区域按服务端当前画面重绘
+            // （单张瓦片，消除 putImageData 复原与服务端瓦片的竞态）
+            noteInput();
+            try {
+              const shotR = await sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png' }));
+              const tileR = await page.evaluate((b64, x, y, w, h, d) => {
+                return new Promise((res) => {
+                  const im = new Image();
+                  im.onload = () => {
+                    const vx = Math.round((x - window.scrollX) * d), vy = Math.round((y - window.scrollY) * d);
+                    const vw = Math.min(Math.round(w * d), im.width - vx), vh = Math.min(Math.round(h * d), im.height - vy);
+                    if (vw < 1 || vh < 1 || vx < 0 || vy < 0) { res(null); return; }
+                    const c = document.createElement('canvas');
+                    c.width = vw; c.height = vh;
+                    c.getContext('2d').drawImage(im, vx, vy, vw, vh, 0, 0, vw, vh);
+                    res({ w: vw, h: vh, cssX: x, cssY: y, cssW: vw / d, cssH: vh / d, url: c.toDataURL('image/png') });
+                  };
+                  im.onerror = () => res(null);
+                  im.src = 'data:image/png;base64,' + b64;
+                });
+              }, shotR.data, Math.max(0, m.x || 0), Math.max(0, m.y || 0), Math.max(2, m.w || 2), Math.max(2, m.h || 2), DPR).catch(() => null);
+              if (tileR && ws.readyState === 1) {
+                const pr = JSON.stringify({ type: 'anim-tiles', tiles: [tileR] });
+                ws.send(pr);
+                ws._bytes = (ws._bytes || 0) + pr.length;
+              }
+            } catch (e) {}
+            break;
+          }
+          case 'scroll':
+            noteInput();
+            await input.scroll(page, m).catch(() => {});
+            // 键同步：服务端镜像后的页面滚动钩子会产出同位置 ping，
+            // 去重键先记为本次上报值，避免 RTT 后回拽
+            lastScrollKey = (m.x || 0) + ',' + (m.y || 0) + ',' + JSON.stringify(m.inner || []);
+            break;
+        }
+  };
+  const handleRaw = async (raw) => {
+    if (dead) return;
+    let m; try { m = JSON.parse(raw.toString()); } catch { return; }
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return;
+    try {
+      await handleCommand(m);
+    } catch (e) {
+      // 不透传内部错误细节(CDP 方法名/协议错误可被访客探测实现)——完整错误
+      // 只进服务端日志, 访客侧收通用文案
+      try { logger.log('[cmd-err]', String(e && e.message).replace(/\r?\n/g, '\\n')); } catch (e2) {}
+      sendJson({ type: 'error', msg: '事件处理异常，本次操作已忽略' });
+    }
+  };
+  let snapReplay = null; // v0.52 快照重放缓存（本会话最近一次全量帧+DOM签名）
+  let lastSnapDomSig = null; // v0.55 导航重拍链门控：最近一次全量快照完成时的 DOM 签名
+  // 重命令限流参数（见 handleCommand 开头注释）：硬组=重资源回源/重建，软组=页内遍历
+  const HEAVY_WIN_MS = 2000, HEAVY_HARD_MAX = 3, HEAVY_SOFT_MAX = 12;
+  const HEAVY_CMDS_HARD = new Set(['mode', 'navigate', 'history']);
+  const HEAVY_CMDS_SOFT = new Set(['repaint', 'repair', 'fp', 'domclick', 'ping']);
+  let heavyHardRing = [], heavySoftRing = [];
+  let cmdChain = Promise.resolve();
+  // 命令队列背压：串行链积压上限——洪发时闭包持有 raw 无界堆积 = 内存 DoS 面；
+  // 正常交互积压个位数，400 足够安全余量
+  let pendingCmds = 0;
+  const enqueue = (raw) => {
+    if (pendingCmds >= 400) return;
+    pendingCmds++;
+    cmdChain = cmdChain.then(() => handleRaw(raw)).catch(() => {}).finally(() => { pendingCmds--; });
+  };
+  ws.on('message', (raw) => {
+    lastAliveAt = Date.now();
+    // ping 旁路：纯活性 ping 不排串行命令链——cmdChain 积压时 pong 延迟会触发
+    // 服务端 15s 活性检查误杀健康会话（积压 → pong 迟到 → 判死回收，自我强化）。
+    // 携带负载的 ping（rum 性能数据 / fp 分歧指纹）不入此路——它们有副作用
+    // （[rum] 日志聚合 / 漂移自动重同步），必须走 handleCommand 完整处理；
+    // ping 已入软组限流，防带 fp 洪发重放页内全元素统计的 CPU 放大
+    if (raw.length <= 128) {
+      try {
+        const p = JSON.parse(raw.toString());
+        if (p && p.type === 'ping' && p.rum === undefined && p.fp === undefined) { sendJson({ type: 'pong', t: p.t }); return; }
+      } catch (e) {}
+    }
+    if (dispatchReady) enqueue(raw); else queue.push(Buffer.from(raw));
+  });
+  const noteInput = () => { lastInputAt = Date.now(); armIdleEvict(); };
+  ws.on('close', () => { if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; } });
+  ws.on('resume', () => {
+    if (!dispatchReady || dead) {
+      // v0.53 半初始化/已死会话不可恢复：runSession 在装配期被 15s 活性回收后，
+      // Session 对象仍在 grace 窗口内可被 claim——此时 resume 若静默 return，
+      // 客户端收过 'session' 消息后永远等不到 meta/快照/重试（实测页面卡死）。
+      // 显式回 terminal 错误：客户端降级逻辑清令牌，换全新会话
+      try { ws.send(JSON.stringify({ type: 'error', code: 'SESSION_EXPIRED', terminal: true, msg: '会话已过期或不可恢复，请核对上次提交结果后重新开始' })); } catch (e) {}
+      try { ws.close(1008); } catch (e2) {}
+      return;
+    }
+    cmdChain = cmdChain.then(async () => {
+      if (dead || ws.readyState !== 1) return;
+      const wasEvicted = pageEvicted; // v0.52：evict 后 revive 的 page 上下文全新，不可重放
+      if (pageEvicted) { try { await revivePage(); } catch (e) { logger.log('[idle  ] revive fail:', e && e.message); } }
+      if (domStarting) await domStarting;
+      { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
+        sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: false, bg: bgNow }); }
+      sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) });
+      structBuf.clear(); lastPatchSent.clear();
+      clearTimeout(fullDebounceT); fullDebounceT = null; lastFullDoneAt = 0;
+      if (typeof headChurnT === 'number' || headChurnT) { clearTimeout(headChurnT); headChurnT = null; }
+      lastHeadSig = null;
+      // v0.52 快照重放：page 未被回收且 DOM 签名与缓存快照一致（静止页 F5 的
+      // 常态）→ 原样重放缓存帧，跳过全量快照。签名含 url/元素数/文档长度，
+      // 任一变化（导航/动态内容）自动落回全量路径，正确性不受影响
+      let replayed = false;
+      if (!wasEvicted && snapReplay && page) {
+        const sig2 = await quickDomSig(page);
+        if (sig2 && snapReplay.sig
+            && sig2.url === snapReplay.sig.url
+            && sig2.els === snapReplay.sig.els
+            && sig2.len === snapReplay.sig.len
+            && sig2.vals === snapReplay.sig.vals) { // v0.74 值指纹不符禁重放
+          ws.send(snapReplay.payload);
+          ws._bytes = (ws._bytes || 0) + snapReplay.payload.length;
+          ws._chunks = (ws._chunks || 0) + 1;
+          replayed = true;
+          logger.log('[snap ] replay', Math.round(snapReplay.payload.length / 1024) + 'KB (F5 fast path)');
+        }
+      }
+      // v0.74 resume 稳定期：断线重连瞬间，新 socket 的排队消息（hello 重派/
+      // ping）与会话侧定时器（导航重拍链/瓦片循环）在快照发起点交错——Vikunja
+      // frame 模式实测毫秒级竞态（打字后重连偶发陈旧半截草稿下发；在决策点
+      // 插入一次 evaluate 往返即稳定通过=窗口极窄）。此处显式让出一拍再重拍
+      if (!replayed) { await new Promise((r2) => setTimeout(r2, 25)); await startDomMirror(); }
+      sendJson({ type: 'sync-ready' });
+    }).catch(() => ws.close(1011, 'resume failed'));
+  });
+
+
+  // ---------- DOM 镜像通道 ----------
+  let domActive = false, domExposed = false;
+  let DPR = 1;
+  let viewW = VIEW_W, viewH = VIEW_H;
+  let pendingFrame = null, lastFrameAt = 0, lastFrameAt2 = 0; // 合成器帧回调缓存（编码-解码范式帧源）
+  let domStartAt = 0; // 全量快照起点（死锁自愈计时）
+  let patchChain = Promise.resolve();
+
+  let domStarting = null;
+  // 全链路超时：截图/evaluate 在复杂页面可能挂起（实测 34 秒死锁——domStarting
+  // 永真 → 差分循环被 guard 跳过 → 视觉更新全停，直到全量重同步偶然复活）。
+  // 所有重操作的 await 必须有超时兜底。
+  const withTimeout = (p2, ms, tag2) => Promise.race([
+    p2,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + (tag2 || 'op'))), ms)),
+  ]);
+  let lastFullDoneAt = 0, fullDebounceT = null, pendingFull = false;
+  // v0.32.4 防 head-churn 抖动：图表库（ECharts 等）周期性向 <head> 重注入相同样式，
+  // 曾每 ~2.5s 触发一次整页全量快照重建（:82 烽火台「乱抖」根因）。策略：
+  // 样式集合签名未变 → 丢弃；变了 → 全量但 15s 地板 + 尾部一次性兜底
+  let lastHeadSig = null, headChurnT = null;
+  const headSig = () => page.evaluate(() => {
+    try {
+      const st = [...document.head.querySelectorAll('style')];
+      return st.map(s => { const t = s.textContent || ''; return t.length + ':' + t.slice(0, 24) + '|' + t.slice(-24); }).join('~');
+    } catch (e) { return null; }
+  }).catch(() => null);
+  // v0.75 布局指纹对账：快照送达后抽查客户端渲染几何（w/h，与滚动位置无关）。
+  // 客户端按 fp-req 携带的 data-xy-id 从 mirrorIds 回读自己的排版结果上报，
+  // 服务端与会话浏览器同 id 的 live 几何比对——dom 车道从"希望对"升级为
+  // "验证对"。≥70% 样本落在 max(6px,4%) 容差内判通过；不过先复测一次（字体/
+  // 图片晚到是常态），连续两败 → 本会话降级 frame + 记源站降级事件。
+  function scheduleFp(anchors, delayMs, carryFails) {
+    if (FIDELITY_OFF || mode !== 'dom' || !Array.isArray(anchors) || anchors.length < 6) return;
+    if (fpState && fpState.timer) clearTimeout(fpState.timer);
+    const anc = anchors.slice(0, 24).filter((x) => x && Number.isInteger(x.id));
+    // dims：快照时刻基准几何——对账先过"稳定性过滤"（live 漂移=页面自身改的，
+    // 剔除；vlist/SPA 持续增删行时两侧测量时刻不同，不过滤会把页面演化误判
+    // 成镜像漂移 → 误降级，CI 冷 runner 实测 gen_vlist 复现）
+    const dims = new Map(anc.map((x) => [x.id, x]));
+    fpState = { seq: (fpState ? fpState.seq : 0) + 1, ids: anc.map((x) => x.id), anchors: anc, dims, fails: carryFails || 0, timer: null, pending: true };
+    fpState.timer = setTimeout(() => {
+      if (!fpState || !fpState.pending) return;
+      try {
+        if (mode === 'dom' && domActive && ws && ws.readyState === 1) sendJson({ type: 'fp-req', seq: fpState.seq, ids: fpState.ids });
+        else fpState.pending = false;
+      } catch (e) { fpState.pending = false; }
+    }, delayMs || 1800);
+  }
+  const orgOf = () => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } };
+  async function fidelityDowngrade(why) {
+    if (mode !== 'dom') return;
+    // v0.80：默认观测模式——不切车道、不 mark（mark 会触发站点冷却=变相自动
+    // 降级）；但镜像已判失真时不该放任冻结——dom 内全量重同步重新收敛
+    //（限频 15s；dnd 结构小漂移（<结构阈值）正是靠本通道自愈的，v0.79 由
+    // frame 降级顺带完成，观测模式必须显式补上）
+    if (!FIDELITY_DOWNGRADE) {
+      const nowOb = Date.now();
+      if (nowOb - (fidelityDowngrade.__lastResync || 0) > 15000) {
+        fidelityDowngrade.__lastResync = nowOb;
+        try { logger.log('[fidelity] OBSERVE resync-dom origin=' + orgOf() + ' why=' + why); } catch (eD) {}
+        startDomMirror().catch(() => {});
+      }
+      return;
+    }
+    const org = (() => { try { return new URL(page.url()).origin; } catch (e) { try { return new URL(sessionOrigin).origin; } catch (e2) { return null; } } })();
+    fidelityStore.mark(org);
+    logger.log('[fidelity] downgrade dom->frame origin=' + org + ' why=' + why);
+    mode = 'frame';
+    try {
+      await cdp.send('Page.stopScreencast').catch(() => {});
+      await startDomMirror();
+      sendJson({ type: 'mode', mode });
+    } catch (e) {
+      sendJson({ type: 'error', msg: `保真降级 frame 启动失败: ${e.message}` });
+    }
+  }
+  function startDomMirror() {
+    if (dead || ws.readyState !== 1 || !page) return Promise.resolve();
+    // 重入保护：多个调用点（模式切换/交互回退/补丁重同步）可能并发到达；
+    // 两个 snapshotTiles 在同一 live 页上交错会让彼此的底板含占位空白。
+    // 被吞触发必须补发（pendingFull）：full 补丁（如 head 注入懒加载样式表的
+    // noPath:HEAD）到达时若正有快照在飞，直接 return 会把触发消费掉且无人重排
+    // ——实测 Assistant css 注入被吞一次后镜像动画样式永久缺失。
+    if (domStarting) { pendingFull = true; return domStarting; }
+    // 防抖：SPA 登录/路由切换会连发全量触发（head 注入样式 noPath:HEAD、
+    // +600/+1500ms 导航重试、补丁 miss 客户端重同步），实测 4 秒内 6 次全量
+    // 快照——重建窗口互相吞点击、镜像反复闪旧页。700ms 窗口内合并为一次。
+    // v0.29：重应用（SOC 大屏）head 持续变更（childList:noPath:HEAD 样式注入）
+    // 会周期性触发全量重同步——1.4MB 级快照连发。防抖窗口 700→2000ms：内容
+    // 增量仍走补丁通道实时下发，全量重发只作低频兜底（尾部触发保证终态一致）。
+    const since = Date.now() - lastFullDoneAt;
+    if (since < 700) {
+      if (!fullDebounceT) {
+        fullDebounceT = setTimeout(() => { fullDebounceT = null; startDomMirror(); }, 700 - since + 30);
+      }
+      return Promise.resolve();
+    }
+    domStartAt = Date.now();
+    logger.log('[dbg] startDomMirror <- ' + (new Error().stack.split('\n')[2] || '?').trim().replace(/^at /, ''));
+    domStarting = (async () => {
+      try { await doStartDomMirror(); }
+      finally {
+        domStarting = null; lastFullDoneAt = Date.now();
+        if (pendingFull) {
+          pendingFull = false;
+          fullDebounceT = setTimeout(() => { fullDebounceT = null; startDomMirror().catch(() => {}); }, 60);
+        }
+      }
+    })();
+    return domStarting;
+  }
+  async function doStartDomMirror() {
+    // v0.38 首注入加超时+失败可见：此前裸 await——页面繁忙悬挂或注入源语法
+    // 坏（模板字面量转义事故实测）都被静默吞掉，会话从此零快照零补丁
+    await withTimeout(page.evaluate(sessHelpers), 8000, 'helpers').catch((e) => {
+      logger.log('[dom   ] helpers inject fail:', e && e.message);
+    });
+    if (obfSess && mode === 'dom') {
+      // 编码表注入源站页（sanitizeClone 序列化时置换文本码点）
+      await page.evaluate((m) => { window.__xyObfMap = m; }, obfSess.plain).catch(() => {});
+    }
+    if (!domExposed) {
+      await page.exposeFunction('__xyPatch', (patches) => {
+        if (!domActive || ws.readyState !== 1) return;
+        // 串行化处理，避免并发截图竞态
+          patchChain = patchChain.then(async () => {
+          try {
+          // 轻量主题补丁：html class 变更直改镜像根类名，不进重同步链
+          const dcPatch = patches.find(p => p && p.docClass !== undefined);
+          if (dcPatch) sendJson({ type: 'doc-class', cls: dcPatch.docClass });
+          let rest = patches.filter(p => p && p.docClass === undefined);
+          // v0.17：属性补丁（程序化 checked/value）直发，不进结构差分
+          const propPatches = rest.filter(p => p.__xyProp);
+          if (propPatches.length && domActive && ws.readyState === 1) {
+            sendJson({ type: 'dom-props', props: propPatches.map(p => p.__xyProp) });
+          }
+          rest = rest.filter(p => p.__xyProp === undefined && p.__xySel === undefined && p.text === undefined && p.append === undefined && p.attrs === undefined);
+          // v0.17：选区补丁单独下发
+          const selPatch = patches.find(p => p && p.__xySel);
+          if (selPatch && domActive && ws.readyState === 1) sendJson({ type: 'dom-sel', ...selPatch.__xySel });
+          // v0.18：焦点同步单独下发
+          const focusPatch = patches.find(p => p && p.__xyFocus);
+          if (focusPatch && domActive && ws.readyState === 1) sendJson({ type: 'focus-sync', id: focusPatch.__xyFocus.id });
+          rest = rest.filter(p => p.__xyFocus === undefined);
+          // v0.17 带宽：文本节点级/追加型补丁直发（O(增量) 而非 O(容器)）；
+          // 追加先行——同批中文本补丁可能指向刚追加内容的子节点，顺序保证注册先于定位
+          const appendPatches = patches.filter(p => p && p.append !== undefined);
+          const textPatches = patches.filter(p => p && p.text !== undefined);
+          if ((appendPatches.length || textPatches.length) && domActive && ws.readyState === 1) {
+            sendJson({ type: 'dom-patches', patches: appendPatches.concat(textPatches) });
+          }
+          // v0.29：属性补丁 O(1) 直发（不进瓦片批——无 DOM 重读，几十字节）
+          const attrsPatches = patches.filter(p => p && p.attrs !== undefined);
+          if (attrsPatches.length && domActive && ws.readyState === 1) {
+            sendJson({ type: 'dom-patches', patches: attrsPatches });
+          }
+          if (!rest.length) return;
+            if (rest.some(p => p && p.full)) {
+              const whys = patches.filter(p => p && p.full).map(p => p.why || '?');
+              const headOnly = whys.length > 0 && whys.every(w => /noPath:(HEAD|STYLE)/.test(w));
+              if (headOnly) {
+                // 同样式集合的纯 churn 直接丢弃；变了才全量（15s 地板，churn 周期
+                // 重试 + 尾部兜底保证终态一致；body 内容由补丁通道持续保鲜）
+                const sig = await headSig();
+                if (sig !== null) {
+                  if (sig === lastHeadSig) { logger.log('[dbg] head churn dropped (styles unchanged)'); return; }
+                  if (Date.now() - lastFullDoneAt < 15000) {
+                    if (!headChurnT) headChurnT = setTimeout(() => { headChurnT = null; startDomMirror().catch(() => {}); }, 15000 - (Date.now() - lastFullDoneAt) + 50);
+                    return;
+                  }
+                  lastHeadSig = sig;
+                }
+              } else {
+                logger.log('[dbg] full patch why:', whys.slice(0, 3).join(' | ').slice(0, 200));
+              }
+              // 全量重同步也必须走瓦片化路径（明文快照在瓦片模式下是防御漏洞）
+              await startDomMirror();
+              return;
+            }
+            // v3：dom 与 frame 同路径——结构+瓦片补丁（均零明文）。60ms 合并窗 +
+            // 同路径去重（流式回复逐字变更只保留最新态），每批一次整页截图统一
+            // tileize。事件驱动：静止页零消息、零流量，不存在任何帧率概念。
+            for (const p of rest) {
+              if (!p || (p.id === undefined && p.path === undefined)) continue;
+              const key = (p.id !== undefined) ? '#' + p.id : p.path;
+              // outer 含子树：同目标 outer 与 inner 在合并窗内相遇时保留 outer
+              const kind2 = (p.outer !== undefined) ? 'outer' : 'inner';
+              if (kind2 === 'inner' && structBuf.get(key) === 'outer') continue;
+              structBuf.set(key, kind2);
+            }
+            // v0.29：合并窗 60→150ms——持续变更型仪表盘（SOC 大屏）瓦片批
+            // 16/s（每批整页截图+PNG 切块）是带宽与 CPU 双大头；150ms（≈6.7fps）
+            // 对背景构件视觉足够，文本/值通道不受此窗影响
+            if (structTimer) return;
+            structTimer = setTimeout(async () => {
+              structTimer = null;
+              if (dead || ws.readyState !== 1) { structBuf.clear(); return; }
+              const batch = [...structBuf.entries()].map(([key, kind2]) => ({ key, [kind2]: 1 }));
+              structBuf.clear();
+              // 异步兜底：截图超时/导航销毁上下文一旦以 unhandled rejection
+              // 冒泡会击穿整个网关进程（Node>=15 默认退出）
+              try { await tilesPatches(batch); } catch (e) { logger.log('[patch] batch err:', e && e.message); }
+            }, 150);
+          } catch (e) {}
+        });
+      });
+      try {
+        await page.exposeFunction('__xyScrollPing', (st) => {
+          if (!domActive || ws.readyState !== 1 || mode !== 'dom') return;
+          const key = st.sx + ',' + st.sy + ',' + JSON.stringify(st.scrollers || []);
+          if (key === lastScrollKey) return;
+          lastScrollKey = key;
+          sendJson({ type: 'scroll-sync', sx: st.sx, sy: st.sy, scrolls: st.scrollers || [] });
+        });
+      } catch (e) {}
+      // v0.14：canvas 2D 指令流上行通道（60ms 合并批量下发 canvas-ops）
+      try {
+        await page.exposeFunction('__xyCanvasOps', (batches) => {
+          if (!domActive || ws.readyState !== 1 || mode !== 'dom') return;
+          if (!Array.isArray(batches)) return;
+          const payload = JSON.stringify({ type: 'canvas-ops', batches });
+          if (payload.length > 512 * 1024) return; // 防御：异常巨批丢弃（正常批 << 64KiB）
+          ws.send(payload);
+          ws._bytes = (ws._bytes || 0) + payload.length;
+          ws._chunks = (ws._chunks || 0) + 1;
+        });
+      } catch (e) {}
+      domExposed = true;
+    }
+    domActive = true;
+    // observer 先挂后拍（关键顺序）：原实现快照之后才挂 observer，快照期间二次
+    // 导航（POST→302→落地页）会让快照发出旧内容且新文档上无任何 observer——
+    // 该会话从此零补丁零触发（实测 css 永久冻结的一种成因）。先挂可观测窗口
+    // 覆盖整个快照期；PAGE_HELPERS 注入加超时防导航竞态悬挂。
+    await withTimeout(page.evaluate(sessHelpers), 8000, 'helpers').catch((e) => {
+      logger.log('[dom   ] helpers inject fail:', e && e.message);
+    });
+    await page.evaluate(() => {
+      // v0.27 修复：attachShadow 包装器引用的 window.__xyObserveShadow 此前
+      // 从未被赋值（历史空引用）——注入后创建的影子根（含 closed）一直没挂
+      // observer，closed 组件的动态变化对镜像不可见
+      if (window.__xy && window.__xy.observeShadow) window.__xyObserveShadow = window.__xy.observeShadow;
+      if (window.__xy && window.__xy.observeIframe) window.__xyObserveIframe = window.__xy.observeIframe;
+      if (window.__xyObs) window.__xyObs.disconnect();
+      window.__xyObs = new MutationObserver((recs) => {
+        try { if (window.__xyBlobTouched) window.__xyBlobTouched(recs); } catch (e) {}
+        const out = [];
+        for (const r of recs) { try { const p2 = window.__xy.patchOf(r); if (p2) out.push(p2); } catch (e) {} }
+        if (out.length) window.__xyPatch(out);
+      });
+      window.__xyObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      // v0.17：属性 setter 劫持队列（程序化 checked/value 变更）60ms 合并下发
+      if (window.__xyPropTimer) clearInterval(window.__xyPropTimer);
+      window.__xyPropTimer = setInterval(() => {
+        if (!window.__xyPropQ || !window.__xyPropQ.size) return;
+        const out = [...window.__xyPropQ.values()];
+        window.__xyPropQ.clear();
+        window.__xyPatch(out.map((p) => ({ __xyProp: p })));
+      }, 60);
+      // v0.17：媒体元素状态（播放/暂停/seek/音量/进度）并入同一通道；
+      // timeupdate 1s 节流（暂停/seek/音量事件即时）
+      if (!window.__xyMediaHooked) {
+        window.__xyMediaHooked = true;
+        let lastT = 0;
+        const mediaPing = (el) => {
+          try {
+            if (!el || !el.tagName || !/^(VIDEO|AUDIO)$/.test(el.tagName)) return;
+            if (!window.__xy || !window.__xyPropQ) return;
+            const id = window.__xy.idOf(el);
+            if (id === null) return;
+            window.__xyPropQ.set(id, { id, media: { paused: el.paused, t: el.currentTime, muted: el.muted, vol: el.volume } });
+          } catch (e) {}
+        };
+        for (const ev of ['play', 'pause', 'seeked', 'volumechange']) window.addEventListener(ev, (e) => mediaPing(e.target), true);
+        window.addEventListener('timeupdate', (e) => {
+          const now = Date.now();
+          if (now - lastT < 1000) return;
+          lastT = now;
+          mediaPing(e.target);
+        }, true);
+      }
+      // v0.17：选区镜像——selectionchange 150ms 节流。镜像内容在客户端 shadow
+      // root 内，文档级 Selection API 无法跨边界设置；改为下发选区矩形
+      // （Range.getClientRects + 滚动偏移 → 页面坐标），客户端绝对定位高亮层
+      // 呈现（随镜像文档流滚动）。搜索高亮/表格选择类业务由此跟随。
+      if (!window.__xySelHooked) {
+        window.__xySelHooked = true;
+        let selT = null, lastSelKey = '';
+        document.addEventListener('selectionchange', () => {
+          if (selT) return;
+          selT = setTimeout(() => {
+            selT = null;
+            try {
+              const s = document.getSelection();
+              if (!s || s.rangeCount === 0 || s.isCollapsed) return;
+              const r = s.getRangeAt(0);
+              const rects = [];
+              for (const rc of r.getClientRects()) {
+                if (rects.length >= 200) break;
+                if (rc.width < 1 || rc.height < 1) continue;
+                rects.push([Math.round(rc.left + window.scrollX), Math.round(rc.top + window.scrollY), Math.round(rc.width), Math.round(rc.height)]);
+              }
+              if (!rects.length) return;
+              const key = JSON.stringify(rects);
+              if (key === lastSelKey) return;
+              lastSelKey = key;
+              window.__xyPatch([{ __xySel: { rects } }]);
+            } catch (e) {}
+          }, 150);
+        });
+      }
+      // v0.18：焦点同步——源站 JS 聚焦字段（autofocus/校验定位）时镜像跟随光标。
+      // 300ms 节流；body/无焦点发 null
+      if (!window.__xyFocusHooked) {
+        window.__xyFocusHooked = true;
+        let fT = null, lastF = undefined;
+        const ping = () => {
+          fT = null;
+          try {
+            const ae = document.activeElement;
+            const id = (ae && ae !== document.body && ae !== document.documentElement && window.__xy) ? window.__xy.idOf(ae) : null;
+            if (id === lastF) return;
+            lastF = id;
+            window.__xyPatch([{ __xyFocus: { id } }]);
+          } catch (e) {}
+        };
+        window.addEventListener('focusin', () => { if (!fT) fT = setTimeout(ping, 300); }, true);
+        window.addEventListener('focusout', () => { if (!fT) fT = setTimeout(ping, 300); }, true);
+      }
+      // v0.14：现存 shadow root 全量兜底观察（attachShadow patch 覆盖此后新建的）
+      if (window.__xy && window.__xy.observeShadows) window.__xy.observeShadows();
+      // v0.14：现存同源 iframe 文档观察（load 钩子覆盖此后加载的）
+      if (window.__xy && window.__xy.observeIframes) window.__xy.observeIframes();
+    }).catch(() => {});
+  // v0.26：force=true 重抓既有条目（周期刷新通道）；返回内容发生变化的 url 列表
+  async function prepareXframes(force) {
+      // v0.26 prepareXframes(force)：跨源 iframe 同源化——服务端代理抓取（无访客凭据，6s/512KB，仅
+      // text/html）→ 页内 sanitize（剥 script/事件属性，资产 URL 改写为
+      // /m/x/<secret>/<b64(origin)>）→ 存 window.__xyXframe，sanitizeClone 的
+      // iframe 分支用它替代占位块。secret 每会话随机；origin 注册表限定"本会话
+      // 源站实际嵌入过的源"（防开放代理）。抓取失败保持占位回退
+      if (dead || xframeBusy || !config.crossOriginFrameOrigins.length) return [];
+      xframeBusy = true;
+      let xframeChanged = [];
+      try {
+        const xfCand = await page.evaluate(xframe.listCandidates, !!force);
+        if (dead) return [];
+        if (xfCand.length) {
+          if (!xframeSecret) {
+            xframeSecret = crypto.randomBytes(12).toString('hex');
+            if (!xframeOrigins.has(xframeSecret)) xframeOrigins.set(xframeSecret, new Set());
+          }
+          const origins = xframeOrigins.get(xframeSecret);
+          const htmls = [];
+          for (const raw of xfCand) {
+            try {
+              const url = new URL(raw, sessionOrigin);
+              if (dead || url.username || url.password || !config.crossOriginFrameOrigins.includes(url.origin)) continue;
+              const abs = url.href;
+              const html = await xframe.fetchHtml(abs, trackRequest);
+              if (html && !dead) { origins.add(new URL(abs).origin); htmls.push({ url: abs, html }); }
+            } catch (e) {}
+          }
+          if (htmls.length) {
+            await page.evaluate(xframe.storeSanitized, htmls, xframeSecret).then((ch) => { xframeChanged = ch || []; }).catch(() => {});
+          }
+        }
+      } catch (e) {}
+      finally { xframeBusy = false; }
+      return xframeChanged;
+  }
+    // v0.25/0.26：跨源 iframe 同源化内容预取（首拍全量），周期刷新定时器对
+    // 变化条目推宿主 outer 补丁（客户端整替 iframe，srcdoc 随新内容到达）
+    try { await prepareXframes(false); } catch (e) {}
+    if (!xframeTimer) {
+      // 显式解析（此前 '0' 被 || 吞成 15000，setInterval(fn,0) 还会退化为疯转）：
+      // 0=禁用周期刷新，非法/缺省 15000
+      const xframeRefreshMs = Number(process.env.XFRAME_REFRESH_MS ?? 15000);
+      if (Number.isFinite(xframeRefreshMs) && xframeRefreshMs > 0) {
+        xframeTimer = setInterval(async () => {
+          if (mode !== 'dom' || !domActive || dead || !page || ws.readyState !== 1) return;
+          try {
+            const changed = await prepareXframes(true);
+            if (!changed || !changed.length) return;
+            const patches = await withTimeout(page.evaluate((urls) => {
+              const out = [];
+              for (const f of document.body.querySelectorAll('iframe')) {
+                if (urls.includes(f.src)) out.push({ id: window.__xy.idOf(f), outer: window.__xy.sanitizeClone(f).outerHTML });
+              }
+              return out;
+            }, changed), 5000, 'xframePush').catch(() => null);
+            if (patches && patches.length && ws.readyState === 1) sendJson({ type: 'dom-patches', patches });
+          } catch (e) {}
+        }, xframeRefreshMs);
+      }
+    }
+    // v4：dom 快照零截图（文本/输入框外观由客户端原生渲染，字体由源站 CSS 自带）。
+    // frame 模式仍需整页截图作条带底板。
+    await page.evaluate((d) => { window.__xyDpr = d; }, DPR);
+    if (mode === 'frame') {
+      try {
+        const shotF = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })), 8000, 'frameSheet');
+        await page.evaluate((b64) => { window.__xyFrameShot = b64; }, shotF.data);
+      } catch (e) { await page.evaluate(() => { window.__xyFrameShot = null; }).catch(() => {}); }
+    }
+    const snap = await withTimeout(page.evaluate((wf, pt) => window.__xy.snapshotReal(wf, pt), mode === 'frame', CSS_PASS), 10000, 'snapshot');
+    try {
+      const diag = await page.evaluate(() => window.__xyCssDiag || null);
+      if (diag) logger.log(`[snapcss] ${diag.url} links=${diag.hrefs.length}(${diag.hrefs.map(h => h.split('/').pop()).join(',')}) kf=${diag.kf} cssLen=${diag.styleLen + diag.linkLen}`);
+    } catch (e) {}
+    try {
+      const foc = await page.evaluate(() => document.activeElement ? (document.activeElement.tagName + '#' + (document.activeElement.id || '')) : 'none');
+      logger.log('[dom   ] post-snapshot focus:', foc);
+    } catch (e) {}
+    let siteFaces = '';
+    if (obfSess && mode === 'dom') {
+      // 网站自有 @font-face（艺术字/品牌字）：解析 family/weight/src 字体 URL，
+      // 为每个字体构建 PUA 孪生（构建失败则优雅跳过——该族 PUA 文本落到栈内
+      // 后续 MiSans 面，普通黑体渲染而非豆腐）
+      const ent = obfSessions.get(obfSess.sid);
+      const siteFonts = [];
+      const ffRe = /@font-face\s*\{([^}]*)\}/g;
+      let fm;
+      while ((fm = ffRe.exec(snap.css)) && siteFonts.length < 6) {
+        const blk = fm[1];
+        const fam = (blk.match(/font-family\s*:\s*['"]?([^;'"]+?)['"]?\s*(?:;|$)/) || [])[1];
+        let url = (blk.match(/src\s*:[^;]*?url\((['"]?)([^)'"]+?\.(?:woff2|woff|ttf|otf))\1/i) || [])[2];
+        if (!fam || !url || /^data:/i.test(url)) continue;
+        try { url = new URL(unproxyAsset(url), sessionOrigin).href; } catch (e) { continue; }
+        const wRaw = ((blk.match(/font-weight\s*:\s*([^;]+)/) || [])[1] || '400').trim();
+        const w = /^\d+$/.test(wRaw) ? wRaw : '400';
+        if (siteFonts.some(x => x.fam === fam && x.w === w)) continue;
+        siteFonts.push({ fam, w, url });
+      }
+      const built = [];
+      for (const sf of siteFonts) {
+        const buf = await buildObfTwin(ent, sf.url);
+        if (buf && buf.length > 500) built.push({ fam: sf.fam, w: sf.w, buf });
+      }
+      if (built.length) {
+        ent.siteFonts = built;
+        siteFaces = built.map((x, i) =>
+          '@font-face{font-family:"' + x.fam.replace(/"/g, '') + '";src:url(/m/obf/' + obfSess.sid + '/site-' + i + '.woff2) format("woff2");font-weight:' + x.w + ';font-display:block;unicode-range:U+F0000-10FFFF}').join('');
+        logger.log(`[obf   ] site-font twins: ${built.map(x => x.fam + '/' + Math.round(x.buf.length / 1024) + 'KB').join(', ')}`);
+      } else ent.siteFonts = null;
+    }
+    const obfCssBlock = (obfSess && mode === 'dom') ? (obfFacesCss(obfSess.sid, obfFamiliesFromCss(snap.css)) + siteFaces) : '';
+    // css 内 url() 已在快照采集时按所属样式表基址改写为 /m(/m/o) 代理路径。
+    // v0.17 带宽：css 与上次快照相同（SPA 路由切换常态）则不再重发——导航兜底
+    // 重拍的快照从 ~css+html 缩到 ~html；hello（含断线恢复）后重置必发全量
+    const cssFixed = snap.css + obfCssBlock;
+    const cssSame = (lastCssSent !== null && lastCssSent === cssFixed);
+    if (!cssSame) lastCssSent = cssFixed;
+    const payload = JSON.stringify(Object.assign({ type: 'dom-snapshot', css: cssSame ? undefined : cssFixed, cssSame: cssSame || undefined, html: snap.html, title: snap.title, w: viewW, h: viewH, tiles: snap.tiles || [], frame: snap.frame || null, docClass: snap.docClass || '', docAttrs: snap.docAttrs || '', bodyStyle: snap.bodyStyle || '', sx: snap.sx || 0, sy: snap.sy || 0, scrollers: snap.scrollers || [], bodyId: snap.bodyId }));
+    ws.send(payload);
+    ws._bytes = (ws._bytes || 0) + payload.length;
+    ws._chunks = (ws._chunks || 0) + 1;
+    // v0.52 重放缓存：留一份供 F5/断线 resume 快速重放。先归还本会话旧帧
+    // 占用的预算，再在全局预算内缓存；超预算（其他会话占满）则放弃缓存，
+    // resume 退化为全量——功能无损，仅少一次加速
+    if (snapReplay) { snapReplayBytes -= snapReplay.payload.length; snapReplay = null; }
+    { const sigR = await quickDomSig(page); if (sigR) lastSnapDomSig = sigR; } // v0.55 门控基线（无条件记录）
+    // v0.56 drift 基准：记录快照完成时刻的服务端元素数——漂移检测以此为口径。
+    // 此前用实时数：beacon 页 2s 轮询让 DOM 持续演进，快照永远落后 → 假漂移
+    // 151 元素 → 10s 一次自愈重拍 → 无限重建循环（页面完全不可用）
+    try { lastSnapServerEls = await page.evaluate(() => document.body.getElementsByTagName('*').length - document.body.querySelectorAll('script, noscript, template, [data-xy-space]').length); } catch (e2) {}
+    if (payload.length <= 2 * 1024 * 1024 && snapReplayBytes + payload.length <= SNAP_REPLAY_BUDGET) {
+      // v0.53：重放帧必须自带 css——resume 的客户端是新文档（lastCss=null），
+      // cssSame 压缩掉的 css 若缺席，客户端 buildMirror(css=null) 直接失败
+      try {
+        const cacheObj = JSON.parse(payload);
+        cacheObj.css = cssFixed; delete cacheObj.cssSame;
+        const fullPayload = JSON.stringify(cacheObj);
+        const sig = await quickDomSig(page);
+        if (sig && fullPayload.length <= 2 * 1024 * 1024) { snapReplay = { payload: fullPayload, sig }; snapReplayBytes += fullPayload.length; }
+      } catch (e) {}
+    }
+    // v0.75 布局对账：快照落位（客户端构建+字体/图片在途）给 1.8s，随后抽查
+    if (mode === 'dom' && Array.isArray(snap.fpFid) && snap.fpFid.length >= 6) scheduleFp(snap.fpFid);
+    // v0.48 像素蒙皮：快照后立即截全页图发给客户端叠加在镜像 DOM 之上——
+    // 文字是服务端 Linux Chromium 光栅化的位图，访客端不再自行渲染文字
+    // → 视觉 100% 还原。DOM 层 pointer-events 正常处理交互（打字/点击/
+    // 悬停），蒙皮 pointer-events:none 不挡事件。默认 XY_PIXEL_SKIN=1 开启
+    if (process.env.XY_PIXEL_SKIN === '1' && mode === 'dom' && page) {
+      try {
+        const skin = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
+          format: 'jpeg', quality: 80,
+          clip: { x: 0, y: 0, width: viewW, height: viewH, scale: 1 },
+        })), 3000, 'pixelSkin').catch(() => null);
+        if (skin && ws.readyState === 1) {
+          const skinPl = JSON.stringify({ type: 'pixel-skin', url: 'data:image/jpeg;base64,' + skin.data, w: viewW, h: viewH });
+          ws.send(skinPl);
+          ws._bytes = (ws._bytes || 0) + skinPl.length;
+        }
+      } catch (e) {}
+    }
+    // v0.47 零延迟 flush：快照期间 observer 累积的变更立即序列化下发——
+    // 补丁在同一个 WS tick 背靠背到达（客户端先处理快照再处理补丁，中间
+    // 不再有 150ms 空窗）。消除"深色空壳→内容渐现"的分批出现
+    if (structBuf.size > 0) {
+      const batch = [...structBuf.entries()].map(([key, kind2]) => ({ key, [kind2]: 1 }));
+      structBuf.clear();
+      if (structTimer) { clearTimeout(structTimer); structTimer = null; }
+      tilesPatches(batch).catch(() => {});
+    }
+    logger.log('[dom   ] mirror started');
+    lastCssSig = null; // 快照即最新基线，下一拍重定（含懒加载样式表）
+    // v3：dom 模式无帧流（客户端本地渲染，更新全部事件驱动——补丁/滚动同步/
+    // canvas 元素捕获）；帧差分通道仅属于显式 frame（像素直出）模式
+    if (mode === 'frame') {
+      startDiffLoop();
+      // captureBeyondViewport 截图会中断 Page.screencast 帧流——重启
+      cdp.send('Page.stopScreencast').catch(() => {});
+      setTimeout(() => { if (mode === 'frame') cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {}); }, 80);
+    } else {
+      if (canvasSigsReset) canvasSigsReset(); // 重同步后旧基准必然失配（防"画面变化但比对为同"冻结）
+      startCanvasWatch();
+    }
+  }
+
+  // 结构+瓦片补丁（v3）：一批变更合并为一次整页截图；每个变更子树在页面内
+  // tileize（文本→带服务端像素背景的等大占位，元素锚定）后以 inner/outer 下发。
+  // 客户端替换后瓦片随镜像文档流排版——无坐标、无图层、无帧率，零明文。
+  async function tilesPatches(patches) {
+    if (!page) return; // v0.39 页面被空闲逐出：补丁序列化挂起（复活后全量重同步）
+    if (patches.some(p => p && p.full)) { await startDomMirror(); return; }
+    // 祖先后代去重：祖先 innerHTML 已含后代最终态；按深度排序祖先优先，
+    // 后到的祖先会移除已收入的其后代（深度沿用 path 计算；id 版本 path 恒存在）
+    const sorted = [...patches].filter(p => p && p.key !== undefined && (p.inner !== undefined || p.outer !== undefined))
+      .sort((a, b) => String(a.path ?? '').split('/').length - String(b.path ?? '').split('/').length);
+    const items = [];
+    for (const p of sorted) {
+      const pp = String(p.path ?? p.key);
+      if (items.some(q => pp === q.path || pp.startsWith(q.path + '/'))) continue;
+      for (let k = items.length - 1; k >= 0; k--) {
+        if (items[k].path.startsWith(pp + '/')) items.splice(k, 1);
+      }
+      items.push({ key: p.key, path: pp, outer: p.outer !== undefined ? 1 : undefined, inner: p.outer !== undefined ? undefined : 1 });
+    }
+    if (!items.length) return;
+    const out = await withTimeout(page.evaluate(async (list) => {
+      const out2 = [];
+      // v0.38.1 补丁通道 blob 内联：快照后新建的 blob 引用走补丁透传到访客端
+      // 必然加载失败（异步 toBlob 晚于首帧快照，secprobe 实测）。序列化前解析
+      // ——同步预检零选择器命中即零开销；命中才跑（≤400ms race，预算上限同快照）
+      try {
+        if (document.body && document.body.querySelector('[src^="blob:"], [href^="blob:"], [poster^="blob:"]')) {
+          await Promise.race([window.__xyResolveBlobs(), new Promise((r3) => setTimeout(r3, 400))]);
+        }
+      } catch (e) {}
+      // v0.23 窗口平移检测：inner 补丁先与上次下发的子元素序列比对——虚拟滚动
+      // 整窗重建的形态是 old.slice(k) ≡ new 前段（下移，删头+尾部新增）或反向
+      // （上移）。命中则发 O(增量) 的 delHead+append / prepend+delTail，不命中
+      // 回退整段 inner。prev 序列按容器 id 记忆（≤32 容器防内存）
+      if (!window.__xyKids) window.__xyKids = new Map();
+      for (const it of list) {
+        try {
+          const ref = (it.key !== undefined && String(it.key)[0] === '#') ? Number(String(it.key).slice(1)) : it.path;
+          let live = window.__xy.find(ref);
+          if (!live) continue;
+          if (live.nodeType === 3) live = live.parentElement;
+          if (!live || live.nodeType !== 1) continue;
+          // v0.37 flush 期连接校验：入队时还挂在树上、flush 时已离体的节点
+          //（图表库 dispose 竞态）镜像端必 miss——离体零视觉价值，丢弃
+          if (live.isConnected === false) continue;
+          const cl = window.__xy.sanitizeClone(live);
+          if (it.outer !== undefined) {
+            const html = cl.outerHTML;
+            if (html) out2.push({ id: ref, path: it.path, outer: html });
+            continue;
+          }
+          const kids = [...cl.children].map(c2 => c2.outerHTML);
+          // 比对用规范化串：虚拟滚动每轮整窗重建，data-xy-id 随元素新建而变化，
+          // 内容本体相同——剥离 id 属性后比对（发送内容保留原串，新行携带新 id）
+          const norm = (h2) => h2.replace(/ data-xy-id="\d+"/g, '');
+          const kidsN = kids.map(norm);
+          const kidsKey = (typeof ref === 'number' ? '#' + ref : 'p' + it.path) + ':kids';
+          const prev = window.__xyKids.get(kidsKey);
+          if (prev && prev.length >= 4 && kidsN.length >= 4 && window.__xyKids.size <= 32) {
+            // 下移检测：old.slice(k) ≡ new[0..len-k)
+            let shift = 0;
+            for (let k = 1; k <= prev.length - 4; k++) {
+              if (prev.slice(k).every((h3, i) => h3 === kidsN[i]) && prev.length - k <= kidsN.length) { shift = k; break; }
+            }
+            if (shift > 0) {
+              const tail = kids.slice(prev.length - shift).join('');
+              window.__xyKids.set(kidsKey, kidsN);
+              if (tail) out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, delHead: shift, append: tail });
+              else out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, delHead: shift });
+              continue;
+            }
+            // 上移检测：new 尾段 ≡ old[0..len-k)
+            let shift2 = 0;
+            for (let k = 1; k <= prev.length - 4; k++) {
+              if (prev.slice(0, prev.length - k).every((h3, i) => h3 === kidsN[i + k]) && prev.length - k <= kidsN.length) { shift2 = k; break; }
+            }
+            if (shift2 > 0) {
+              const head = kids.slice(0, shift2).join('');
+              window.__xyKids.set(kidsKey, kidsN);
+              if (head) out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, prepend: head, delTail: shift2 });
+              else out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, delTail: shift2 });
+              continue;
+            }
+            // v0.24 LCS 子序列编辑脚本（kidKeep/kidIns）：覆盖窗口边界与混合
+            // 批次形态（纯平移检测的回退场景）。规范化串整数化后 O(n·m) DP
+            // （n,m≤64），keep=旧序索引（客户端按新序重排并复用保留节点），
+            // ins=[新序位置, 原始 html]。仅元素子节点容器可用（文本节点不参与
+            // children 序列，混入会丢内容）；编码比整窗省 30%+ 才启用
+            const elOnly = [...cl.childNodes].every((n2) => n2.nodeType === 1);
+            if (elOnly && kidsN.length <= 64 && prev.length <= 64) {
+              const idMap = new Map();
+              const a = prev.map((s2) => { if (!idMap.has(s2)) idMap.set(s2, idMap.size); return idMap.get(s2); });
+              const b = kidsN.map((s2) => { if (!idMap.has(s2)) idMap.set(s2, idMap.size); return idMap.get(s2); });
+              const n2 = a.length, m2 = b.length;
+              const dp = [];
+              for (let i2 = 0; i2 <= n2; i2++) dp.push(new Int32Array(m2 + 1));
+              for (let i2 = n2 - 1; i2 >= 0; i2--) for (let j2 = m2 - 1; j2 >= 0; j2--) dp[i2][j2] = a[i2] === b[j2] ? dp[i2 + 1][j2 + 1] + 1 : Math.max(dp[i2 + 1][j2], dp[i2][j2 + 1]);
+              const keepIdx = [];
+              const keptNew = [];
+              let i3 = 0, j3 = 0;
+              while (i3 < n2 && j3 < m2) {
+                if (a[i3] === b[j3]) { keepIdx.push(i3); keptNew.push(j3); i3++; j3++; }
+                else if (dp[i3 + 1][j3] >= dp[i3][j3 + 1]) i3++;
+                else j3++;
+              }
+              const keptSet = new Set(keptNew);
+              const insOps = [];
+              for (let jj = 0; jj < m2; jj++) if (!keptSet.has(jj)) insOps.push([jj, kids[jj]]);
+              const encSize = keepIdx.length * 3 + insOps.reduce((s3, x2) => s3 + x2[1].length + 6, 0) + 40;
+              const innerLen = cl.innerHTML.length;
+              if (keepIdx.length >= 2 && encSize < innerLen * 0.7) {
+                window.__xyKids.set(kidsKey, kidsN);
+                out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, kidKeep: keepIdx, kidIns: insOps, kidTotal: m2 });
+                continue;
+              }
+            }
+          }
+          window.__xyKids.set(kidsKey, kidsN);
+          const html = cl.innerHTML;
+          if (html) out2.push({ id: typeof ref === 'number' ? ref : undefined, path: it.path, inner: html });
+        } catch (e) {}
+      }
+      return out2;
+    }, items), 5000, 'patchReal').catch((e) => { logger.log('[patch] real err:', e && e.message); return null; });
+    if (!out || !out.length) return;
+    if (ws.readyState !== 1) return;
+    // 轮询自更新常产生逐字节相同的结果（像素一致 → data URL 一致）：
+    // 与上次已下发比对，全同批次直接跳过（省带宽与客户端重排）
+    if (lastPatchSent.size > 500) lastPatchSent.clear();
+    const out2 = out.filter(p => {
+      const key = (p.id !== undefined ? 'o#' + p.id : 'p:' + (p.path ?? '')) + (p.outer !== undefined ? ':o' : ':i');
+      // v0.23：inner 去重用规范化串（剥离 data-xy-id）——虚拟滚动整窗重建时
+      // 内容相同但元素新建导致 id 全变，原文比对必然 miss 而重复整窗下发
+      const html = p.outer !== undefined ? p.outer : (p.inner !== undefined ? p.inner.replace(/ data-xy-id="\d+"/g, '') : JSON.stringify(p));
+      if (lastPatchSent.get(key) === html) return false;
+      lastPatchSent.set(key, html);
+      return true;
+    });
+    if (!out2.length) return;
+    const payload = JSON.stringify({ type: 'dom-patches', patches: out2 });
+    ws.send(payload);
+    ws._bytes = (ws._bytes || 0) + payload.length;
+    ws._chunks = (ws._chunks || 0) + 1;
+  }
+
+  // v3 dom 模式：canvas 元素按需捕获。仅当页面存在视口内 canvas 时才截图，
+  // 且逐元素比对像素（sharp raw 或字节级），无变化零下发——静止 canvas（软件
+  // GL 下的 WebGL）零流量。v0.22 自适应节奏：可见动画画布升到 ~8fps 快档
+  // （120ms tick），静止画布指数退避不变；rAF 门改相邻 tick 差分（无 260ms
+  // 阻塞），捕获列表 600ms 缓存，每秒捕获总数预算 12 封顶 CPU
+  let skinTimer = null;
+  let skinLastData = null;
+  function startCanvasWatch() {
+    if (canvasTimer) return;
+    // v0.48 像素蒙皮刷新：每 2 秒截全页图，与上次不同才发（静止页面零流量）
+    if (process.env.XY_PIXEL_SKIN === '1') {
+      if (skinTimer) clearInterval(skinTimer);
+      skinTimer = setInterval(async () => {
+        if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
+        try {
+          const skin = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
+            format: 'jpeg', quality: 80,
+            clip: { x: 0, y: 0, width: viewW, height: viewH, scale: 1 },
+          })), 3000, 'skinTick').catch(() => null);
+          if (!skin) return;
+          const key = skin.data.length; // 长度作为快速变化检测
+          if (skinLastData && Math.abs(key - skinLastData) < 100) return; // 未变化
+          skinLastData = key;
+          const skinPl = JSON.stringify({ type: 'pixel-skin', url: 'data:image/jpeg;base64,' + skin.data, w: viewW, h: viewH });
+          ws.send(skinPl);
+          ws._bytes = (ws._bytes || 0) + skinPl.length;
+        } catch (e) {}
+      }, 2000);
+      if (skinTimer && typeof skinTimer.unref === 'function') skinTimer.unref();
+    }
+    const sigs = createCanvasSigs();
+    canvasSigsReset = sigs.clear;
+    // v0.37 缓冲直读失真检测：WebGL 族（无 preserveDrawingBuffer）toDataURL 恒为
+    // 等长空白——注入前创建的 GL 上下文无 __xyCtxGL 标记（首跳注入晚于页面脚本）。
+    // 收敛策略：直读结果连续 2 拍不变且 rAF 在动（像素必在变=直读在说谎）→ 本
+    // id 永久切回截图通道（合成面为真）。2D 画布直读忠实，不会命中
+    const dataUrlBlank = new Map();
+    const glSticky = new Set();
+    let canvasBusy = false;
+    let rafLast = { n: -1, at: 0 };
+    let listCache = { at: 0, list: null };
+    const captureTimes = [];
+    // v0.70 全局捕获预算（次/秒，默认 12）：多画布页面（5+ 图表）相互挤占时的
+    // 总闸门。XY_TILE_CAPTURE_PER_SEC，1-120，非法回退 12。
+    const CAPTURE_PER_SEC = Math.min(120, Math.max(1, parseInt(process.env.XY_TILE_CAPTURE_PER_SEC ?? '12', 10) || 12));
+    // v0.63 瓦片字节预算：滚动 60s 窗口内 canvas-tile 线上字节超预算时按画布
+    // 节流（每画布 1.5s 惩罚窗，窗口回落即自动恢复）。动画 WebGL 大画布在
+    // DPR>1 时实测 76MB/min，占满访客链路 → 输入延迟 P95 达 1s（beacon 态势图）
+    const tileBytes = [];
+    const budgetHold = new Map();
+    // 显式解析（此前 || 链把合法 '0' 吞成默认 18）：0=禁用字节预算门（与
+    // canvasOpsBudget '0=不限' 同语义），非法/缺省回退 18
+    const TILE_BUDGET_MB = parseInt(process.env.XY_TILE_BUDGET_MB ?? '', 10);
+    const TILE_BUDGET = (Number.isFinite(TILE_BUDGET_MB) && TILE_BUDGET_MB >= 0 ? TILE_BUDGET_MB : 18) * 1048576;
+
+    // v0.64 动画画布快速通道：连续 2 拍内容变化 + rAF 活跃 = 动画中。
+    // 截图通道切半分辨率 JPEG（瓦片 ~25-60KB，同字节预算内帧率 x5+）；
+    // 静态画布与 2D 直读（透明叠加层）保持全分辨率 PNG，保真优先。
+    // 实测 beacon 态势图：300KB PNG 瓦片在 18MB/min 预算下仅 ~0.9fps，地球呈
+    // 冻结-跳变；JPEG@q50/0.5x 后预算内可达 ~5-7fps（慢速旋转视觉连续）。
+    const animStreak = new Map();
+    const vidLast = new Map(); // v0.72 video 帧节流（sigKey→上次捕获时刻）
+    const ANIM_SCALE = Math.min(1, Math.max(0.25, parseFloat(process.env.XY_TILE_ANIM_SCALE || '0.5') || 0.5));
+    const ANIM_QUALITY = Math.min(95, Math.max(20, parseInt(process.env.XY_TILE_ANIM_QUALITY || '50', 10) || 50));
+    // v0.65 动画帧流：存在动画画布时启动 CDP startScreencast（浏览器侧 JPEG 编码、
+    // 无逐拍截图往返），服务端裁剪到画布区域作为瓦片下发——同浏览器截图互斥与
+    // 串行捕获环 ~600ms/轮的限制不再约束动画帧率。流激活期间上层动画叠加画布
+    // 置 1px 透明占位（合成流已含其像素），停流后常规瓦片通道自动恢复真值。
+    const ANIM_FPS = Math.min(30, Math.max(2, parseInt(process.env.XY_TILE_ANIM_FPS || '8', 10) || 8));
+    // v0.70 帧流源采样 everyNthFrame（默认 4：60fps 源 → 15fps 事件流，再由
+    // ANIM_FPS 节流下发）。高刷/省 CPU 场景可调。XY_TILE_ANIM_EVERY_NTH，1-30。
+    const ANIM_EVERY_NTH = Math.min(30, Math.max(1, parseInt(process.env.XY_TILE_ANIM_EVERY_NTH ?? '4', 10) || 4));
+    let scOn = false, scLastSend = 0, scTarget = null, scBlank = new Set(), scLastAnimAt = 0, scGen = 0;
+    const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    let scHandler = null;
+    async function scStop() {
+      if (!scOn) return;
+      scOn = false; scTarget = null; scBlank = new Set();
+      try { if (scHandler) cdp.off('Page.screencastFrame', scHandler); scHandler = null; } catch (e) {}
+      try { await cdp.send('Page.stopScreencast'); } catch (e) {}
+      try { sigs.clear(); } catch (e) {} // 停流后首拍强制真值
+    }
+    function scStart(target, blanks) {
+      try {
+        const myGen = ++scGen;
+        scHandler = async (ev) => {
+          if (myGen !== scGen) return; // v0.65 代际防重：旧流 handler 一律失效
+          try { cdp.send('Page.screencastFrameAck', { sessionId: ev.sessionId }).catch(() => {}); } catch (e) {}
+          if (!scOn || !scTarget || ws.readyState !== 1) return;
+          const nowF = Date.now();
+          if (nowF - scLastSend < Math.floor(1000 / ANIM_FPS)) return;
+          scLastSend = nowF;
+          try {
+            const buf = Buffer.from(ev.data, 'base64');
+            const meta = sharp ? await sharp(buf).metadata() : null;
+            if (!meta || !meta.width || !meta.height) return;
+            const scaleX = meta.width / Math.max(1, viewW), scaleY = meta.height / Math.max(1, viewH);
+            // 无滚动页 offset=0；有滚动时区域可能偏移——裁剪钳制到帧内，停流自愈
+            let cl = Math.max(0, Math.round(scTarget.x * scaleX));
+            let ct = Math.max(0, Math.round(scTarget.y * scaleY));
+            let cw = Math.min(meta.width - cl, Math.max(2, Math.round(scTarget.w * scaleX)));
+            let ch = Math.min(meta.height - ct, Math.max(2, Math.round(scTarget.h * scaleY)));
+            if (cw < 2 || ch < 2) return;
+            const out = await sharp(buf).extract({ left: cl, top: ct, width: cw, height: ch }).jpeg({ quality: ANIM_QUALITY }).toBuffer();
+            const b64 = out.toString('base64');
+            const pl = JSON.stringify({ type: 'canvas-tile', id: scTarget.id, path: scTarget.path, x: Math.round(scTarget.x), y: Math.round(scTarget.y), w: Math.round(scTarget.w), h: Math.round(scTarget.h), url: 'data:image/jpeg;base64,' + b64 });
+            if (ws.readyState === 1) { ws.send(pl); ws._bytes = (ws._bytes || 0) + pl.length; ws._chunks = (ws._chunks || 0) + 1; tileBytes.push({ t: Date.now(), b: pl.length }); }
+            while (tileBytes.length && Date.now() - tileBytes[0].t > 60000) tileBytes.shift();
+          } catch (e) {}
+        };
+        cdp.on('Page.screencastFrame', scHandler);
+        cdp.send('Page.startScreencast', { format: 'jpeg', quality: ANIM_QUALITY, maxWidth: Math.max(160, Math.round(viewW * Math.min(DPR, 1.5) * ANIM_SCALE)), maxHeight: Math.max(120, Math.round(viewH * Math.min(DPR, 1.5) * ANIM_SCALE)), everyNthFrame: ANIM_EVERY_NTH }).catch(async () => { await scStop(); });
+        scOn = true; scTarget = target; scBlank = new Set(blanks);
+        for (const b of scBlank) { // 叠加画布置透明占位（合成流已含其像素）
+          const pl = JSON.stringify({ type: 'canvas-tile', id: b.id, path: b.path, x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h), url: BLANK_PNG });
+          if (ws.readyState === 1) { ws.send(pl); ws._bytes = (ws._bytes || 0) + pl.length; }
+        }
+      } catch (e) { try { scStop(); } catch (e2) {} }
+    }
+    canvasTimer = setInterval(async () => {
+      if (canvasBusy) return;
+      if (mode !== 'dom' || !domActive || dead || !page || !cdp || ws.readyState !== 1) return;
+      if (Date.now() - lastInputAt < 150) return; // v0.57 输入避让：键入/点击的补丁优先于画布捕获
+      canvasBusy = true;
+      try {
+        const now = Date.now();
+        // 捕获列表 600ms 缓存（坐标为页面绝对值，滚动安全；可见性过滤随之）
+        if (!listCache.list || now - listCache.at > 600) {
+          const fresh = await withTimeout(page.evaluate(canvasList), 1500, 'canvasList').catch(() => null);
+          if (fresh === null) return;
+          listCache = { at: now, list: fresh };
+        }
+        const list = listCache.list;
+        if (process.env.XY_DBG_TILE && list.length) { try { logger.log('[dbgtile] tick list=' + list.length + ' sigs=' + sigs.size); } catch (e) {} }
+        if (!list.length) { if (sigs.size) sigs.clear(); return; }
+        // rAF 活动门（轻量差分版）：相邻 tick 采样 __xyRafCount，300ms 无增量
+        // = 动画循环停转 → canvas 必然静止零捕获（静止 canvas 的持续捕获曾是
+        // CPU 大头：实测 34-47%）
+        const rafN = await withTimeout(page.evaluate(() => window.__xyRafCount || 0), 400, 'rafN').catch(() => null);
+        if (rafN === null) return;
+        let rafActive = false;
+        // v0.72 video 旁路 rAF 门：视频播放不依赖页面 rAF（纯 <video> 页 rAF 静止），
+        // 页内有可见 video 就保持捕获循环存活；静止视频由 sig 指数退避收敛成本
+        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) return; }
+        else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
+        // v0.65 动画集合（含 streak 判定）——用于帧流目标与占位集
+        const animItems = list.filter((it) => it.kind !== 'elbit' && it.kind !== 'video' && rafActive && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2); // v0.72 video 不进帧流（非 canvas 合成面）
+        if (animItems.length) {
+          scLastAnimAt = Date.now();
+          if (!scOn) {
+            const target = animItems[0]; // 列表序=DOM 序，取最底动画层承载合成流
+            const blanks = animItems.slice(1);
+            scStart(target, blanks);
+          }
+        } else if (scOn && Date.now() - scLastAnimAt > 2500) {
+          scStop(); // 动画停 2.5s：停流，常规瓦片通道恢复真值
+        }
+        const nowMs = Date.now();
+        while (captureTimes.length && nowMs - captureTimes[0] > 1000) captureTimes.shift();
+        // v0.80 诊断：每个位图兜底画布的 opaque 原因一次性记录（why 由
+        // listCanvases 携带：2D 包装器写入的 __xyOpaqueWhy2d / native=未包装）
+        if (!startCanvasWatch.__whyLog) startCanvasWatch.__whyLog = new Set();
+        for (const it of list) {
+          if (it.why !== undefined && it.id !== undefined && !startCanvasWatch.__whyLog.has(it.id)) {
+            startCanvasWatch.__whyLog.add(it.id);
+            try { logger.log('[canvas] bitmap-fallback id=' + it.id + ' why=' + it.why); } catch (eL) {}
+          }
+          // 未变化画布指数退避：450ms→900→1800→3600 封顶；一变化即复位
+          // （v0.14：键改为节点 id——影子内画布 path 可为 null）
+          const sigKey = it.id !== undefined ? it.id : it.path;
+          // v0.37 hot（空白烘焙槽/预算热点）旁路退避：urgent 槽必须在下一拍拿到真值
+          if (scOn && scTarget && sigKey === scTarget.id) continue; // v0.65 帧流承载
+          if (scOn && [...scBlank].some((b) => b.id === sigKey)) continue; // v0.65 透明占位中
+          if (!sigs.due(sigKey, nowMs) && !it.hot) continue;
+          // v0.72 video 帧率节流：循环 120ms，video 最低间隔 200ms（≈5fps）；
+          // 全局另受 CAPTURE_PER_SEC 与 60s 字节预算约束
+          if (it.kind === 'video') { const lt = vidLast.get(sigKey) || 0; if (Date.now() - lt < 200) continue; }
+          // 每秒捕获预算（≤12）：快档动画画布不挤占整页；预算内按列表序优先
+          if (captureTimes.length >= CAPTURE_PER_SEC) break; // v0.70 env 化
+          // v0.63 字节预算门：超限时每画布至少间隔 1.5s（urgent 静态变更最多延迟
+          // 一个惩罚窗，动画画布自动降档；窗口 60s 回落即恢复原节奏）
+          {
+            const nb = Date.now();
+            while (tileBytes.length && nb - tileBytes[0].t > 60000) tileBytes.shift();
+            let tsum = 0; for (const tb of tileBytes) tsum += tb.b;
+            if (TILE_BUDGET > 0 && tsum >= TILE_BUDGET) {
+              const hold = budgetHold.get(sigKey) || 0;
+              if (nb < hold) continue;
+              budgetHold.set(sigKey, nb + 1500);
+              continue;
+            }
+          }
+          // v0.37 canvas tile 默认画布缓冲直读（toDataURL）：截图 clip 依赖合成面，
+          // 视口外/内部滚动容器未合成区域截出来是空白（实测仪表盘图表下半在
+          // 内部滚动容器折叠线下，空白 tile 反把快照好帧覆盖回空白）。缓冲直读
+          // 与合成无关且为原生分辨率（不受 scale 1.5 上限）。例外走截图：
+          // ①WebGL 族（__xyCtxGL——无 preserveDrawingBuffer 时 toDataURL 恒空白）
+          // ②注入前创建的 GL 上下文无标记——直读连续 2 拍不变且 rAF 在动
+          //（像素在变=直读说谎）→ glSticky 永久切截图（收敛自愈）
+          // ③读取失败（污染）。elbit（DOM 区域）同走截图
+          const viaData = it.kind !== 'elbit' && it.kind !== 'video' && it.id !== undefined && !glSticky.has(sigKey); // v0.72 video 无 canvas 缓冲可直读
+          let shot = null;
+          let usedData = false;
+          // v0.64 动画快速通道判定（streak 来自此前各拍；截图后 sig record 再更新）
+          const animStreakN = animStreak.get(sigKey) || 0;
+          const animFast = it.kind !== 'elbit' && rafActive && animStreakN >= 2;
+          // v0.77 快车道分级：streak 2-4 = 慢更新（轮询仪表盘 2s 一刷）——全分辨率
+          // q85（每秒至多一两帧，带宽无压力，文字/图表必须清晰）；streak≥5 = 真动画
+          // 才降半档走 ANIM_SCALE/ANIM_QUALITY（带宽优先）。beacon 实测模糊根因：
+          // 仪表盘被误判进真动画档（半分辨率 q50 拉伸 2x）
+          const animHot = animFast && animStreakN >= 5;
+          // v0.80：大画布（≥200k px²，beacon 覆盖层 996×600=597k）真动画档
+          // 提质 0.75/q70——worker 渲染画布永远走位图，半分辨率 q50 在文字/弧线
+          // 上就是"模糊条"本体；带宽代价受既有字节预算门约束
+          //（声明须在 animHot 之后——TDZ：先引用后声明会炸掉整个捕获循环）
+          const animBig = animHot && it.w * it.h >= 200000;
+          // v0.72 video fast lane：播放中（帧连续变化 streak≥1）JPEG@ANIM_QUALITY
+          // 半分辨率；首帧/静止保持 PNG 全分辨率（海报帧保真）
+          const vidFast = it.kind === 'video' && (animStreak.get(sigKey) || 0) >= 1;
+          if (viaData) {
+            // v0.43 tile 通道同样合成 CSS 底色（透明底 canvas 的 toDataURL 透明
+            // 像素会在客户端 img 上透出白底——与源站视觉不一致）
+            const dataUrl = await withTimeout(page.evaluate((idv, fast, dscale) => {
+              const suspPrev = window.__xyOpsSuspend; window.__xyOpsSuspend = true; // v0.58 捕获期挂起指令采集
+              try {
+                const c = window.__xy.find(idv);
+                if (!c || c.tagName !== 'CANVAS' || c.__xyCtxGL) return null;
+                const cs = getComputedStyle(c);
+                const bg = cs.backgroundColor;
+                if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+                  const oc = document.createElement('canvas');
+                  oc.width = c.width || 300; oc.height = c.height || 150;
+                  const octx = oc.getContext('2d');
+                  octx.fillStyle = bg;
+                  octx.fillRect(0, 0, oc.width, oc.height);
+                  octx.drawImage(c, 0, 0);
+                  return oc.toDataURL('image/png'); // v0.58：直读回退 PNG——色块类图形 JPEG 反超（对照实测 +15%），复杂图走截图通道 JPEG
+                }
+                // v0.64b 动画 2D 叠加层：透明底不能上 JPEG（会黑底），改为半分辨率
+                // 离屏降采样 PNG——保 alpha 且字节 ~1/4、编码与 sig 同步变廉，
+                // 捕获环串行节奏下的实际帧率显著提升（beacon 弧线层实测）
+                if (fast && c.width >= 400) {
+                  try {
+                    const sc = document.createElement('canvas');
+                    const sw = Math.max(1, Math.round((c.width || 300) * dscale));
+                    const sh = Math.max(1, Math.round((c.height || 150) * dscale));
+                    sc.width = sw; sc.height = sh;
+                    const sctx = sc.getContext('2d');
+                    sctx.imageSmoothingEnabled = true;
+                    sctx.drawImage(c, 0, 0, sw, sh);
+                    return sc.toDataURL('image/png');
+                  } catch (e2) { /* 降采样失败回退全分辨率 */ }
+                }
+                return c.toDataURL('image/png');
+              } catch (e) { return null; } finally { window.__xyOpsSuspend = suspPrev; }
+            }, it.id, animHot, ANIM_SCALE), 1500, 'canvasData').catch(() => null);
+            if (dataUrl && dataUrl.length > 40) {
+              // v0.57：直读产物 mime 两态（透明底 PNG / 合成底色 JPEG）——从 dataUrl
+              // 前缀提取真实 mime，服务端拼 data URL 才能正确解码
+              shot = { data: dataUrl.slice(dataUrl.indexOf(',') + 1), mime: dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/png' };
+              usedData = true;
+            }
+          }
+          if (!shot) {
+            // v0.34 高 DPR 流畅性：瓦片捕获 scale 上限 1.5——客户端按 CSS 尺寸拉伸
+            // 绘制，捕获分辨率只影响清晰度不影响布局；200% 缩放下瓦片字节 ~44%↓、
+            // 编解码 CPU 同步降（DPR2 实测 canvas-tile 1.6MB/12s 为第二大流量）
+            // v0.59 回退 PNG：JPEG/80 对图表/文字有可见块状噪声（GL 态势图与 elbit
+            // closed-shadow 瓦片共用此通道，登录后页面图表区域与源站产生色差——
+            // 保真优先；流量优化由 v0.58 canvas-ops 泄漏修复承担（实测 -50%）
+            shot = await withTimeout(sessionExclusive(() => cdp.send('Page.captureScreenshot', {
+              format: (animFast || vidFast) ? 'jpeg' : 'png',
+              ...((animFast || vidFast) ? { quality: (animBig || vidFast) ? 70 : ((animHot || vidFast) ? ANIM_QUALITY : 85) } : {}),
+              clip: { x: it.x, y: it.y, width: it.w, height: it.h, scale: Math.min(1, 1.5 / DPR) * (animBig ? Math.max(ANIM_SCALE, 0.75) : ((animHot || vidFast) ? ANIM_SCALE : 1)) },
+              captureBeyondViewport: true,
+            })), 3000, 'canvasShot').catch(() => null);
+          }
+          if (!shot) continue;
+          captureTimes.push(Date.now());
+          if (it.kind === 'video') vidLast.set(sigKey, Date.now()); // v0.72
+          let sig = null;
+          try {
+            if (sharp) {
+              const { info, data } = await sharp(Buffer.from(shot.data, 'base64')).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+              sig = { w: info.width, h: info.height, data };
+            } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
+          } catch (e) {}
+          if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) {
+            animStreak.delete(sigKey); // v0.64 静止即退出动画通道
+            // 直读失真收敛：rAF 在动但直读内容连续不变 → 切截图通道
+            if (usedData) {
+              const n = (dataUrlBlank.get(sigKey) || 0) + 1;
+              dataUrlBlank.set(sigKey, n);
+              if (n >= 2 && rafActive) { glSticky.add(sigKey); dataUrlBlank.delete(sigKey); try { logger.log('[canvas] dataUrl stale x' + n + ' + rAF active -> screenshot mode id=' + sigKey + ' why=' + (it.why || '-')); } catch (e) {} }
+            } else dataUrlBlank.delete(sigKey);
+            continue;
+          }
+          if (usedData) dataUrlBlank.delete(sigKey);
+          animStreak.set(sigKey, (animStreak.get(sigKey) || 0) + 1); // v0.64 连续变化计数
+          if (process.env.XY_DBG_TILE) { try { logger.log('[dbgtile] id=' + sigKey + ' kind=' + (it.kind || 'canvas') + ' via=' + (usedData ? 'data' : 'shot') + ' len=' + (shot ? shot.data.length : 'null')); } catch (e) {} }
+          if (ws.readyState === 1) {
+            // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
+            //（id 随之而变），镜像端按 id 找不到时用几何回退定位同位 img 并重绑 id
+            const pl = JSON.stringify({ type: 'canvas-tile', id: it.id, path: it.path, x: Math.round(it.x), y: Math.round(it.y), w: Math.round(it.w), h: Math.round(it.h), url: 'data:' + (String(shot.mime || ((animFast || vidFast) ? 'image/jpeg' : 'image/png'))) + ';base64,' + shot.data });
+            ws.send(pl);
+            ws._bytes = (ws._bytes || 0) + pl.length;
+            ws._chunks = (ws._chunks || 0) + 1;
+            tileBytes.push({ t: Date.now(), b: pl.length }); // v0.63 计入字节预算窗口
+          }
+        }
+      } catch (e) {} finally { canvasBusy = false; }
+    }, 120);
+    // v0.72 title 持续同步：SPA 路由切换会改写 <title>，此前仅 WS meta 首帧携带，
+    // 镜像标签页标题停在初始值（实测 sr_login 镜像 "Metis" vs 源站 "墨提斯 - 智能渗透测试平台"）
+    if (!titleTimer) {
+      let lastTitle = null;
+      titleTimer = setInterval(async () => {
+        if (dead || !page || ws.readyState !== 1) return;
+        try {
+          const t = await withTimeout(page.title(), 800, 'title').catch(() => null);
+          if (t && t !== lastTitle) { lastTitle = t; sendJson({ type: 'title', title: t }); }
+        } catch (e) {}
+      }, 1000);
+    }
+  }
+
+  async function stopDomMirror() {
+    domActive = false;
+    if (titleTimer) { clearInterval(titleTimer); titleTimer = null; } // v0.72
+    try { scStop(); } catch (e) {} // v0.65 会话停时停帧流
+    try { await page.evaluate(() => { if (window.__xyObs) { window.__xyObs.disconnect(); window.__xyObs = null; } }); } catch {}
+  }
+
+  // 动画/悬停跟随：视口差分循环（dom 模式）。全量快照/交互重同步期间跳过，
+  // 首帧只建基准；无变化零下发。瓦片为不透明底板裁片，位移动画的新旧位置都在
+  // 差分区域内，客户端直接覆盖即可，无需清理旧瓦片。
+  function startDiffLoop() {
+    // 编码-解码范式差分通道 v2（仅 frame 像素直出模式）：合成器帧回调 → sharp
+    // 进程内解码/比较/裁剪/编码。dom 模式不进入此通道——dom 是客户端本地渲染，
+    // 更新全部事件驱动（补丁/滚动/元素捕获），不存在帧率。
+    if (diffTimer || mode !== 'frame') return;
+    if (mode === 'frame') {
+      cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {});
+    }
+    let prevRaw = null, prevW = 0, prevH = 0;   // 上一帧 raw 像素（BGRA）
+    let lastAnnSX = 0, lastAnnSY = 0, lastScrolls = '[]', lastHoles = '[]';
+    let metaAt = 0, meta = { holes: [], scrollers: [], sx: 0, sy: 0 };
+
+    const diffFrame = async (b64) => {
+      if (!sharp) return null;
+      // ensureAlpha：合成器 PNG 可能为 3 通道（RGB），Uint32 视图按 4 字节/像素索引
+      // 会越界读 undefined → 恒等误判（实测 tiles=0 的根因）。恒定 RGBA 后视图对齐。
+      const framePng = Buffer.from(b64, 'base64');
+      const img = sharp(framePng).ensureAlpha();
+      const { info, data } = await img.raw().toBuffer({ resolveWithObject: true });
+      const W = info.width, H = info.height, CH = info.channels;
+      if (!prevRaw || prevW !== W || prevH !== H) {
+        prevRaw = data; prevW = W; prevH = H;
+        return { tiles: [{ w: W, h: H, cssX: Math.round(meta.sx || 0), cssY: Math.round(meta.sy || 0),
+          cssW: W / DPR, cssH: H / DPR, url: 'data:image/png;base64,' + b64 }], full: true };
+      }
+      const { dirtyRows, any } = scanDirtyRows(data, prevRaw, W, H, CH);
+      prevRaw = data; prevW = W; prevH = H;
+      if (!any) return { tiles: [] };
+      const tiles = [];
+      for (const [rx, ry, rw, rh] of dirtyRects(dirtyRows, W, H)) {
+        if (rw < 2 || rh < 2) continue;
+        const png = await frameCropInput(sharp, framePng, { info, data }).extract({ left: rx, top: ry, width: rw, height: rh }).png({ compressionLevel: 3 }).toBuffer();
+        tiles.push({ w: rw, h: rh, cssX: Math.round(rx / DPR) + Math.round(meta.sx || 0), cssY: Math.round(ry / DPR) + Math.round(meta.sy || 0), cssW: rw / DPR, cssH: rh / DPR, url: 'data:image/png;base64,' + png.toString('base64') });
+      }
+      return { tiles };
+    };
+
+    const fetchMeta = async (inputActive) => {
+      // 轻量 evaluate：只拿 holes/scrollers/scroll 位置（无大参数）
+      try {
+        const r = await Promise.race([
+          page.evaluate((ia) => {
+            const out = { holes: [], scrollers: [], sx: window.scrollX, sy: window.scrollY };
+            try { out.scrollers = window.__xy.scrollers(); } catch (e) {}
+            try {
+              const maskAnims = true;
+              let area = 0;
+              const push = (r2, el) => {
+                if (r2.width < 2 || r2.height < 2) return;
+                if (el && (el.textContent || '').trim()) return;
+                const d = window.__xyDpr || 1;
+                const x0 = Math.max(0, Math.floor(r2.left * d)), y0 = Math.max(0, Math.floor(r2.top * d));
+                const W2 = window.innerWidth * d, H2 = window.innerHeight * d;
+                const x1 = Math.min(W2, Math.ceil((r2.left + r2.width) * d)), y1 = Math.min(H2, Math.ceil((r2.top + r2.height) * d));
+                if (x1 <= x0 || y1 <= y0) return;
+                out.holes.push([Math.round(x0 / d) + Math.round(window.scrollX), Math.round(y0 / d) + Math.round(window.scrollY), Math.round((x1 - x0) / d), Math.round((y1 - y0) / d)]);
+                area += (x1 - x0) * (y1 - y0);
+              };
+              for (const a2 of document.getAnimations()) {
+                if (a2.playState !== 'running') continue;
+                const el = a2.effect && a2.effect.target;
+                if (!el || !el.getBoundingClientRect) continue;
+                if (el.querySelector && el.querySelector('canvas, svg, video, iframe')) continue;
+                push(el.getBoundingClientRect(), el);
+              }
+              const ae = document.activeElement;
+              if (ia && ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && !ae.disabled) push(ae.getBoundingClientRect(), null);
+              if (area > window.innerWidth * window.innerHeight * 0.8) out.holes = [];
+            } catch (e) {}
+            return out;
+          }, inputActive),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('meta timeout')), 1500)),
+        ]).catch(() => null);
+        if (r) meta = r;
+      } catch (e) {}
+    };
+    let pfSeen = 0, pfLogged = 0;
+    diffTimer = setInterval(async () => {
+      if (diffBusy) return;
+      if (dead || mode !== 'frame' || !domActive || !page || !cdp || ws.readyState !== 1) return;
+      pfSeen++; if (pfSeen % 62 === 0) { logger.log('[diffv2] tick ok, pfLogged=' + pfLogged); pfLogged = 0; }
+      if (domStarting) {
+        if (!domStartAt) domStartAt = Date.now();
+        else if (Date.now() - domStartAt > 8000) { domStarting = null; domStartAt = 0; }
+        else return;
+      } else domStartAt = 0;
+      const pf = pendingFrame;
+      pendingFrame = null;
+      // 帧流 watchdog：有活动（近期输入/动画周期内）但 5 秒无帧 = 帧流已断，重启
+      if (!pf) {
+        if (Date.now() - lastFrameAt2 > 5000 && (Date.now() - lastInputAt) < 60000) {
+          lastFrameAt2 = Date.now();
+          cdp.send('Page.stopScreencast').catch(() => {});
+          cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }).catch(() => {});
+          logger.log('[diffv2] screencast watchdog restarted');
+        }
+        return;
+      }
+      lastFrameAt2 = Date.now();
+      pfLogged++;
+      diffBusy = true;
+      try {
+        // 每 ~200ms 刷新一次 meta（holes/scrollers/scroll）
+        const now = Date.now();
+        if (now - metaAt > 200) { metaAt = now; fetchMeta(!!lastInputAt && (Date.now() - lastInputAt < 800)); }
+        const out = await diffFrame(pf.data).catch((e2) => { logger.log('[diffv2] frame err:', e2 && e2.message); return null; });
+        if (!out) return;
+        const holesNow = JSON.stringify(meta.holes || []);
+        const holesMoved = holesNow !== lastHoles;
+        const scrollsNow = JSON.stringify(meta.scrollers || []);
+        const innerMoved = scrollsNow !== lastScrolls;
+        const scrollMoved = Math.abs((meta.sx || 0) - lastAnnSX) > 1 || Math.abs((meta.sy || 0) - lastAnnSY) > 1;
+        if ((out.tiles && out.tiles.length) || scrollMoved || innerMoved || holesMoved) {
+          const payload = JSON.stringify({ type: 'anim-tiles', tiles: out.tiles || [], holes: meta.holes || [], sx: meta.sx || 0, sy: meta.sy || 0, scrolls: meta.scrollers || [] });
+          if (ws.readyState === 1) {
+            ws.send(payload);
+            ws._bytes = (ws._bytes || 0) + payload.length;
+            ws._chunks = (ws._chunks || 0) + 1;
+            lastAnnSX = meta.sx || 0; lastAnnSY = meta.sy || 0; lastScrolls = scrollsNow; lastHoles = holesNow;
+          }
+        }
+      } catch (e) {}
+      finally { diffBusy = false; }
+    }, 16);
+  }
+
+  try {
+    // v0.30：池化时会话取常驻浏览器的独立上下文（隔离 cookie/存储），结束只关
+    // 上下文不关浏览器；无池保持历史一会话一浏览器
+    let poolHandle = null;
+    let b;
+    let warmEntry = null; // v0.32 镜像复用：热页命中时免 context 创建与冷加载
+    if (browserPool && warmPages) {
+      try { warmPages.register(sessionOrigin, sessionOrigin); } catch (e) {}
+      try {
+        warmEntry = warmPages.take(sessionOrigin);
+        if (warmEntry) {
+          poolHandle = warmEntry.handle;
+          page = warmEntry.page;
+          try { page.off('request', warmEntry.reqHandler); } catch (e2) {}
+          b = poolHandle.browser;
+          sessionExclusive = poolHandle.exclusive;
+          sessionRelease = poolHandle.release;
+          logger.log('[warm  ] take', warmEntry.url, 'age', Date.now() - warmEntry.loadedAt, 'ms');
+        }
+      } catch (e) {
+        logger.log('[warm  ] take fail:', e && e.message);
+        warmEntry = null; poolHandle = null;
+      }
+    }
+    if (browserPool && !warmEntry) {
+      // v0.32 镜像复用：冷路径启动——预热立即让位（中止在途/释放库存），
+      // 真实访客绝不等在预热后面（小池下预热隐形占位曾致会话 20s 干等）
+      if (warmPages) { try { warmPages.yieldForSession(); } catch (e) {} }
+      // v0.30 自愈：newPage 20s 竞速——宿主高压下实测池浏览器可能连接存活但
+      // newPage 永久悬挂；超时逐出该实例重取一次，仍败回退独立浏览器保证会话必达
+      const takePooled = () => Promise.race([
+        (async () => {
+          const h = await browserPool.acquire();
+          const page = await h.context.newPage();
+          return { h, page };
+        })(),
+        // 竞速覆盖 acquire+createBrowserContext+newPage 全链（实测悬挂点可在
+        // 任一环——宿主高压下 createBrowserContext 也曾永久挂起）
+        new Promise((_, rej) => setTimeout(() => rej(new Error('pool acquire timeout')), 20000)),
+      ]);
+      try {
+        ({ h: poolHandle, page } = await takePooled());
+      } catch (e) {
+        logger.log('[pool  ] acquire retry after:', e && e.message);
+        if (poolHandle) { const bad = poolHandle.browser; await poolHandle.release().catch(() => {}); browserPool.evict(bad); poolHandle = null; }
+        else browserPool.evictIdle();
+        try {
+          // v0.39.1 二次尝试放宽到 60s：内存高压下 20s 超时属常态（不是池坏死），
+          // 直接回落独立浏览器会绕过池超发上限形成第二股无界浏览器风暴
+          const h2 = await Promise.race([
+            (async () => { const hb = await browserPool.acquire(); const page = await hb.context.newPage(); return { h: hb, page }; })(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('pool acquire timeout (60s)')), 60000)),
+          ]);
+          ({ h: poolHandle, page } = h2);
+        } catch (e2) {
+          if (config.browserPoolStrict) {
+            // v0.39.1 严格池：不回落独立浏览器（无界内存源，1000 会话实测基线
+            // 膨胀到 13 台的泄漏点）——继续等池释放，浏览器总数由 pool+超发
+            // 上限硬性封顶（内存有界优先于个别会话时延）
+            logger.log('[pool  ] strict: keep waiting for pool release');
+            ({ h: poolHandle, page } = await new Promise((res, rej) => {
+              const tWatch = setInterval(() => { if (dead) { clearInterval(tWatch); rej(new Error('session closed')); } }, 5000);
+              (async () => {
+                try {
+                  const hb = await browserPool.acquire();
+                  const page = await hb.context.newPage();
+                  clearInterval(tWatch);
+                  res({ h: hb, page });
+                } catch (e3) { clearInterval(tWatch); rej(e3); }
+              })();
+            }));
+          } else {
+            logger.log('[pool  ] fallback to standalone browser:', e2 && e2.message);
+            if (poolHandle) { await poolHandle.release().catch(() => {}); poolHandle = null; }
+          }
+        }
+      }
+      if (poolHandle) {
+        b = poolHandle.browser;
+        sessionExclusive = poolHandle.exclusive;
+        sessionRelease = poolHandle.release;
+      } else {
+        b = await launchSessionBrowser();
+      }
+    } else if (!browserPool) {
+      b = await launchSessionBrowser();
+    }
+    if (dead) { if (poolHandle) await poolHandle.release(); else await b.close(); return; }
+    sessionBrowser = b;
+    // 弹窗不镜像且不受页面拦截约束：除会话页面外新建的页面一律关闭
+    b.on('targetcreated', (t) => {
+      if (!page || t.type() !== 'page' || t === page.target()) return;
+      // v0.30：池化时同浏览器还有其他会话的上下文——只关本上下文的弹窗
+      if (poolHandle && t.browserContext && t.browserContext() !== poolHandle.context) return;
+      t.page().then((p) => p && p.close()).catch(() => {});
+    });
+    b.on('disconnected', () => {
+      if (dead) return;
+      sendJson({ type: 'error', code: 'SESSION_EXPIRED', terminal: true, msg: '服务端浏览器已关闭，请核对上次提交结果后重新开始' });
+      ws.close(1011, 'browser closed');
+    });
+    if (!page) page = poolHandle ? await poolHandle.context.newPage() : await b.newPage();
+    // 源站页面的 alert/confirm/prompt/beforeunload 是同步阻塞对话框——headless
+    // 下无处理器则永久挂起 → 页面冻结 → 快照 evaluate 永不返回 → 镜像"连接中"
+    // (实测: 源站含一个 alert(1) 即复现)。自动关闭对话框, 镜像不因弹窗冻结
+    page.on('dialog', (d) => {
+      try { logger.log(`[dialog] ${d.type()} ${String(d.message()).slice(0, 60)}`); d.dismiss().catch(() => {}); } catch (e) {}
+    });
+    reviveSource = poolHandle ? { context: poolHandle.context } : { browser: b }; // v0.39 复活用页面工厂
+    if (dead) { await page.close(); return; }
+    // v0.39 页面运行时装配提取为可重入函数：空闲逐出后的复活须对新页面
+    // 重挂同一序列（CDP 会话/请求拦截/监听器/下载行为/指纹统计）。
+    // statTimer 幂等（会话级一个）；requestOrigins 每次按会话源重建（幂等）
+    attachPageRuntime = async () => {
+    // v0.27 closed shadow 捕获：attachShadow 补丁在页面任何脚本之前安装
+    //（evaluateOnNewDocument），parse 期创建的 closed root 也进注册表——此前
+    // helpers 在 networkidle0 后注入，注入前创建的 closed root 永远拿不到引用。
+    // 注册表：WeakMap(host→root) + 有界数组（全量注入后补挂 observer 用）。
+    // 声明式 <template shadowrootmode="closed">（HTML 解析器直接挂载，不调
+    // attachShadow）规范上无回调，仍不可观测——见 FIDELITY.md 边界定案。
+    // （宿主单测以仅含 createCDPSession/close 的 mock page 驱动——能力守卫）
+    if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(() => {
+      if (window.__xyEarlyShadow) return;
+      window.__xyEarlyShadow = true;
+      try {
+        window.__xyClosedRoots = new WeakMap();
+        window.__xyClosedList = [];
+        const orig = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function (init) {
+          const sr = orig.call(this, init);
+          try {
+            if (sr && init && init.mode === 'closed') {
+              window.__xyClosedRoots.set(this, sr);
+              if (window.__xyClosedList.length < 64) window.__xyClosedList.push({ host: this, root: sr });
+            }
+          } catch (e) {}
+          return sr;
+        };
+      } catch (e) {}
+    });
+    cdp = await page.createCDPSession();
+    if (dead) return;
+    // 请求白名单（默认拒绝）：服务端浏览器只访问会话源站与显式允许的源，访客无法
+    // 借源站链接/跳转/表单把它当作内网跳板。puppeteer 拦截同时覆盖跨站 iframe（OOPIF）
+    // v0.38 策略对象化：requestOrigins 支持 https://*.cdn.example 后缀通配——真实
+    // 站点资源普遍走独立 CDN 域，逐子域枚举不可行（百度 pss.bdstatic.com 实测全被拦）
+    // v0.38.1 WAF 红线：公共后缀/单 label 通配基座被策略层拒绝——此处告警输出，
+    // 拒绝条目永不放宽为任何匹配
+    const requestOrigins = createRequestPolicy([new URL(sessionOrigin).origin, ...config.crossOriginFrameOrigins, ...config.requestOrigins]);
+    if (requestOrigins.rejected.length) logger.log('[policy] REJECTED wildcard entries (public-suffix/invalid base):', requestOrigins.rejected.join(' '));
+    navOrigins = requestOrigins;
+    if (typeof page.setRequestInterception === 'function') {
+      await page.setRequestInterception(true);
+      // 弹窗的首个请求发生在新页面上、不经过本页拦截。v0.72 起不再"吞掉"而是改
+      // 同页导航：window.open / target=_blank 类交互在镜像里从"无任何反馈"变为
+      // current-tab 跳转——主框架导航管线（源站白名单/NAVIGATION_BLOCKED/导航
+      // 同步/客户端跟随）全部生效；javascript:/data:/blob: 等非导航协议仍丢弃。
+      // evaluateOnNewDocument 只对"下一次"导航生效：热页池接管的当前文档在装配
+      // 前已加载、注入不回溯（实测热页会话里 window.open 走原生弹新标签，引擎
+      // 无感知）——当前文档再直接补挂一次（__xyNoWinOpen 幂等守卫）。
+      const winOpenOverride = () => {
+        if (window.__xyNoWinOpen) return;
+        window.__xyNoWinOpen = true;
+        const navSelf = (u) => {
+          try {
+            if (typeof u !== 'string' || !u || /^(javascript|data|blob|mailto|tel|about):/i.test(u.trim())) return;
+            const abs = new URL(u, location.href).href;
+            if (abs !== location.href) location.href = abs;
+          } catch (e) {}
+        };
+        window.open = (u) => { navSelf(u); return null; };
+        const newWindow = (t) => t && !/^_(self|parent|top)$/i.test(t);
+        window.addEventListener('click', (e) => {
+          const el = e.target && e.target.closest && e.target.closest('a[target],area[target]');
+          if (el && newWindow(el.getAttribute('target'))) { e.preventDefault(); navSelf(el.getAttribute('href')); }
+        }, true);
+        window.addEventListener('submit', (e) => {
+          const el = e.target && e.target.closest && e.target.closest('form[target]');
+          if (el && newWindow(el.getAttribute('target'))) el.removeAttribute('target'); // 自然按 _self 提交
+        }, true);
+      };
+      if (typeof page.evaluateOnNewDocument === 'function') await page.evaluateOnNewDocument(winOpenOverride);
+      // v0.78：helpers 同样早注册——此前仅导航后 page.evaluate 补注，页面脚本
+      // 先于注入跑（hasXy=0 实测），canvas getContext 全部错过指令流包装，
+      // 2D 靠 warm 侥幸、WebGL 直接全量位图（beacon 地球模糊的时序根因）。
+      // 脚本自带幂等守卫，双注无害
+      if (typeof page.evaluateOnNewDocument === 'function') { try { await page.evaluateOnNewDocument(sessHelpers); } catch (eH) {} }
+      try { await page.evaluate(winOpenOverride); } catch (e) {}
+      page.on('request', (r) => {
+        // v0.45 P4 修复：API 文档拦截必须在 requestAllowed 之前——
+        // 白名单源的请求走 requestAllowed→continue→return 先退出，
+        // 此前的检查在 else 分支等于只拦非白名单源（对已登录会话完全无效，
+        // 子智能体实测 /docs /openapi.json 全放行）
+        try {
+          const uPath = new URL(r.url()).pathname.toLowerCase();
+          if (/(?:^|[\\/])(?:openapi|swagger)\.(?:json|yaml)$/i.test(uPath) || uPath === '/docs' || uPath === '/redoc' || uPath === '/swagger' || uPath.startsWith('/docs/') || uPath.startsWith('/redoc/')) {
+            r.abort(r.isNavigationRequest() && r.frame() === page.mainFrame() ? 'aborted' : 'blockedbyclient').catch(() => {});
+            try { logger.log('[policy] api-docs blocked:', uPath.slice(0, 40)); } catch (e) {}
+            return;
+          }
+        } catch (e) {}
+        if (requestAllowed(r.url(), requestOrigins)) {
+          // v0.66 vhost 回源改写：白名单命中且配置了映射 → 以真实站点 Host 转发
+          try {
+            const rwH = originHostRewrite.get(new URL(r.url()).host);
+            if (rwH) { r.continue({ headers: Object.assign({}, r.headers(), { Host: rwH }) }).catch(() => {}); return; }
+          } catch (e) {}
+          // v0.32 镜像复用：源站静态资产跨会话共享缓存命中——本地回填免回源
+          // 带 Cookie 的请求（登录后鉴权资产）一律绕过缓存直连：网关侧抓取不带
+          // 凭据，源站可能回 200 登录页 HTML——当 JS 回给浏览器即中毒（Vikunja
+          // 恢复回归实测）；也是跨用户内容污染的载体
+          if (originAssetCache && r.method() === 'GET' && !r.headers()['cookie'] && originAssetCache.isCacheableUrl(r.url())) {
+            const hit = originAssetCache.get(r.url());
+            if (hit) {
+              r.respond({ status: hit.status, headers: hit.headers, body: hit.body }).catch(() => {});
+              try { logger.log('[cache ] hit', new URL(r.url()).pathname.slice(0, 70)); } catch (e) {}
+              return;
+            }
+            // 未命中：网关侧回源抓取（拦截开启时 response.body() 对部分响应永不
+            // settle，捕获式入库不可靠）——入库成功直接回给会话浏览器，失败放行
+            fetchOriginAsset(r.url()).then((got) => {
+              if (originAssetCache.put(r.url(), got)) {
+                const e2 = originAssetCache.get(r.url());
+                if (e2) {
+                  try { logger.log('[cache ] fill', new URL(r.url()).pathname.slice(0, 70)); } catch (e) {}
+                  r.respond({ status: e2.status, headers: e2.headers, body: e2.body }).catch(() => {});
+                  return;
+                }
+              }
+              r.continue().catch(() => {});
+            }).catch(() => r.continue().catch(() => {}));
+            return;
+          }
+          r.continue().catch(() => {}); return;
+        }
+        logger.log('[policy] blocked', r.resourceType(), r.url().slice(0, 90));
+        try { blockedOrigins.record(new URL(r.url()).origin, r.resourceType()); } catch (e) {}
+        // 主框架导航用 aborted：取消而不提交错误页，页面停留原处；子框架与子资源用
+        // blockedbyclient（iframe 落到跨源错误页，镜像按跨源占位处理）
+        const mainNav = r.isNavigationRequest() && r.frame() === page.mainFrame();
+        r.abort(mainNav ? 'aborted' : 'blockedbyclient').catch(() => {});
+        if (mainNav) sendJson({ type: 'error', code: 'NAVIGATION_BLOCKED', msg: '目标地址不在允许范围内' });
+      });
+    }
+    // 临时诊断：会话页面的 API 请求状态（定位登录后数据不加载问题）
+    page.on('response', (r) => {
+      try {
+        const u = r.url();
+        if (r.status() >= 300 || /assistant|api|auth/.test(u)) {
+          logger.log('[net   ]', r.status(), r.request().method(), u.slice(0, 90));
+        }
+      } catch (e) {}
+    });
+    page.on('pageerror', (e) => { try { logger.log('[pageerr]', String(e && e.message).slice(0, 140)); } catch (e2) {} });
+
+    // 下载通道（v0.13）：源站下载落地会话临时目录，完成后按 ≤48KiB 分块回传并
+    // 立即删除服务端文件。文件名 basename 收口 + resolve 目录包含校验（防逃逸）。
+    try {
+      if (browserCdpDetached) { try { await browserCdpDetached(); } catch (e0) {} }
+      const browserCdp = await sessionBrowser.target().createCDPSession();
+      if (!sessionDownloadDir) sessionDownloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-dl-'));
+      // v0.30：池化时按 browserContextId 限定下载目录——同浏览器多会话互不串扰
+      const dlOpts = { behavior: 'allow', downloadPath: sessionDownloadDir, eventsEnabled: true };
+      if (poolHandle && poolHandle.context && poolHandle.context.id) dlOpts.browserContextId = poolHandle.context.id;
+      await browserCdp.send('Browser.setDownloadBehavior', dlOpts);
+      browserCdpDetached = () => browserCdp.detach().catch(() => {});
+    } catch (e) { logger.log('[dl    ] behavior set fail:', e.message); }
+    // CDP 事件按域分发：Page.downloadWillBegin/Progress 需要 Page.enable，
+    // puppeteer 的独立 CDP 会话默认不启用事件域
+    await cdp.send('Page.enable').catch(() => {});
+    cdp.on('Page.downloadWillBegin', (ev) => {
+      if (dead || ws.readyState !== 1) return;
+      const name = path.basename(String(ev.suggestedFilename || 'download.bin'));
+      logger.log('[dl    ] willBegin:', name);
+      sessionDownloads.set(ev.guid, { name, received: 0 });
+      sendJson({ type: 'download-begin', id: ev.guid, name });
+    });
+    cdp.on('Page.downloadProgress', (ev) => {
+      const st = sessionDownloads.get(ev.guid);
+      if (!st) return;
+      if (ev.state === 'inProgress') {
+        st.received = ev.receivedBytes || 0;
+        if (st.received > DOWNLOAD_MAX || ev.totalBytes > DOWNLOAD_MAX) {
+          cdp.send('Browser.cancelDownload', { guid: ev.guid }).catch(() => {});
+        }
+        return;
+      }
+      sessionDownloads.delete(ev.guid);
+      if (ev.state === 'canceled') {
+        sendJson({ type: 'download-end', id: ev.guid, ok: false, error: 'canceled' });
+        return;
+      }
+      if (ev.state !== 'completed' || dead || ws.readyState !== 1) return;
+      (async () => {
+        try {
+          const dir = path.resolve(sessionDownloadDir);
+          const fp = path.resolve(sessionDownloadDir, st.name);
+          if (fp !== dir && !fp.startsWith(dir + path.sep)) throw new Error('bad download path');
+          const size = (await fsp.stat(fp)).size;
+          if (size > DOWNLOAD_MAX) { await fsp.rm(fp, { force: true }); throw new Error('size limit ' + DOWNLOAD_MAX); }
+          const buf = await fsp.readFile(fp);
+          await fsp.rm(fp, { force: true }).catch(() => {});
+          if (buf.length > DOWNLOAD_MAX) throw new Error('size limit ' + DOWNLOAD_MAX);
+          sendJson({ type: 'download-begin', id: ev.guid, name: st.name, size: buf.length });
+          const CHUNK = 48 * 1024;
+          for (let off = 0; off < buf.length; off += CHUNK) {
+            if (dead || ws.readyState !== 1) return;
+            sendJson({ type: 'download-chunk', id: ev.guid, b64: buf.subarray(off, off + CHUNK).toString('base64') });
+          }
+          sendJson({ type: 'download-end', id: ev.guid, ok: true, name: st.name, size: buf.length });
+          logger.log('[dl    ] delivered:', st.name, buf.length, 'bytes');
+        } catch (err) {
+          sendJson({ type: 'download-end', id: ev.guid, ok: false, error: String(err && err.message || err) });
+        }
+      })();
+    });
+
+
+    cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
+      try {
+        const now = Date.now();
+        if (lastInputAt) { inputLatMs = now - lastInputAt; lastInputAt = 0; }
+        frameTimes.push(now);
+        // 编码-解码范式（frame 模式）：合成器每帧变化即推（60fps 帧回调驱动差分）。
+        // 帧存 pendingFrame，差分循环 32ms 消费；立即 ack 保持帧流。
+        // 静止时无帧 = 零 CPU 零流量。dom 模式不订阅帧流，不会走到这里。
+        pendingFrame = { data, at: now };
+        setTimeout(() => { cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {}); }, 0);
+      } catch (e) { /* session may be closing */ }
+    });
+
+    if (!statTimer) statTimer = setInterval(() => {
+      if (dead || ws.readyState !== 1) return;
+      if (!page) { sendJson({ type: 'sstats', fps: 0, mr: 0, inLat: inputLatMs, mode, els: 0 }); return; } // v0.39 逐出期
+      const now = Date.now();
+      frameTimes = frameTimes.filter(t => now - t < 1000);
+      const mr = (ws._chunks || 0) - statLastChunks; statLastChunks = ws._chunks || 0;
+      // v3：dom 无帧流——上报下行消息速率（帧语义只属于像素流模式）；
+      // 每秒兜底触发一次滚动同步 ping（捕获监听遗漏的初始态/漂移）
+      if (mode === 'dom' && domActive) { page.evaluate(() => { if (window.__xyScrollPingNow) window.__xyScrollPingNow(true); }).catch(() => {}); }
+      // 结构指纹 + CSS 集合指纹（必须在 .then 内取值再上报：elCount 闭包竞态
+      // 曾使 sstats.els 恒为 0、客户端 els-drift 重同步雷达整体失活）。
+      // CSS 兜底：SPA 懒加载样式表注入 head 可能错过 observer（导航竞态/触发
+      // 被吞）——实测 Assistant css（17 个入场 keyframes）不下发则镜像动画全灭。
+      // 集合变化即触发全量重同步；成功快照后由 doStartDomMirror 重定基线，
+      // 失败则保持脏态每秒重试，不提前更新基线。
+      if ((mode === 'dom' || mode === 'frame') && domActive && !domStarting) {
+        page.evaluate(() => document.body ? document.body.querySelectorAll(':not(script):not(noscript):not(template)').length : 0)
+          .then(async (n) => {
+            let sig = null;
+            try {
+              sig = await page.evaluate(() => {
+                const links = [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href')).filter(Boolean);
+                // v0.15：adoptedStyleSheets 内容哈希签名（replace/replaceSync 改内容
+                // 不一定改规则数，逐规则字符级哈希；1Hz 一次开销可忽略）
+                let adopted = '';
+                try {
+                  for (const s2 of (document.adoptedStyleSheets || [])) {
+                    try {
+                      for (const r of s2.cssRules) {
+                        const t = r.cssText;
+                        let h = 0;
+                        for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0;
+                        adopted += h.toString(36) + ',';
+                      }
+                    } catch (e) {}
+                  }
+                } catch (e) {}
+                return links.join('|') + '#' + document.querySelectorAll('style').length + '#' + adopted;
+              });
+            } catch (e) {}
+            if (sig !== null) {
+              if (lastCssSig === null) lastCssSig = sig;
+              else if (sig !== lastCssSig) {
+                logger.log('[snapcss] set changed:', String(lastCssSig).slice(0, 90), '->', sig.slice(0, 90));
+                startDomMirror().catch(() => {});
+              }
+            }
+            sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: n });
+          })
+          .catch(() => sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: 0 }));
+      } else {
+        sendJson({ type: 'sstats', fps: frameTimes.length, mr, inLat: inputLatMs, mode, els: 0 });
+      }
+    }, 1000);
+
+    // 主框架导航（登录跳转/表单提交等）：重新注入镜像管线并全量重发，
+    // 否则登录成功跳转后镜像冻结在旧页面（访客视角=点了没反应）。
+    // SPA 登录后是异步引导：立即快照只拍到骨架，内容 1-3 秒后才到——
+    // 补丁路径与骨架代理碰撞错位且不报 miss。导航后 +2.5s/+7s 定时重拍兜底。
+    page.on('framenavigated', (frame) => {
+      try {
+        // v0.30 pseudo-route
+        if (frame === page.mainFrame() && ws.readyState === 1) { try { sendJson({ type: 'location', url: mirrorSafeUrl(frame.url()) }); } catch (e2) {} }
+        if (frame !== page.mainFrame()) return;
+        if (!domActive || ws.readyState !== 1) return;
+        navChain = navChain.then(async () => {
+          try {
+            await page.evaluate(sessHelpers).catch(() => {});
+            if (mode === 'dom' || mode === 'frame') await startDomMirror();
+            // v0.55 消"闪三次"：+600/+1500 兜底重拍此前无条件执行——动态页三次
+            // 快照内容渐进不同（去重失效）→ 整树重建 3 次 = 页面闪 3 下。
+            // 门控：DOM 签名（url/元素数/文档长度）与最近一次快照一致 = 页面
+            // 静止，跳过重拍；变了才重拍（真有渐进渲染，重建合理）
+            for (const d of [600, 1500]) {
+              setTimeout(async () => {
+                if (dead || !domActive || ws.readyState !== 1) return;
+                try {
+                  const sig = await quickDomSig(page);
+                  if (sig && lastSnapDomSig
+                      && sig.url === lastSnapDomSig.url
+                      && sig.els === lastSnapDomSig.els
+                      && sig.len === lastSnapDomSig.len
+                      && sig.vals === lastSnapDomSig.vals) return; // v0.74 值变化不算静止
+                } catch (e2) {}
+                startDomMirror().catch(() => {});
+              }, d);
+            }
+          } catch (e) {}
+        });
+      } catch (e) {}
+    });
+    };
+    // v0.39.1 装配超时：内存高压下 createCDPSession/setRequestInterception 可能
+    // 悬挂——未完成装配的会话持有页面却永不进入逐出管辖（1000 会话实测泄漏源）。
+    // 超时抛错走会话失败收口（页面释放），绝不无限挂起
+    await Promise.race([
+      attachPageRuntime(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('attachPageRuntime timeout')), 30000)),
+    ]);
+
+    // 等客户端上报 DPR（超时回落 1）：服务端按访客 DPR 渲染 → 瓦片 1:1 显示 → 构造性一致
+    const hello = await new Promise((res) => {
+      cancelHello = () => res({ dpr: 1 });
+      if (dead) { cancelHello(); return; }
+      const t = setTimeout(() => { clearInterval(helloIv); res({ dpr: 1 }); }, 3000);
+      helloIv = setInterval(() => {
+        const i = queue.findIndex((r) => { try { return JSON.parse(r.toString()).type === 'hello'; } catch { return false; } });
+        if (i >= 0) {
+          clearInterval(helloIv); clearTimeout(t);
+          try { res(JSON.parse(queue.splice(i, 1)[0].toString())); } catch { res({ dpr: 1 }); }
+        }
+      }, 100);
+    });
+    if (dead) return;
+    DPR = Math.max(1, Math.min(3, parseFloat(hello.dpr) || 1));
+    // 首次 hello 同时带回访客视口：服务端按访客真实视口渲染，镜像才与直连构图一致
+    if (hello.w) viewW = Math.max(320, Math.min(2560, parseInt(hello.w, 10) || viewW));
+    if (hello.h) viewH = Math.max(240, Math.min(1600, parseInt(hello.h, 10) || viewH));
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false });
+    // v0.31 真路由：访客深链路径接管首跳（仅非根路径且形态安全——单个 / 开头、
+    // 无协议与反斜杠，防 //host 协议相对地址逃逸出会话源站）
+    let initialUrl = sessionOrigin;
+    {
+      const hp = String(hello.path || '');
+      if (hp && hp !== '/' && hp.startsWith('/') && !hp.startsWith('//') && !hp.includes('\\') && !hp.includes('://')) {
+        try {
+          const u = new URL(sessionOrigin);
+          u.pathname = hp.split('?')[0] || '/';
+          u.search = hp.includes('?') ? '?' + hp.slice(hp.indexOf('?') + 1) : '';
+          if (requestAllowed(u.href, new Set([u.origin]))) initialUrl = u.href;
+        } catch (e) {}
+      }
+    }
+    // v0.31 入场动画保真：DCL 即开流。networkidle0 等完整静默，挂载入场动画
+    // （框架加动画类→animationend 即移除类）早已结束，首帧快照只余终态，访客
+    // 永远看不到动画；从 DCL 起拍首帧，入场序列经快照+补丁在访客端完整重放
+    // v0.32 镜像复用：热页命中且访客未深链（initialUrl 未变）时免首跳——热页
+    // 即源站入口导航后的稳态，首帧从「快照+WS」起步
+    if (warmEntry && initialUrl === sessionOrigin && (Date.now() - warmEntry.loadedAt) <= config.sessionWarmupTtl) {
+      logger.log('[warm  ] snapshot-only takeover:', page.url());
+    } else {
+      await page.goto(initialUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    }
+    { const bgNow = await pageBodyBg(page); try { originBgCache.set(new URL(sessionOrigin).origin, bgNow); } catch (e) {}
+      sendJson({ type: 'meta', w: viewW, h: viewH, title: await page.title(), maxSessions: MAX_SESSIONS, mode, prod: prodMode, warm: !!warmEntry, bg: bgNow });
+      }
+    // v0.74 首连即发 location：客户端工具栏 unhide（prod 顶部唤出热区）与伪地址
+    // 栏同步都挂在 location 处理器上——此前仅导航/恢复路径发送，纯浏览会话的
+    // 工具栏永远 hidden、hover 唤出失效（gen_nav 实测 navGo 点击落空）
+    try { sendJson({ type: 'location', url: mirrorSafeUrl(page.url()) }); } catch (e) {}
+    // v0.75 保真哨兵站点级兜底：该源站 10 分钟窗口内已 3 次 dom 降级 → 本会话
+    // 直接 frame 起步（每页先碎一次再降级对用户是重复伤害）
+    if (mode === 'dom' && !FIDELITY_OFF) {
+      try {
+        if (FIDELITY_DOWNGRADE && fidelityStore.hot(new URL(sessionOrigin).origin)) {
+          mode = 'frame';
+          logger.log('[fidelity] origin cooldown -> frame ' + sessionOrigin);
+        }
+      } catch (e) {}
+    }
+    if (mode === 'dom' || mode === 'frame') await startDomMirror();
+    if (mode === 'frame') { try { sendJson({ type: 'mode', mode: 'frame' }); } catch (e) {} }
+
+    dispatchReady = true;
+    for (const raw of queue.splice(0)) enqueue(raw);
+    sendJson({ type: 'sync-ready' });
+    armIdleEvict(); // v0.39 首帧就绪即开始计空闲（noteInput 每次交互重置）
+    // v0.32.2 消白闪：sync-ready 后重采样底色——meta 期 SPA 可能未挂载只采到
+    // body 浅色（:81 实测米白）；此刻快照已落 MAIN 必在，修正注入缓存并推送
+    timers.setTimeout(async () => {
+      try {
+        if (dead || ws.readyState !== 1) return;
+        const bgLate = await pageBodyBg(page);
+        const oKey = new URL(sessionOrigin).origin;
+        if (bgLate && bgLate !== originBgCache.get(oKey)) {
+          originBgCache.set(oKey, bgLate);
+          sendJson({ type: 'bg', bg: bgLate });
+        }
+      } catch (e) {}
+    }, 600);
+
+  } catch (e) {
+    sendJson({ type: 'error', msg: '会话建立失败: ' + e.message });
+    try { await cleanup(); } catch {}
+    try { ws.close(); } catch {}
+  }
+}
+
+function waitForRevokedClose(socket) {
+  if (!socket || socket.readyState === 3) return Promise.resolve();
+  return new Promise(resolve => {
+    const timer = setTimeout(() => socket.terminate(), 1000);
+    timer.unref();
+    socket.once('close', () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+async function revokeSessions(selected) {
+  const pending = [];
+  for (const session of selected) {
+    const socket = session.socket;
+    session.close(4001, 'SESSION_REVOKED');
+    pending.push(waitForRevokedClose(socket));
+    const lifecycle = sessionLifecycles.get(session);
+    pending.push(lifecycle?.task, lifecycle?.cleanup());
+  }
+  await Promise.allSettled(pending);
+  return selected.length;
+}
+
+async function revokeSession(token) {
+  if (typeof token !== 'string' || !token.trim()) throw new TypeError('token must be a non-empty string');
+  const session = sessionStore.entries.get(token);
+  return (await revokeSessions(session ? [session] : [])) > 0;
+}
+
+async function revokeIdentity(identity) {
+  if (typeof identity !== 'string' || !identity.trim()) throw new TypeError('identity must be a non-empty string');
+  const selected = [...sessionStore.entries.values()].filter(session => sessionLifecycles.get(session)?.identity === identity);
+  const result = revokeSessions(selected);
+  const pending = [result];
+  // Includes authenticated transports that have not sent their first hello yet.
+  for (const socket of wss.clients) {
+    if (socketIdentities.get(socket) === identity && socket.readyState === 1) {
+      socket.close(4001, 'SESSION_REVOKED');
+      pending.push(waitForRevokedClose(socket));
+    }
+  }
+  await Promise.all(pending);
+  return result;
+}
+
+function close() {
+  if (closePromise) return closePromise;
+  closed = true;
+  closePromise = (async () => {
+    for (const session of [...sessionStore.entries.values()]) session.close(1001, 'mirror closing');
+    for (const socket of wss.clients) socket.terminate();
+    for (const request of requests) request.destroy();
+    await Promise.allSettled([...sessionTasks, ...[...cleanups].map(cleanup => cleanup())]);
+    if (warmPages) await warmPages.stop(); // v0.32 热页库存释放（在池收口前）
+    if (browserPool) await browserPool.close(); // v0.30 常驻浏览器统一收口
+    await new Promise(resolve => wss.close(resolve));
+    obfSessions.clear();
+    obfFontCache.clear();
+    obfTwinCache.clear();
+    clearStaticFiles();
+  })();
+  return closePromise;
+}
+
+return { handleRequest, handleUpgrade, revokeSession, revokeIdentity, close };
+}
+
+module.exports = { createMirror };

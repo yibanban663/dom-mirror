@@ -1,0 +1,39 @@
+{
+  "version": "0.11.0",
+  "capturedAt": "2026-10-25T19:56:31.632Z",
+  "viewport": {
+    "width": 1280,
+    "height": 900,
+    "deviceScaleFactor": 1
+  },
+  "source": "Built-in synthetic customer dashboard; no real account or business data",
+  "obfuscate": false,
+  "captures": {
+    "overview": "Horizontal Demo extent, clipped to 960px height",
+    "interaction": "Mirror pane element"
+  },
+  "steps": [
+    {
+      "mode": "dom",
+      "action": "Initial dashboard",
+      "rows": 12,
+      "screenshot": "demo-dom.png"
+    },
+    {
+      "mode": "dom",
+      "action": "Real keyboard search and quote edit",
+      "query": "138",
+      "count": "1",
+      "rent": "299",
+      "total": "￥6,458.40",
+      "screenshot": "demo-interaction.png"
+    },
+    {
+      "mode": "frame",
+      "action": "Switch the existing session to PNG fallback",
+      "tileMessagesReceived": 1,
+      "screenshot": "demo-frame.png"
+    }
+  ],
+  "pass": true
+}

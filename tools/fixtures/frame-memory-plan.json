@@ -1,0 +1,35 @@
+{
+  "groups": [
+    "default",
+    "gc",
+    "cache-off",
+    "gc-cache-off"
+  ],
+  "cycles": 10,
+  "sessions": 3,
+  "operationsPerSessionPerCycle": 10,
+  "periodMs": 1000,
+  "sessionGraceMs": 3000,
+  "postReclaimIdleMs": 3000,
+  "limits": {
+    "mirrorCpus": 2,
+    "mirrorMemoryMiB": 2048,
+    "loadCpus": 4,
+    "loadMemoryMiB": 4096
+  },
+  "fixture": "tools/fixtures/capacity.html",
+  "nodeExposeGcInAllGroups": true,
+  "gc": "Only gc/gc-cache-off: two full diagnostic calls after postIdle checkpoint, each followed by setImmediate",
+  "cache": "Only cache-off/gc-cache-off: sharp.cache(false) before createMirror; process-local",
+  "gates": [
+    "Every source session receives exactly indices 0..9 and renders all markers",
+    "All tracked Chromium main processes disappear before next cycle",
+    "OOM kill delta zero",
+    "Stop a group on functional failure or OOM"
+  ],
+  "interpretation": [
+    "Original 64MiB / 3-second capacity criterion stays unchanged; diagnostics cannot count as a production pass",
+    "10 cycles establish bounded observations only, not a proof of no long-term leak",
+    "No test code may retain Browser/Page/ChildProcess objects in the mirror process"
+  ]
+}

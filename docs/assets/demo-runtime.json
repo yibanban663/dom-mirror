@@ -1,0 +1,10 @@
+{
+  "dom-mirror:optimized": "sha256:7b0da1a8621945e50cc0983a37cc49b2adc3ad8588e3e8f62ef924a684c8c51b",
+  "dom-mirror:docs": "sha256:120e321d1e13da67b5d3ee21eaaf4797ca093175421e0c4b9523a67d3ce5c448",
+  "description": "Current 0.11.0 application source on unchanged cached dependencies; npm ls --omit=dev passed. Not a fresh standard Dockerfile build.",
+  "captureScriptSha256": "23093f53f09b6310c043082d02bc21539bccaacf0dcdd2a962c3bd4fd8c9d5e5",
+  "network": "none",
+  "publishedPorts": [],
+  "memoryBytes": 3221225472,
+  "cpus": 2
+}

@@ -1,0 +1,1421 @@
+{
+  "plan": {
+    "matrix": {
+      "modes": [
+        "dom",
+        "frame"
+      ],
+      "sessions": [
+        1,
+        3,
+        6
+      ],
+      "repetitions": 2
+    },
+    "limits": {
+      "mirrorCpus": 2,
+      "mirrorMemoryMiB": 2048,
+      "clientCpus": 4,
+      "clientMemoryMiB": 4096
+    },
+    "workload": {
+      "warmupPerSession": 3,
+      "measuredPerSession": 20,
+      "periodMs": 1000,
+      "viewport": [
+        1280,
+        900
+      ],
+      "sessionGraceMs": 3000,
+      "fixture": "synthetic dashboard, 150 rows, canvas redraw and per-operation source receipt"
+    },
+    "budgets": {
+      "coldReadyMaxMs": 15000,
+      "domP95Ms": 500,
+      "frameDrawP95Ms": 1000,
+      "memoryPeakMiB": 1638.4,
+      "postCleanupAnonGrowthMiB": 64,
+      "oomKillDelta": 0
+    },
+    "notes": [
+      "Performance misses are reported, never relaxed after observing results.",
+      "Stop escalation for a mode on functional failure or OOM.",
+      "Cold metric is mirror client DOM plus sync-ready, not first pixel.",
+      "No production capacity or long-soak claim."
+    ],
+    "sourceCommitBasis": "cabaf4b53702fc76bcd5156b000e1441eee744f2",
+    "sourceWorktreeChanges": true,
+    "host": {
+      "platform": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+      "logicalCpus": 24,
+      "memoryTotal": "MemTotal:       98496504 kB"
+    }
+  },
+  "cases": [
+    {
+      "name": "dom-1-1",
+      "mode": "dom",
+      "count": 1,
+      "repeat": 1,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 1,
+        "p50": 1521.525247,
+        "p95": 1521.525247,
+        "max": 1521.525247
+      },
+      "dom": {
+        "count": 20,
+        "p50": 64.69999998807907,
+        "p95": 65.40000000596046,
+        "max": 65.59999999403954
+      },
+      "draw": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "paintOpportunity": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "worstUserP95Ms": 65.40000000596046,
+      "measuredServer": {
+        "durationMs": 20020.114579999998,
+        "averageCores": 0.03223398135017068,
+        "peakMiB": 214.30078125,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20018.166565,
+        "averageCores": 0.02333070805877771,
+        "peakMiB": 234.046875,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 1572.509566,
+        "averageCores": 0.5824486030503423,
+        "peakMiB": 201.05859375,
+        "throttledMs": 211.466
+      },
+      "peakMiB": 214.30078125,
+      "baselineAnonMiB": 31.9140625,
+      "reclaimedAnonMiB": 37.0859375,
+      "anonGrowthMiB": 5.171875,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.02818775177001953,
+      "totalSourceOperations": 23,
+      "measuredOperations": 20,
+      "achievedOperationsPerSecond": 0.9992265122963507,
+      "reclaimed": {
+        "launched": 1,
+        "browsers": [
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": true,
+        "noOom": true
+      },
+      "withinBudget": true
+    },
+    {
+      "name": "dom-1-2",
+      "mode": "dom",
+      "count": 1,
+      "repeat": 2,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 1,
+        "p50": 1506.6480580000002,
+        "p95": 1506.6480580000002,
+        "max": 1506.6480580000002
+      },
+      "dom": {
+        "count": 20,
+        "p50": 64.69999998807907,
+        "p95": 65.40000000596046,
+        "max": 65.5
+      },
+      "draw": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "paintOpportunity": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "worstUserP95Ms": 65.40000000596046,
+      "measuredServer": {
+        "durationMs": 20025.631213,
+        "averageCores": 0.033768723332975724,
+        "peakMiB": 212.69140625,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20023.802848,
+        "averageCores": 0.026237773313498018,
+        "peakMiB": 238.91796875,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 1556.374542,
+        "averageCores": 0.5330085899079169,
+        "peakMiB": 199.86328125,
+        "throttledMs": 124.73
+      },
+      "peakMiB": 212.69140625,
+      "baselineAnonMiB": 31.59375,
+      "reclaimedAnonMiB": 36.2734375,
+      "anonGrowthMiB": 4.6796875,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.02815723419189453,
+      "totalSourceOperations": 23,
+      "measuredOperations": 20,
+      "achievedOperationsPerSecond": 0.9989473686004426,
+      "reclaimed": {
+        "launched": 1,
+        "browsers": [
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": true,
+        "noOom": true
+      },
+      "withinBudget": true
+    },
+    {
+      "name": "dom-3-1",
+      "mode": "dom",
+      "count": 3,
+      "repeat": 1,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 3,
+        "p50": 2499.7085150000003,
+        "p95": 2505.7072919999996,
+        "max": 2505.7072919999996
+      },
+      "dom": {
+        "count": 60,
+        "p50": 64.90000000596046,
+        "p95": 65.90000000596046,
+        "max": 66.30000001192093
+      },
+      "draw": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "paintOpportunity": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "worstUserP95Ms": 65.90000000596046,
+      "measuredServer": {
+        "durationMs": 20010.353767,
+        "averageCores": 0.08130630867121941,
+        "peakMiB": 562.31640625,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20008.036401,
+        "averageCores": 0.05858995738039591,
+        "peakMiB": 610.2265625,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 2565.2628509999995,
+        "averageCores": 1.3405476162645293,
+        "peakMiB": 527.75390625,
+        "throttledMs": 8324.107
+      },
+      "peakMiB": 562.31640625,
+      "baselineAnonMiB": 32.01953125,
+      "reclaimedAnonMiB": 41.7421875,
+      "anonGrowthMiB": 9.72265625,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.08444595336914062,
+      "totalSourceOperations": 69,
+      "measuredOperations": 60,
+      "achievedOperationsPerSecond": 2.9991768835522103,
+      "reclaimed": {
+        "launched": 3,
+        "browsers": [
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": true,
+        "noOom": true
+      },
+      "withinBudget": true
+    },
+    {
+      "name": "dom-3-2",
+      "mode": "dom",
+      "count": 3,
+      "repeat": 2,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 3,
+        "p50": 2267.3169310000003,
+        "p95": 2301.964234,
+        "max": 2301.964234
+      },
+      "dom": {
+        "count": 60,
+        "p50": 64.89999997615814,
+        "p95": 66,
+        "max": 66.09999999403954
+      },
+      "draw": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "paintOpportunity": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "worstUserP95Ms": 66,
+      "measuredServer": {
+        "durationMs": 20016.590302999997,
+        "averageCores": 0.08336604660134858,
+        "peakMiB": 565.96484375,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20014.800325,
+        "averageCores": 0.05773012876659813,
+        "peakMiB": 608.6484375,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 2345.844225,
+        "averageCores": 1.1779520441089817,
+        "peakMiB": 533.18359375,
+        "throttledMs": 6518.861
+      },
+      "peakMiB": 565.96484375,
+      "baselineAnonMiB": 32.0703125,
+      "reclaimedAnonMiB": 41.75390625,
+      "anonGrowthMiB": 9.68359375,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.08444499969482422,
+      "totalSourceOperations": 69,
+      "measuredOperations": 60,
+      "achievedOperationsPerSecond": 2.9981572954989435,
+      "reclaimed": {
+        "launched": 3,
+        "browsers": [
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 23,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": true,
+        "noOom": true
+      },
+      "withinBudget": true
+    },
+    {
+      "name": "dom-6-1",
+      "mode": "dom",
+      "count": 6,
+      "repeat": 1,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 6,
+        "p50": 4409.071153,
+        "p95": 4535.997973,
+        "max": 4535.997973
+      },
+      "dom": {
+        "count": 120,
+        "p50": 65.59999999403954,
+        "p95": 67.2000000178814,
+        "max": 67.80000001192093
+      },
+      "draw": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "paintOpportunity": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "worstUserP95Ms": 67.30000001192093,
+      "measuredServer": {
+        "durationMs": 20009.749604999997,
+        "averageCores": 0.16351214106059778,
+        "peakMiB": 1084.796875,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20008.043388,
+        "averageCores": 0.11689733746792895,
+        "peakMiB": 1162.8828125,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 4586.717814,
+        "averageCores": 1.6641069517515341,
+        "peakMiB": 1028.1953125,
+        "throttledMs": 41348.224
+      },
+      "peakMiB": 1084.796875,
+      "baselineAnonMiB": 32,
+      "reclaimedAnonMiB": 42.97265625,
+      "anonGrowthMiB": 10.97265625,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.16889190673828125,
+      "totalSourceOperations": 138,
+      "measuredOperations": 120,
+      "achievedOperationsPerSecond": 5.998483968655319,
+      "reclaimed": {
+        "launched": 6,
+        "browsers": [
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 25,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 24,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 23,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": true,
+        "noOom": true
+      },
+      "withinBudget": true
+    },
+    {
+      "name": "dom-6-2",
+      "mode": "dom",
+      "count": 6,
+      "repeat": 2,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 6,
+        "p50": 3586.8067279999996,
+        "p95": 3795.2005919999997,
+        "max": 3795.2005919999997
+      },
+      "dom": {
+        "count": 120,
+        "p50": 65.39999997615814,
+        "p95": 67.2999999821186,
+        "max": 67.40000000596046
+      },
+      "draw": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "paintOpportunity": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "worstUserP95Ms": 67.40000000596046,
+      "measuredServer": {
+        "durationMs": 20013.756924,
+        "averageCores": 0.1607029111132618,
+        "peakMiB": 1087.015625,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20012.009210999997,
+        "averageCores": 0.11485213582335485,
+        "peakMiB": 1164.63671875,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 3849.6875589999995,
+        "averageCores": 1.564725944036021,
+        "peakMiB": 1029.75390625,
+        "throttledMs": 28596.338
+      },
+      "peakMiB": 1087.015625,
+      "baselineAnonMiB": 31.71875,
+      "reclaimedAnonMiB": 42.8515625,
+      "anonGrowthMiB": 11.1328125,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.1688556671142578,
+      "totalSourceOperations": 138,
+      "measuredOperations": 120,
+      "achievedOperationsPerSecond": 5.997229811781241,
+      "reclaimed": {
+        "launched": 6,
+        "browsers": [
+          {
+            "pid": 25,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 24,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 23,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": true,
+        "noOom": true
+      },
+      "withinBudget": true
+    },
+    {
+      "name": "frame-1-1",
+      "mode": "frame",
+      "count": 1,
+      "repeat": 1,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 1,
+        "p50": 1472.0149999999999,
+        "p95": 1472.0149999999999,
+        "max": 1472.0149999999999
+      },
+      "dom": {
+        "count": 20,
+        "p50": 65.2999999821186,
+        "p95": 68.59999999403954,
+        "max": 71.7999999821186
+      },
+      "draw": {
+        "count": 20,
+        "p50": 38.69999998807907,
+        "p95": 46.19999998807907,
+        "max": 47.900000005960464
+      },
+      "paintOpportunity": {
+        "count": 20,
+        "p50": 62.19999998807907,
+        "p95": 72,
+        "max": 78.7999999821186
+      },
+      "worstUserP95Ms": 46.19999998807907,
+      "measuredServer": {
+        "durationMs": 20012.866156,
+        "averageCores": 0.12905342892255736,
+        "peakMiB": 331.55078125,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20009.885838000002,
+        "averageCores": 0.18020712507775177,
+        "peakMiB": 287.56640625,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 1524.1097100000002,
+        "averageCores": 0.5684846663695883,
+        "peakMiB": 239.19140625,
+        "throttledMs": 0
+      },
+      "peakMiB": 331.55078125,
+      "baselineAnonMiB": 31.97265625,
+      "reclaimedAnonMiB": 98.91796875,
+      "anonGrowthMiB": 66.9453125,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.7083158493041992,
+      "totalSourceOperations": 23,
+      "measuredOperations": 20,
+      "achievedOperationsPerSecond": 0.9996467081592364,
+      "reclaimed": {
+        "launched": 1,
+        "browsers": [
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": false,
+        "noOom": true
+      },
+      "withinBudget": false
+    },
+    {
+      "name": "frame-1-2",
+      "mode": "frame",
+      "count": 1,
+      "repeat": 2,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 1,
+        "p50": 1453.6410219999998,
+        "p95": 1453.6410219999998,
+        "max": 1453.6410219999998
+      },
+      "dom": {
+        "count": 20,
+        "p50": 64.69999998807907,
+        "p95": 65.7000000178814,
+        "max": 67
+      },
+      "draw": {
+        "count": 20,
+        "p50": 38.5,
+        "p95": 44.79999998211861,
+        "max": 52.80000001192093
+      },
+      "paintOpportunity": {
+        "count": 20,
+        "p50": 61,
+        "p95": 76.7999999821186,
+        "max": 81.90000000596046
+      },
+      "worstUserP95Ms": 44.79999998211861,
+      "measuredServer": {
+        "durationMs": 20030.752559999997,
+        "averageCores": 0.11904834792687392,
+        "peakMiB": 314.86328125,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20027.486308,
+        "averageCores": 0.16818046699423064,
+        "peakMiB": 291.11328125,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 1506.0111980000001,
+        "averageCores": 0.6024244714812539,
+        "peakMiB": 251.8671875,
+        "throttledMs": 145.726
+      },
+      "peakMiB": 315.28125,
+      "baselineAnonMiB": 31.92578125,
+      "reclaimedAnonMiB": 90.31640625,
+      "anonGrowthMiB": 58.390625,
+      "oomKillDelta": 0,
+      "wsDownMiB": 0.7050600051879883,
+      "totalSourceOperations": 23,
+      "measuredOperations": 20,
+      "achievedOperationsPerSecond": 0.99876529562951,
+      "reclaimed": {
+        "launched": 1,
+        "browsers": [
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": true,
+        "noOom": true
+      },
+      "withinBudget": true
+    },
+    {
+      "name": "frame-3-1",
+      "mode": "frame",
+      "count": 3,
+      "repeat": 1,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 3,
+        "p50": 2370.09292,
+        "p95": 2500.7254460000004,
+        "max": 2500.7254460000004
+      },
+      "dom": {
+        "count": 60,
+        "p50": 65.69999998807907,
+        "p95": 67.30000001192093,
+        "max": 71.19999998807907
+      },
+      "draw": {
+        "count": 60,
+        "p50": 42.19999998807907,
+        "p95": 49.19999998807907,
+        "max": 51.900000005960464
+      },
+      "paintOpportunity": {
+        "count": 60,
+        "p50": 67.90000000596046,
+        "p95": 78.09999999403954,
+        "max": 81.09999999403954
+      },
+      "worstUserP95Ms": 50.5,
+      "measuredServer": {
+        "durationMs": 20016.707730000002,
+        "averageCores": 0.3433670557970424,
+        "peakMiB": 825.296875,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20013.949571999998,
+        "averageCores": 0.47973884242382064,
+        "peakMiB": 768.34375,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 2564.0611889999996,
+        "averageCores": 1.302644809854419,
+        "peakMiB": 704.17578125,
+        "throttledMs": 6867.548
+      },
+      "peakMiB": 827.453125,
+      "baselineAnonMiB": 31.5078125,
+      "reclaimedAnonMiB": 152.80859375,
+      "anonGrowthMiB": 121.30078125,
+      "oomKillDelta": 0,
+      "wsDownMiB": 2.118372917175293,
+      "totalSourceOperations": 69,
+      "measuredOperations": 60,
+      "achievedOperationsPerSecond": 2.9982853856778333,
+      "reclaimed": {
+        "launched": 3,
+        "browsers": [
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": false,
+        "noOom": true
+      },
+      "withinBudget": false
+    },
+    {
+      "name": "frame-3-2",
+      "mode": "frame",
+      "count": 3,
+      "repeat": 2,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 3,
+        "p50": 2206.568862,
+        "p95": 2293.079279,
+        "max": 2293.079279
+      },
+      "dom": {
+        "count": 60,
+        "p50": 65.40000000596046,
+        "p95": 66.90000000596046,
+        "max": 67.09999999403954
+      },
+      "draw": {
+        "count": 60,
+        "p50": 40.099999994039536,
+        "p95": 47.599999994039536,
+        "max": 49.79999998211861
+      },
+      "paintOpportunity": {
+        "count": 60,
+        "p50": 70.90000000596046,
+        "p95": 72.09999999403954,
+        "max": 72.19999998807907
+      },
+      "worstUserP95Ms": 47.599999994039536,
+      "measuredServer": {
+        "durationMs": 20006.969015,
+        "averageCores": 0.3380751974438943,
+        "peakMiB": 840.171875,
+        "throttledMs": 0
+      },
+      "measuredClient": {
+        "durationMs": 20004.031092,
+        "averageCores": 0.47813852898004683,
+        "peakMiB": 771.35546875,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 2350.7700370000002,
+        "averageCores": 1.3481561148552277,
+        "peakMiB": 707.71484375,
+        "throttledMs": 6592.344
+      },
+      "peakMiB": 840.171875,
+      "baselineAnonMiB": 31.765625,
+      "reclaimedAnonMiB": 151.3125,
+      "anonGrowthMiB": 119.546875,
+      "oomKillDelta": 0,
+      "wsDownMiB": 2.137150764465332,
+      "totalSourceOperations": 69,
+      "measuredOperations": 60,
+      "achievedOperationsPerSecond": 2.999808652705375,
+      "reclaimed": {
+        "launched": 3,
+        "browsers": [
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": false,
+        "noOom": true
+      },
+      "withinBudget": false
+    },
+    {
+      "name": "frame-6-1",
+      "mode": "frame",
+      "count": 6,
+      "repeat": 1,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 6,
+        "p50": 3755.376793,
+        "p95": 4350.631845,
+        "max": 4350.631845
+      },
+      "dom": {
+        "count": 120,
+        "p50": 82.80000001192093,
+        "p95": 177.59999999403954,
+        "max": 187.90000000596046
+      },
+      "draw": {
+        "count": 120,
+        "p50": 186.30000001192093,
+        "p95": 194.7000000178814,
+        "max": 205.2000000178814
+      },
+      "paintOpportunity": {
+        "count": 120,
+        "p50": 211.60000002384186,
+        "p95": 212.69999998807907,
+        "max": 228.2000000178814
+      },
+      "worstUserP95Ms": 202.2999999821186,
+      "measuredServer": {
+        "durationMs": 20008.376331,
+        "averageCores": 0.7455605469039296,
+        "peakMiB": 1554.78125,
+        "throttledMs": 17558.274
+      },
+      "measuredClient": {
+        "durationMs": 20004.68193,
+        "averageCores": 1.2493828738420738,
+        "peakMiB": 1483.89453125,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 4465.866277,
+        "averageCores": 1.739405866227194,
+        "peakMiB": 1365.62109375,
+        "throttledMs": 36666.636
+      },
+      "peakMiB": 1554.78125,
+      "baselineAnonMiB": 32.0234375,
+      "reclaimedAnonMiB": 184.46484375,
+      "anonGrowthMiB": 152.44140625,
+      "oomKillDelta": 0,
+      "wsDownMiB": 4.257406234741211,
+      "totalSourceOperations": 138,
+      "measuredOperations": 120,
+      "achievedOperationsPerSecond": 5.999698437457422,
+      "reclaimed": {
+        "launched": 6,
+        "browsers": [
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 25,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 23,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 24,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": false,
+        "noOom": true
+      },
+      "withinBudget": false
+    },
+    {
+      "name": "frame-6-2",
+      "mode": "frame",
+      "count": 6,
+      "repeat": 2,
+      "complete": true,
+      "functionalPass": true,
+      "cold": {
+        "count": 6,
+        "p50": 3979.3765099999996,
+        "p95": 4673.938969,
+        "max": 4673.938969
+      },
+      "dom": {
+        "count": 120,
+        "p50": 87.90000000596046,
+        "p95": 186.5,
+        "max": 289.60000002384186
+      },
+      "draw": {
+        "count": 120,
+        "p50": 195.40000000596046,
+        "p95": 288.69999998807907,
+        "max": 299
+      },
+      "paintOpportunity": {
+        "count": 120,
+        "p50": 219.40000000596046,
+        "p95": 318.59999999403954,
+        "max": 319.80000001192093
+      },
+      "worstUserP95Ms": 288.69999998807907,
+      "measuredServer": {
+        "durationMs": 19999.556394,
+        "averageCores": 0.8088716410156592,
+        "peakMiB": 1555.70703125,
+        "throttledMs": 23036.231
+      },
+      "measuredClient": {
+        "durationMs": 19996.799397,
+        "averageCores": 1.3359768965831567,
+        "peakMiB": 1487.94140625,
+        "throttledMs": null
+      },
+      "coldServer": {
+        "durationMs": 4834.971433000001,
+        "averageCores": 1.6945146653982308,
+        "peakMiB": 1423.140625,
+        "throttledMs": 37600.815
+      },
+      "peakMiB": 1555.70703125,
+      "baselineAnonMiB": 31.86328125,
+      "reclaimedAnonMiB": 210.6875,
+      "anonGrowthMiB": 178.82421875,
+      "oomKillDelta": 0,
+      "wsDownMiB": 4.271816253662109,
+      "totalSourceOperations": 138,
+      "measuredOperations": 120,
+      "achievedOperationsPerSecond": 6.002055809450817,
+      "reclaimed": {
+        "launched": 6,
+        "browsers": [
+          {
+            "pid": 23,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 25,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 21,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 22,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 20,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          },
+          {
+            "pid": 24,
+            "closed": true,
+            "connected": false,
+            "processGone": true
+          }
+        ]
+      },
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "ecdf1f3cee5cac4fd904c9a71faae15e9966af6b54f28312298c4849808bd274",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      },
+      "image": "sha256:2155f4f7f14813b400a34b0aae4c96d1ca24dce01ee34af63b6c505747c2ab00",
+      "budget": {
+        "cold": true,
+        "latency": true,
+        "memory": true,
+        "cleanup": false,
+        "noOom": true
+      },
+      "withinBudget": false
+    }
+  ],
+  "consistentSources": true,
+  "consistentImages": true,
+  "complete": true,
+  "allWithinBudget": false,
+  "observer": {
+    "kind": "scalar records only (pid, connected, closed)",
+    "correction": {
+      "previousEvidence": "/home/Kei/dom-mirror-validation/20261026/capacity",
+      "reason": "Observer retained closed Puppeteer Browser objects, potentially retaining session closures and frame buffers. Replace records with pid/connected/closed scalars. Previous post-cleanup anonymous-memory findings are not clean engine evidence.",
+      "budgetsChanged": false,
+      "productionEngineChanged": false
+    },
+    "supersededMemoryEvidence": "/home/Kei/dom-mirror-validation/20261026/capacity/"
+  },
+  "evidenceRoot": "/home/Kei/dom-mirror-validation/20261026/capacity-corrected",
+  "runtimeNote": "Cached pinned dependency runtime with current application and benchmark sources; not a fresh online build of the standard Dockerfile.",
+  "environment": {
+    "node": "v24.21.0",
+    "platform": "linux",
+    "arch": "x64",
+    "chromium": "Google Chrome for Testing 156.0.8078.47",
+    "dependencies": {
+      "puppeteer": "25.16.0",
+      "sharp": "0.35.5",
+      "ws": "8.22.0"
+    },
+    "cpuMax": "200000 100000",
+    "memoryMax": "2147483648"
+  },
+  "idleSupplement": {
+    "plan": {
+      "kind": "supplement after corrected formal matrix; original budget unchanged",
+      "observer": "scalar pid/closed/connected records; no retained Browser or ChildProcess objects",
+      "mode": "frame",
+      "sessions": 3,
+      "change": "post-reclaim idle from 3000ms to 60000ms only",
+      "forcedGc": false,
+      "goal": "check whether residual anonymous memory falls during a minute of idle time",
+      "sourceImage": "dom-mirror:capacity-corrected"
+    },
+    "result": {
+      "passed": true,
+      "cleanupPhaseSeconds": 63.309216714,
+      "baselineAnonMiB": 32.40234375,
+      "after60SecAnonMiB": 147.19140625,
+      "anonGrowthMiB": 114.7890625,
+      "observations": [
+        {
+          "cleanupPhaseSec": 5.942428111999994,
+          "anonGrowthMiB": 114.91796875
+        },
+        {
+          "cleanupPhaseSec": 18.085302228,
+          "anonGrowthMiB": 114.78125
+        },
+        {
+          "cleanupPhaseSec": 32.964724073,
+          "anonGrowthMiB": 114.7890625
+        },
+        {
+          "cleanupPhaseSec": 62.913405452,
+          "anonGrowthMiB": 114.7890625
+        }
+      ],
+      "imageId": "sha256:c1b4c954aa76416fe4f8cf7c8db569cc739d2e36c9904ccaffb8f58f706683f1",
+      "hashes": {
+        "server.js": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/capacity-host.cjs": "742717bafd9c72c88ec698dcb8378f852b308c233f3181884b086cdb09a03bf7",
+        "tools/capacity-client.cjs": "1603538aacfa0dd4c42bbfffd934065333611338d76154b5de45ff77f3652446",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/fixtures/capacity-plan.json": "16d1d6c8175e2423daabc44060b00bfe8f02fd7a2c29472028989e8c84c91e6a",
+        "tools/verify-docker-capacity.sh": "952dfa69e36458d27015a2fa0bcf431681b2bd0a9f6eae2bd6adef65c4cf3de5",
+        "tools/run-capacity-matrix.sh": "6191c605fb608b7744e2eabfa23c5e80113406272be70f0772ac6cd8a8eef628",
+        "tools/summarize-capacity.cjs": "b6b4ec18f49f29c06fa717c593602e7c39334e144900a81b67869ac791f9ddf5"
+      }
+    },
+    "evidencePath": "/home/Kei/dom-mirror-validation/20261026/capacity-corrected/idle-frame-3"
+  }
+}

@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-layout</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 0; }
+    #fixedbar { position: fixed; top: 0; left: 0; right: 0; height: 42px; background: #123; color: #fff; z-index: 40; display: flex; align-items: center; padding: 0 16px; }
+    #inner { margin-top: 60px; height: 240px; overflow-y: auto; border: 1px solid #ccd; margin-left: 16px; margin-right: 16px; }
+    #inner div { padding: 8px; border-bottom: 1px solid #eef; }
+    #scroller { height: 3000px; padding-top: 60px; }
+    #overlay { position: fixed; inset: 0; background: rgba(10,12,20,.55); display: none; z-index: 90; }
+    #modal { position: fixed; top: 30%; left: 40%; width: 220px; padding: 16px; background: #fff; border-radius: 8px; display: none; z-index: 100; }
+    #geo { margin: 16px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
+    dialog { border: 1px solid #99a; }
+  </style>
+</head>
+<body>
+  <div id="fixedbar">固定栏（fixed top）</div>
+  <div id="scroller">
+    <div id="inner">
+      <div class="row">inner-1</div><div class="row">inner-2</div><div class="row">inner-3</div>
+      <div class="row">inner-4</div><div class="row">inner-5</div><div class="row">inner-6</div>
+      <div class="row">inner-7</div><div class="row">inner-8</div><div class="row">inner-9</div>
+      <div class="row">inner-10</div><div class="row">inner-11</div><div class="row">inner-12</div>
+    </div>
+    <button id="open">开弹层</button>
+    <button id="dlgbtn" style="margin-left:8px">dialog</button>
+    <div id="geo">GEO:</div>
+  </div>
+  <div id="overlay"><div id="modal">模态内容<button id="close">关闭</button></div></div>
+  <dialog id="dlg"><p>原生 dialog</p><button id="dlgclose">关闭</button></dialog>
+  <script>
+    const geo = document.getElementById('geo');
+    const dump = (tag) => {
+      const fb = document.getElementById('fixedbar').getBoundingClientRect();
+      const inner = document.getElementById('inner');
+      const row = inner.querySelector('.row:nth-child(5)');
+      const rr = row.getBoundingClientRect();
+      geo.textContent = 'GEO:' + JSON.stringify({
+        tag, fbTop: Math.round(fb.top), rowTop: Math.round(rr.top),
+        innerScroll: inner.scrollTop, docScroll: Math.round(window.scrollY),
+        overlayVisible: getComputedStyle(document.getElementById('overlay')).display !== 'none',
+        dlgOpen: document.getElementById('dlg').open,
+      });
+    };
+    document.getElementById('open').addEventListener('click', () => {
+      document.getElementById('overlay').style.display = 'block';
+      document.getElementById('modal').style.display = 'block';
+      dump('modal');
+    });
+    document.getElementById('close').addEventListener('click', () => {
+      document.getElementById('overlay').style.display = 'none';
+      document.getElementById('modal').style.display = 'none';
+      dump('closed');
+    });
+    document.getElementById('dlgbtn').addEventListener('click', () => { document.getElementById('dlg').showModal(); dump('dlg'); });
+    document.getElementById('dlgclose').addEventListener('click', () => { document.getElementById('dlg').close(); dump('dlgclosed'); });
+    document.getElementById('inner').addEventListener('scroll', () => dump('innerscroll'));
+    window.addEventListener('scroll', () => dump('docscroll'), { passive: true });
+    setTimeout(() => dump('init'), 200);
+  </script>
+</body>
+</html>

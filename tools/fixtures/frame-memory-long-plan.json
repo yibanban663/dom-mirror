@@ -1,0 +1,12 @@
+{
+  "groups": ["default"],
+  "cycles": 30,
+  "nativeProbe": true,
+  "glibc": "2.36",
+  "hostEnvironment": {"MALLOC_ARENA_MAX": "2", "VIPS_CONCURRENCY": "1"},
+  "sharpConcurrency": 1,
+  "finalDiagnostics": ["15 seconds idle", "two full GC calls", "one malloc_trim(0)", "3 seconds idle"],
+  "budget": {"postCleanupAnonGrowthMiB": 64},
+  "scope": "One 30-cycle candidate-host run; final GC/trim is diagnostic only and excluded from normal-cycle budgets",
+  "nativeStatsLimit": "malloc_info totals cover glibc arenas; system/free/in-use estimate are allocator accounting, not resident bytes or call-site attribution; tcache is not separately exposed"
+}

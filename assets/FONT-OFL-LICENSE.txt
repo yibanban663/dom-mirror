@@ -1,0 +1,4 @@
+SIL Open Font License 1.1
+Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+assets/ 下的 Noto Sans SC 字体文件（汉字子集）按 SIL OFL 1.1 许可再分发：
+https://openfontlicense.org/open-font-license-official-text/

@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-vlist</title>
+  <style>
+    body { font: 13px/1.5 system-ui, sans-serif; margin: 20px; }
+    #vwrap { height: 320px; overflow-y: auto; border: 1px solid #ccd; position: relative; }
+    .vrow { padding: 6px 10px; border-bottom: 1px solid #eef; display: flex; gap: 12px; }
+    .vrow b { width: 60px; color: #456; }
+    #spacer-top, #spacer-bot { }
+    #report { margin-top: 10px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h3>虚拟列表（1 万行 / 20 行窗口）</h3>
+  <div id="vwrap"><div id="vinner"><div id="spacer-top"></div><div id="vwin"></div><div id="spacer-bot"></div></div></div>
+  <div id="report">REPORT:</div>
+  <script>
+    // 典型虚拟列表：总高 spacer + 视口内窗口整块替换（业务常见形态）
+    const TOTAL = 10000, WIN = 20, RH = 29; // 行高固定 29px（含边框）
+    const vwrap = document.getElementById('vwrap');
+    const vwin = document.getElementById('vwin');
+    const st = document.getElementById('spacer-top');
+    const sb = document.getElementById('spacer-bot');
+    let updates = 0, first = 0;
+    const render = () => {
+      first = Math.max(0, Math.min(TOTAL - WIN, Math.floor(vwrap.scrollTop / RH)));
+      let html = '';
+      for (let i = first; i < first + WIN; i++) html += '<div class="vrow"><b>#' + i + '</b><span>行内容-' + i + '-数据</span></div>';
+      vwin.innerHTML = html;
+      st.style.height = (first * RH) + 'px';
+      sb.style.height = Math.max(0, (TOTAL - first - WIN) * RH) + 'px';
+      updates++;
+      document.getElementById('report').textContent = 'REPORT:first=' + first + ';updates=' + updates;
+    };
+    vwrap.addEventListener('scroll', () => requestAnimationFrame(render), { passive: true });
+    render();
+  </script>
+</body>
+</html>

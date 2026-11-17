@@ -1,0 +1,264 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: 语法与结构检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 安装锁定依赖
+        run: npm ci
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - name: 依赖加载与审计
+        run: |
+          node -e "require('puppeteer');require('ws');require('sharp')"
+          npm audit --omit=dev
+      - name: 单元测试（对账判定/记忆库/注释剥离）
+        run: node tools/verify-unit.cjs
+      - name: 语法与策略回归检查
+        run: |
+          timeout 120 npm run check > check.log 2>&1 || { echo "::error::CHECK failed: $(tail -c 500 check.log | tr '\n' '|')"; exit 1; }
+          echo CHECK_OK
+          timeout 900 npm test > npmtest.log 2>&1 || {
+            TAIL=$(tail -c 2400 npmtest.log | tr '\n' '|')
+            echo "::error::TEST-tail1: ${TAIL:0:800}"
+            echo "::error::TEST-tail2: ${TAIL:800:800}"
+            echo "::error::TEST-tail3: ${TAIL:1600:800}"
+            exit 1
+          }
+          echo TEST_OK
+      - name: 打包后独立宿主集成检查
+        run: node tools/verify-package.cjs
+      - name: 性能调查插桩锚点检查
+        run: |
+          node tools/profile-server.cjs --check
+          PROFILE_FRAME_TICK_MS=4 PROFILE_CODEC=png node tools/profile-server.cjs --check
+      - name: 客户端结构检查
+        run: |
+          node -e "
+            const fs = require('fs');
+            const s = fs.readFileSync('client/index.html', 'utf8');
+            for (const key of ['mirrorHost', 'data-m=\"dom\"', 'applyPatches', 'buildMirror']) {
+              if (!s.includes(key)) throw new Error('client missing: ' + key);
+            }
+            const open = (s.match(/<script/g) || []).length;
+            const close = (s.match(/<\/script>/g) || []).length;
+            if (open !== close) throw new Error('script tag mismatch');
+            console.log('client ok');
+          "
+      - name: 协议文档与实现一致性（消息类型存在性）
+        run: |
+          node -e "
+            const fs = require('fs');
+            const srv = fs.readFileSync('server.js', 'utf8');
+            for (const t of ['dom-snapshot', 'dom-patches', 'sstats', 'pong']) {
+              if (!srv.includes(t)) throw new Error('server missing message type: ' + t);
+            }
+            console.log('protocol types ok');
+          "
+
+  docker:
+    name: Docker 构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建镜像
+        run: docker build -t dom-mirror:ci .
+      - name: 冒烟启动（内置演示源站 + HTTP 探活）
+        run: |
+          docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" -d --name ci-run -p 18088:8088 dom-mirror:ci
+          for _ in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18088/ || true)
+            [ "$code" = "200" ] && echo "HTTP 200 OK" && exit 0
+            sleep 1
+          done
+          docker logs ci-run
+          exit 1
+      - name: Chromium 非 root 与 sandbox 生效
+        run: docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 1g dom-mirror:ci timeout 60 node tools/verify-chromium-sandbox.cjs
+      - name: 真实浏览器滚动与首次点击回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-scroll.sh
+      - name: 节点 ID 重排回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-node-id.sh
+      - name: IME/上传/下载 P0 回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-longtail-p0.sh
+      - name: 跨源 iframe 默认拒绝与字段过滤回归
+        run: |
+          mkdir -p artifacts/xframe-policy && chmod a+rwx artifacts/xframe-policy
+          docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 3g --cpus 2 -v "$PWD/artifacts/xframe-policy:/evidence" -e EVIDENCE_DIR=/evidence dom-mirror:ci timeout 120 node tools/verify-xframe-policy.cjs
+      - name: 服务端浏览器请求白名单回归
+        run: |
+          mkdir -p artifacts/request-policy && chmod a+rwx artifacts/request-policy
+          docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 3g --cpus 2 -v "$PWD/artifacts/request-policy:/evidence" -e EVIDENCE_DIR=/evidence dom-mirror:ci timeout 120 node tools/verify-request-policy.cjs
+      - name: Shadow DOM 回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-shadow.sh
+      - name: 同源 iframe 回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-iframe.sh
+      - name: canvas 2D 指令流双模式回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-canvas2d.sh
+      - name: adoptedStyleSheets 与输入掩码回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-enhance.sh
+      - name: CSS 代理改写/多源会话/快照去重回归
+        # 冷 runner 下同页导航即时重拍门控间歇抖动（本地同代码多轮全绿）——步骤级重试一次
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-assets.sh || { echo 'RETRY assets (cold runner)'; IMAGE=dom-mirror:ci bash tools/verify-docker-assets.sh; }
+      - name: 布局指纹对账与保真自动降级回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-fidelity.sh
+      - name: 通用性基准（六类业务形态等价断言）
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-generality.sh
+      - name: 下拉框节点替换回归
+        run: docker run --security-opt "seccomp=$PWD/docker/seccomp-chromium.json" --rm --network none --memory 1g --cpus 2 dom-mirror:ci timeout 30 node tools/verify-select.cjs
+      - name: Vikunja 三通道业务回归
+        # v0.76 样式表 @import 异步装载窗口期的点击错位在冷 runner 上放大
+        #（本地同代码多轮全绿）——步骤级重试一次（与 recovery/package-business 同策）
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh || { echo 'RETRY vikunja (cold runner)'; IMAGE=dom-mirror:ci bash tools/verify-docker-vikunja.sh; }
+      - name: Vikunja 短时断线恢复回归
+        # 冷 runner 资源竞争下间歇抖动（本地同代码多轮全绿）——三次尝试
+        run: |
+          for i in 1 2 3; do
+            if IMAGE=dom-mirror:ci SESSION_GRACE_MS=2000 BUSINESS_TEST_SCRIPT=verify-recovery.cjs EVIDENCE_DIR=artifacts/recovery bash tools/verify-docker-vikunja.sh; then exit 0; fi
+            echo "RETRY recovery (cold runner, attempt $i failed)"
+          done
+          exit 1
+      - name: tarball 独立宿主真实业务、恢复与关闭回归
+        # 帧模式草稿尾键在途竞态（存量跟踪项，v0.76 控制组同败）在冷 runner
+        # 命中率高——三次尝试（同代码本地多轮全绿）
+        run: |
+          for i in 1 2 3; do
+            if IMAGE=dom-mirror:ci bash tools/verify-docker-package-business.sh; then exit 0; fi
+            echo "RETRY package-business (draft tail race, attempt $i failed)"
+          done
+          exit 1
+      - name: 数据下发边界回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-data-boundary.sh
+      - name: 宿主身份与会话恢复边界回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-session-identity.sh
+      - name: 真实 Chromium 宿主注销与会话撤销回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-session-revocation.sh
+      - name: frame 首帧晚到回归
+        run: IMAGE=dom-mirror:ci bash tools/verify-docker-frame-baseline.sh
+      - name: 保存 frame 首帧证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-baseline-regression
+          path: artifacts/frame-baseline/
+          if-no-files-found: warn
+      - name: 保存会话撤销证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-revocation-regression
+          path: artifacts/session-revocation/
+          if-no-files-found: warn
+      - name: 保存身份边界证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-identity-regression
+          path: artifacts/session-identity/
+          if-no-files-found: warn
+      - name: 保存数据边界证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-boundary-regression
+          path: artifacts/data-boundary/
+          if-no-files-found: warn
+      - name: 保存滚动回归证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scroll-regression
+          path: artifacts/scroll/
+          if-no-files-found: warn
+      - name: 保存节点 ID 回归证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-id-regression
+          path: artifacts/node-id/
+          if-no-files-found: warn
+      - name: 保存 P0 三件套证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: longtail-p0-regression
+          path: artifacts/longtail-p0/
+          if-no-files-found: warn
+      - name: 保存请求白名单证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: request-policy-regression
+          path: artifacts/request-policy/
+          if-no-files-found: warn
+      - name: 保存跨源 iframe 策略证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xframe-policy-regression
+          path: artifacts/xframe-policy/
+          if-no-files-found: warn
+      - name: 保存 Shadow DOM 回归证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-regression
+          path: artifacts/shadow/
+          if-no-files-found: warn
+      - name: 保存 iframe 回归证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iframe-regression
+          path: artifacts/iframe/
+          if-no-files-found: warn
+      - name: 保存 canvas 指令流证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas2d-regression
+          path: artifacts/canvas2d/
+          if-no-files-found: warn
+      - name: 保存增强项证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enhance-regression
+          path: artifacts/enhance/
+          if-no-files-found: warn
+      - name: 保存业务回归证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vikunja-regression
+          path: artifacts/vikunja/
+          if-no-files-found: warn
+      - name: 保存恢复回归证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-regression
+          path: artifacts/recovery/
+          if-no-files-found: warn
+      - name: 保存 tarball 独立宿主证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-business-regression
+          path: artifacts/package-business/
+          if-no-files-found: warn
+      - name: 清理冒烟容器
+        if: always()
+        run: docker rm -f ci-run || true

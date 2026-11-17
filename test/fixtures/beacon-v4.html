@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>beacon-v4</title>
+<style>body{font:14px system-ui;margin:16px;background:#fafafa}canvas{border:1px solid #ccd}</style></head>
+<body><div>HEAVY CHART (500ms × 300 折线 = ops 爆预算 → 位图回退)</div><canvas id="ch" width="420" height="200"></canvas>
+<script>
+function draw(seed){var cv=document.getElementById('ch'),g=cv.getContext('2d');g.clearRect(0,0,cv.width,cv.height);
+for(var k=0;k<300;k++){g.strokeStyle='hsl('+(k*7%360)+',50%,45%)';g.lineWidth=1;g.beginPath();
+for(var i=0;i<=12;i++){var y=100+Math.sin((i+seed+k*0.13)*0.6)*(30+((k*37)%50));if(i===0)g.moveTo(i*34,y);else g.lineTo(i*34,y);}g.stroke();}
+g.fillStyle='#335';g.font='12px Consolas,monospace';g.fillText('heavy t='+seed.toFixed(1),6,14);}
+var t=0;setInterval(function(){t+=0.5;draw(t);},500);draw(0);
+</script></body></html>

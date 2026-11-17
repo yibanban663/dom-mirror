@@ -1,0 +1,1917 @@
+{
+  "scope": "Local synthetic fixture; literal markers only; no external network",
+  "runtime": "Current application source over cached, unchanged pinned dependencies; not a fresh standard Dockerfile build.",
+  "fixtureSha256": "ce13b6e06a567c16073fc555b23a5fbc2a4081e3a74ed0274cce3c2cac2008fb",
+  "testScriptSha256": "32093576904a1911cb0377b5e0d14c6238f6567fa1197a9d1d595a5bd4b51938",
+  "images": {
+    "dom-mirror:docs": "sha256:120e321d1e13da67b5d3ee21eaaf4797ca093175421e0c4b9523a67d3ce5c448",
+    "dom-mirror:boundary": "sha256:2e4a9fa62e436b6d88f33b1b61cff7749589240cb9bf22812e182bd6971f7409"
+  },
+  "runs": {
+    "baseline-with-patches": {
+      "pass": true,
+      "sourceSha256": "1b950d551af4a3181990d069057e54536260e674a1f84c34a43535b944a835f2",
+      "redactAttributes": [],
+      "cases": [
+        {
+          "mode": "dom",
+          "phases": [
+            {
+              "phase": "INITIAL",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 1,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "UPDATED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 2,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "PATCHED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 3,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            }
+          ],
+          "resources": [
+            {
+              "route": "image.png",
+              "status": 200,
+              "body": "�PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0018\u0000\u0000\u0000\u0018\b\u0002\u0000\u0000\u0000o\u0015��\u0000\u0000\u0000\tpHYs\u0000\u0000\u0003�\u0000\u0000\u0003�\u0001�{Rk\u0000\u0000\u0000(IDAT8�c``�O%�0j���0�?��\u0018F�\b�h1�0ZB2\f\\-\u0002\u0000��=�\u001a�\\�\u0000\u0000\u0000\u0000IEND�B`�DM_TEST_PNG_TRAILER_END"
+            },
+            {
+              "route": "image.svg",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "fixture.css",
+              "status": 200,
+              "body": ".unused::before { content: \"DM_TEST_CSS_UNUSED_END\"; }\n[data-theme=\"fixture-theme\"]{border-left:3px solid blue}\n@font-face{font-family:UnusedFixture;src:url(\"/font.woff2?hint=DM_TEST_FONT_URL_END\")}"
+            },
+            {
+              "route": "opaque.png",
+              "status": 200,
+              "body": "DM_TEST_OPAQUE_RESOURCE_END"
+            },
+            {
+              "route": "private.json",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "json.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "html.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "redirect.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "//outside.invalid/test.png",
+              "status": 403,
+              "body": "asset allowlist"
+            }
+          ],
+          "inputRoundTrip": true,
+          "publicAttribute": {
+            "theme": "fixture-theme",
+            "border": "3px"
+          },
+          "clientStorage": {
+            "cookie": "",
+            "storage": null,
+            "runtime": null
+          },
+          "pass": true
+        },
+        {
+          "mode": "frame",
+          "phases": [
+            {
+              "phase": "INITIAL",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 1,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "UPDATED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 2,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "PATCHED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 4,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            }
+          ],
+          "resources": [
+            {
+              "route": "image.png",
+              "status": 200,
+              "body": "�PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0018\u0000\u0000\u0000\u0018\b\u0002\u0000\u0000\u0000o\u0015��\u0000\u0000\u0000\tpHYs\u0000\u0000\u0003�\u0000\u0000\u0003�\u0001�{Rk\u0000\u0000\u0000(IDAT8�c``�O%�0j���0�?��\u0018F�\b�h1�0ZB2\f\\-\u0002\u0000��=�\u001a�\\�\u0000\u0000\u0000\u0000IEND�B`�DM_TEST_PNG_TRAILER_END"
+            },
+            {
+              "route": "image.svg",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "fixture.css",
+              "status": 200,
+              "body": ".unused::before { content: \"DM_TEST_CSS_UNUSED_END\"; }\n[data-theme=\"fixture-theme\"]{border-left:3px solid blue}\n@font-face{font-family:UnusedFixture;src:url(\"/font.woff2?hint=DM_TEST_FONT_URL_END\")}"
+            },
+            {
+              "route": "opaque.png",
+              "status": 200,
+              "body": "DM_TEST_OPAQUE_RESOURCE_END"
+            },
+            {
+              "route": "private.json",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "json.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "html.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "redirect.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "//outside.invalid/test.png",
+              "status": 403,
+              "body": "asset allowlist"
+            }
+          ],
+          "inputRoundTrip": true,
+          "publicAttribute": {
+            "theme": "fixture-theme",
+            "border": "3px"
+          },
+          "clientStorage": {
+            "cookie": "",
+            "storage": null,
+            "runtime": null
+          },
+          "pass": true
+        }
+      ],
+      "sourceEvents": [
+        {
+          "case": "direct",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "direct",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "dom",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "dom",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "frame",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "frame",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        }
+      ]
+    },
+    "fixed/default": {
+      "pass": true,
+      "sourceSha256": "512481aea04c8c7668e809d90d3ed47753348b3250284888bf6b87ff0c269a95",
+      "redactAttributes": [],
+      "cases": [
+        {
+          "mode": "dom",
+          "phases": [
+            {
+              "phase": "INITIAL",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 1,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "UPDATED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 2,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "PATCHED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 3,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            }
+          ],
+          "resources": [
+            {
+              "route": "image.png",
+              "status": 200,
+              "body": "�PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0018\u0000\u0000\u0000\u0018\b\u0002\u0000\u0000\u0000o\u0015��\u0000\u0000\u0000\tpHYs\u0000\u0000\u0003�\u0000\u0000\u0003�\u0001�{Rk\u0000\u0000\u0000(IDAT8�c``�O%�0j���0�?��\u0018F�\b�h1�0ZB2\f\\-\u0002\u0000��=�\u001a�\\�\u0000\u0000\u0000\u0000IEND�B`�DM_TEST_PNG_TRAILER_END"
+            },
+            {
+              "route": "image.svg",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "fixture.css",
+              "status": 200,
+              "body": ".unused::before { content: \"DM_TEST_CSS_UNUSED_END\"; }\n[data-theme=\"fixture-theme\"]{border-left:3px solid blue}\n@font-face{font-family:UnusedFixture;src:url(\"/font.woff2?hint=DM_TEST_FONT_URL_END\")}"
+            },
+            {
+              "route": "opaque.png",
+              "status": 200,
+              "body": "DM_TEST_OPAQUE_RESOURCE_END"
+            },
+            {
+              "route": "private.json",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "json.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "html.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "redirect.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "//outside.invalid/test.png",
+              "status": 403,
+              "body": "asset allowlist"
+            }
+          ],
+          "inputRoundTrip": true,
+          "publicAttribute": {
+            "theme": "fixture-theme",
+            "border": "3px"
+          },
+          "clientStorage": {
+            "cookie": "",
+            "storage": null,
+            "runtime": null
+          },
+          "pass": true
+        },
+        {
+          "mode": "frame",
+          "phases": [
+            {
+              "phase": "INITIAL",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 1,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "UPDATED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": true,
+                  "dom": true
+                },
+                "BODY_ATTR": {
+                  "wire": true,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 2,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "PATCHED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 3,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            }
+          ],
+          "resources": [
+            {
+              "route": "image.png",
+              "status": 200,
+              "body": "�PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0018\u0000\u0000\u0000\u0018\b\u0002\u0000\u0000\u0000o\u0015��\u0000\u0000\u0000\tpHYs\u0000\u0000\u0003�\u0000\u0000\u0003�\u0001�{Rk\u0000\u0000\u0000(IDAT8�c``�O%�0j���0�?��\u0018F�\b�h1�0ZB2\f\\-\u0002\u0000��=�\u001a�\\�\u0000\u0000\u0000\u0000IEND�B`�DM_TEST_PNG_TRAILER_END"
+            },
+            {
+              "route": "image.svg",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "fixture.css",
+              "status": 200,
+              "body": ".unused::before { content: \"DM_TEST_CSS_UNUSED_END\"; }\n[data-theme=\"fixture-theme\"]{border-left:3px solid blue}\n@font-face{font-family:UnusedFixture;src:url(\"/font.woff2?hint=DM_TEST_FONT_URL_END\")}"
+            },
+            {
+              "route": "opaque.png",
+              "status": 200,
+              "body": "DM_TEST_OPAQUE_RESOURCE_END"
+            },
+            {
+              "route": "private.json",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "json.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "html.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "redirect.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "//outside.invalid/test.png",
+              "status": 403,
+              "body": "asset allowlist"
+            }
+          ],
+          "inputRoundTrip": true,
+          "publicAttribute": {
+            "theme": "fixture-theme",
+            "border": "3px"
+          },
+          "clientStorage": {
+            "cookie": "",
+            "storage": null,
+            "runtime": null
+          },
+          "pass": true
+        }
+      ],
+      "sourceEvents": [
+        {
+          "case": "direct",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "direct",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "dom",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "dom",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "frame",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "frame",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        }
+      ]
+    },
+    "fixed/redacted": {
+      "pass": true,
+      "sourceSha256": "512481aea04c8c7668e809d90d3ed47753348b3250284888bf6b87ff0c269a95",
+      "redactAttributes": [
+        "data-private"
+      ],
+      "cases": [
+        {
+          "mode": "dom",
+          "phases": [
+            {
+              "phase": "INITIAL",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": false,
+                  "dom": false
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 1,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "UPDATED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": false,
+                  "dom": false
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 2,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "PATCHED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": false,
+                  "dom": false
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 3,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            }
+          ],
+          "resources": [
+            {
+              "route": "image.png",
+              "status": 200,
+              "body": "�PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0018\u0000\u0000\u0000\u0018\b\u0002\u0000\u0000\u0000o\u0015��\u0000\u0000\u0000\tpHYs\u0000\u0000\u0003�\u0000\u0000\u0003�\u0001�{Rk\u0000\u0000\u0000(IDAT8�c``�O%�0j���0�?��\u0018F�\b�h1�0ZB2\f\\-\u0002\u0000��=�\u001a�\\�\u0000\u0000\u0000\u0000IEND�B`�DM_TEST_PNG_TRAILER_END"
+            },
+            {
+              "route": "image.svg",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "fixture.css",
+              "status": 200,
+              "body": ".unused::before { content: \"DM_TEST_CSS_UNUSED_END\"; }\n[data-theme=\"fixture-theme\"]{border-left:3px solid blue}\n@font-face{font-family:UnusedFixture;src:url(\"/font.woff2?hint=DM_TEST_FONT_URL_END\")}"
+            },
+            {
+              "route": "opaque.png",
+              "status": 200,
+              "body": "DM_TEST_OPAQUE_RESOURCE_END"
+            },
+            {
+              "route": "private.json",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "json.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "html.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "redirect.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "//outside.invalid/test.png",
+              "status": 403,
+              "body": "asset allowlist"
+            }
+          ],
+          "inputRoundTrip": true,
+          "publicAttribute": {
+            "theme": "fixture-theme",
+            "border": "3px"
+          },
+          "clientStorage": {
+            "cookie": "",
+            "storage": null,
+            "runtime": null
+          },
+          "pass": true
+        },
+        {
+          "mode": "frame",
+          "phases": [
+            {
+              "phase": "INITIAL",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": false,
+                  "dom": false
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 1,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "UPDATED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": false,
+                  "dom": false
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 2,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            },
+            {
+              "phase": "PATCHED",
+              "observations": {
+                "VISIBLE": {
+                  "wire": true,
+                  "dom": true
+                },
+                "INPUT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_INPUT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "PASSWORD": {
+                  "wire": false,
+                  "dom": false
+                },
+                "DATASET": {
+                  "wire": false,
+                  "dom": false
+                },
+                "INLINE_CSS": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HIDDEN_TEXT": {
+                  "wire": true,
+                  "dom": true
+                },
+                "HTML_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "BODY_ATTR": {
+                  "wire": false,
+                  "dom": false
+                },
+                "RESOURCE_URL": {
+                  "wire": true,
+                  "dom": true
+                },
+                "JS_GLOBAL": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COOKIE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "STORAGE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "SCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "TEMPLATE": {
+                  "wire": false,
+                  "dom": false
+                },
+                "NOSCRIPT": {
+                  "wire": false,
+                  "dom": false
+                },
+                "COMMENT": {
+                  "wire": false,
+                  "dom": false
+                }
+              },
+              "wireMessages": 4,
+              "extra": {
+                "unusedCss": true,
+                "fontUrl": true
+              }
+            }
+          ],
+          "resources": [
+            {
+              "route": "image.png",
+              "status": 200,
+              "body": "�PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0018\u0000\u0000\u0000\u0018\b\u0002\u0000\u0000\u0000o\u0015��\u0000\u0000\u0000\tpHYs\u0000\u0000\u0003�\u0000\u0000\u0003�\u0001�{Rk\u0000\u0000\u0000(IDAT8�c``�O%�0j���0�?��\u0018F�\b�h1�0ZB2\f\\-\u0002\u0000��=�\u001a�\\�\u0000\u0000\u0000\u0000IEND�B`�DM_TEST_PNG_TRAILER_END"
+            },
+            {
+              "route": "image.svg",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "fixture.css",
+              "status": 200,
+              "body": ".unused::before { content: \"DM_TEST_CSS_UNUSED_END\"; }\n[data-theme=\"fixture-theme\"]{border-left:3px solid blue}\n@font-face{font-family:UnusedFixture;src:url(\"/font.woff2?hint=DM_TEST_FONT_URL_END\")}"
+            },
+            {
+              "route": "opaque.png",
+              "status": 200,
+              "body": "DM_TEST_OPAQUE_RESOURCE_END"
+            },
+            {
+              "route": "private.json",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "json.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "html.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "redirect.png",
+              "status": 403,
+              "body": "asset allowlist"
+            },
+            {
+              "route": "//outside.invalid/test.png",
+              "status": 403,
+              "body": "asset allowlist"
+            }
+          ],
+          "inputRoundTrip": true,
+          "publicAttribute": {
+            "theme": "fixture-theme",
+            "border": "3px"
+          },
+          "clientStorage": {
+            "cookie": "",
+            "storage": null,
+            "runtime": null
+          },
+          "pass": true
+        }
+      ],
+      "sourceEvents": [
+        {
+          "case": "direct",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "direct",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "dom",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "dom",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "frame",
+          "phase": "UPDATED",
+          "hidden": "DM_TEST_UPDATED_HIDDEN_INPUT_END"
+        },
+        {
+          "case": "frame",
+          "phase": "PATCHED",
+          "hidden": "DM_TEST_PATCHED_HIDDEN_INPUT_END"
+        }
+      ]
+    }
+  },
+  "negativeControl": {
+    "expectedExitCode": 1,
+    "actualExitCode": 1
+  }
+}

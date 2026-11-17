@@ -1,0 +1,3054 @@
+{
+  "plan": {
+    "groups": [
+      "default"
+    ],
+    "cycles": 30,
+    "sessions": 3,
+    "operationsPerSessionPerCycle": 10,
+    "periodMs": 1000,
+    "sessionGraceMs": 3000,
+    "postReclaimIdleMs": 3000,
+    "limits": {
+      "mirrorCpus": 2,
+      "mirrorMemoryMiB": 2048,
+      "loadCpus": 4,
+      "loadMemoryMiB": 4096
+    },
+    "fixture": "tools/fixtures/capacity.html",
+    "nodeExposeGcInAllGroups": true,
+    "gc": "Only gc/gc-cache-off: two full diagnostic calls after postIdle checkpoint, each followed by setImmediate",
+    "cache": "Only cache-off/gc-cache-off: sharp.cache(false) before createMirror; process-local",
+    "gates": [
+      "Every source session receives exactly indices 0..9 and renders all markers",
+      "All tracked Chromium main processes disappear before next cycle",
+      "OOM kill delta zero",
+      "Stop a group on functional failure or OOM"
+    ],
+    "interpretation": [
+      "Original 64MiB / 3-second capacity criterion stays unchanged; diagnostics cannot count as a production pass",
+      "10 cycles establish bounded observations only, not a proof of no long-term leak",
+      "No test code may retain Browser/Page/ChildProcess objects in the mirror process"
+    ],
+    "nativeProbe": true,
+    "glibc": "2.36",
+    "hostEnvironment": {
+      "MALLOC_ARENA_MAX": "2",
+      "VIPS_CONCURRENCY": "1",
+      "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+      "MALLOC_CONF": "narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000"
+    },
+    "sharpConcurrency": 1,
+    "finalDiagnostics": [
+      "15 seconds idle",
+      "two full GC calls",
+      "3 seconds idle"
+    ],
+    "budget": {
+      "postCleanupAnonGrowthMiB": 64
+    },
+    "scope": "One 30-cycle jemalloc host-profile follow-up; terminal GC excluded from normal memory budgets",
+    "nativeStatsLimit": "malloc_info totals cover glibc arenas; system/free/in-use estimate are allocator accounting, not resident bytes or call-site attribution; tcache is not separately exposed",
+    "allocator": "jemalloc",
+    "finalTrim": false,
+    "sourceHashes": {
+      "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+      "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+      "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+      "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+      "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+      "tools/memory-host.cjs": "4aa6373270f1acd1860c5768f33509c7b6a5f58393d1b7db60a1fcf0147fcb61",
+      "tools/memory-client.cjs": "94466370f5c29ce25edcba3ab0fdbba41bafbb3554d08d70cefe8c9044febd3a",
+      "tools/verify-docker-memory.sh": "a6d5fc9f4faa65e47cc65cbf6376108e7b98155c6918bdaf5e0e6956c7b6894b",
+      "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed"
+    }
+  },
+  "groups": [
+    {
+      "group": "default",
+      "complete": true,
+      "baseline": {
+        "anonMiB": 35.21484375,
+        "rssMiB": 89.15234375,
+        "heapMiB": 14.006446838378906,
+        "heapTotalMiB": 31.1796875,
+        "externalMiB": 4.140305519104004,
+        "arrayBuffersMiB": 0.2649374008178711,
+        "native": {
+          "mallocSymbolImage": "node",
+          "implementation": "jemalloc",
+          "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+          "allocatedMiB": 9.257881164550781,
+          "activeMiB": 10.3984375,
+          "residentMiB": 14.90234375,
+          "mappedMiB": 24.69140625,
+          "retainedMiB": 6.30859375
+        }
+      },
+      "cycles": [
+        {
+          "cycle": 1,
+          "anonMiB": 74.87890625,
+          "anonGrowthMiB": 39.6640625,
+          "rssMiB": 129.47265625,
+          "rssAnonMiB": 74.4921875,
+          "heapMiB": 26.796905517578125,
+          "heapTotalMiB": 56.46875,
+          "externalMiB": 23.2850980758667,
+          "arrayBuffersMiB": 6.287572860717773,
+          "interventionReleased": {
+            "heapMiB": -0.10894775390625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.12109375
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 33.413856506347656,
+            "activeMiB": 35.6015625,
+            "residentMiB": 40.90625,
+            "mappedMiB": 50.296875,
+            "retainedMiB": 86.203125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 2,
+          "anonMiB": 80.5546875,
+          "anonGrowthMiB": 45.33984375,
+          "rssMiB": 135.14453125,
+          "rssAnonMiB": 80.12890625,
+          "heapMiB": 25.651412963867188,
+          "heapTotalMiB": 55.76171875,
+          "externalMiB": 22.73669719696045,
+          "arrayBuffersMiB": 5.739171981811523,
+          "interventionReleased": {
+            "heapMiB": -0.1090087890625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.38916778564453,
+            "activeMiB": 34.640625,
+            "residentMiB": 39.2578125,
+            "mappedMiB": 48.6796875,
+            "retainedMiB": 103.8203125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 3,
+          "anonMiB": 83.32421875,
+          "anonGrowthMiB": 48.109375,
+          "rssMiB": 137.7109375,
+          "rssAnonMiB": 82.8984375,
+          "heapMiB": 27.09326934814453,
+          "heapTotalMiB": 88.46875,
+          "externalMiB": 23.362950325012207,
+          "arrayBuffersMiB": 6.365425109863281,
+          "interventionReleased": {
+            "heapMiB": -0.10901641845703125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.015625
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 33.6846923828125,
+            "activeMiB": 35.9453125,
+            "residentMiB": 40.56640625,
+            "mappedMiB": 49.9453125,
+            "retainedMiB": 102.5546875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 4,
+          "anonMiB": 80.32421875,
+          "anonGrowthMiB": 45.109375,
+          "rssMiB": 134.8125,
+          "rssAnonMiB": 79.8984375,
+          "heapMiB": 21.907028198242188,
+          "heapTotalMiB": 84.96484375,
+          "externalMiB": 19.41553497314453,
+          "arrayBuffersMiB": 2.4180097579956055,
+          "interventionReleased": {
+            "heapMiB": -0.10642242431640625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 29.37677764892578,
+            "activeMiB": 31.4140625,
+            "residentMiB": 36.2578125,
+            "mappedMiB": 45.703125,
+            "retainedMiB": 106.796875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 5,
+          "anonMiB": 96.5546875,
+          "anonGrowthMiB": 61.33984375,
+          "rssMiB": 150.90234375,
+          "rssAnonMiB": 96.12890625,
+          "heapMiB": 27.369956970214844,
+          "heapTotalMiB": 89.08984375,
+          "externalMiB": 23.08213520050049,
+          "arrayBuffersMiB": 6.083505630493164,
+          "interventionReleased": {
+            "heapMiB": -0.105804443359375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.756004333496094,
+            "activeMiB": 35.1640625,
+            "residentMiB": 40.06640625,
+            "mappedMiB": 49.4453125,
+            "retainedMiB": 117.0546875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 6,
+          "anonMiB": 96.71875,
+          "anonGrowthMiB": 61.50390625,
+          "rssMiB": 151.12109375,
+          "rssAnonMiB": 96.29296875,
+          "heapMiB": 27.369384765625,
+          "heapTotalMiB": 88.9140625,
+          "externalMiB": 23.122753143310547,
+          "arrayBuffersMiB": 6.125227928161621,
+          "interventionReleased": {
+            "heapMiB": -0.10553741455078125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.00390625
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 33.36548614501953,
+            "activeMiB": 35.703125,
+            "residentMiB": 40.32421875,
+            "mappedMiB": 49.703125,
+            "retainedMiB": 116.796875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 7,
+          "anonMiB": 96.87890625,
+          "anonGrowthMiB": 61.6640625,
+          "rssMiB": 151.66796875,
+          "rssAnonMiB": 96.453125,
+          "heapMiB": 27.625991821289062,
+          "heapTotalMiB": 90.1640625,
+          "externalMiB": 23.05984401702881,
+          "arrayBuffersMiB": 6.062318801879883,
+          "interventionReleased": {
+            "heapMiB": -0.10547637939453125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.0078125
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 33.41442108154297,
+            "activeMiB": 35.62109375,
+            "residentMiB": 40.2421875,
+            "mappedMiB": 49.62109375,
+            "retainedMiB": 116.87890625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 8,
+          "anonMiB": 97.578125,
+          "anonGrowthMiB": 62.36328125,
+          "rssMiB": 151.8515625,
+          "rssAnonMiB": 97.15234375,
+          "heapMiB": 27.64305877685547,
+          "heapTotalMiB": 89.9140625,
+          "externalMiB": 23.061256408691406,
+          "arrayBuffersMiB": 6.0637311935424805,
+          "interventionReleased": {
+            "heapMiB": -0.1057281494140625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 33.516197204589844,
+            "activeMiB": 35.69140625,
+            "residentMiB": 40.3125,
+            "mappedMiB": 49.69140625,
+            "retainedMiB": 116.80859375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 9,
+          "anonMiB": 88.86328125,
+          "anonGrowthMiB": 53.6484375,
+          "rssMiB": 143.84375,
+          "rssAnonMiB": 88.4375,
+          "heapMiB": 18.430221557617188,
+          "heapTotalMiB": 25.55078125,
+          "externalMiB": 18.040884971618652,
+          "arrayBuffersMiB": 1.0390262603759766,
+          "interventionReleased": {
+            "heapMiB": -0.105438232421875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 27.79088592529297,
+            "activeMiB": 30.08984375,
+            "residentMiB": 34.7109375,
+            "mappedMiB": 44.08984375,
+            "retainedMiB": 122.41015625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 10,
+          "anonMiB": 97.5390625,
+          "anonGrowthMiB": 62.32421875,
+          "rssMiB": 151.44921875,
+          "rssAnonMiB": 97.11328125,
+          "heapMiB": 27.94219970703125,
+          "heapTotalMiB": 41.4140625,
+          "externalMiB": 23.05767250061035,
+          "arrayBuffersMiB": 6.060147285461426,
+          "interventionReleased": {
+            "heapMiB": -0.10546875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.015625
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.63355255126953,
+            "activeMiB": 34.94140625,
+            "residentMiB": 39.5625,
+            "mappedMiB": 48.94140625,
+            "retainedMiB": 117.55859375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 11,
+          "anonMiB": 98.02734375,
+          "anonGrowthMiB": 62.8125,
+          "rssMiB": 152.63671875,
+          "rssAnonMiB": 97.6015625,
+          "heapMiB": 28.46936798095703,
+          "heapTotalMiB": 42.21875,
+          "externalMiB": 23.36353302001953,
+          "arrayBuffersMiB": 6.3660078048706055,
+          "interventionReleased": {
+            "heapMiB": -0.1055145263671875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.66673278808594,
+            "activeMiB": 34.7734375,
+            "residentMiB": 39.39453125,
+            "mappedMiB": 48.7734375,
+            "retainedMiB": 117.7265625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 12,
+          "anonMiB": 89.265625,
+          "anonGrowthMiB": 54.05078125,
+          "rssMiB": 143.859375,
+          "rssAnonMiB": 88.83984375,
+          "heapMiB": 18.514976501464844,
+          "heapTotalMiB": 25.55078125,
+          "externalMiB": 18.1009464263916,
+          "arrayBuffersMiB": 1.0389032363891602,
+          "interventionReleased": {
+            "heapMiB": -0.10547637939453125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 27.9307861328125,
+            "activeMiB": 30.2734375,
+            "residentMiB": 34.89453125,
+            "mappedMiB": 44.2734375,
+            "retainedMiB": 122.2265625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 13,
+          "anonMiB": 89.7734375,
+          "anonGrowthMiB": 54.55859375,
+          "rssMiB": 144.3125,
+          "rssAnonMiB": 89.34765625,
+          "heapMiB": 19.045005798339844,
+          "heapTotalMiB": 29.34375,
+          "externalMiB": 18.038955688476562,
+          "arrayBuffersMiB": 1.0414304733276367,
+          "interventionReleased": {
+            "heapMiB": -0.10765838623046875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 28.445838928222656,
+            "activeMiB": 30.8203125,
+            "residentMiB": 35.44140625,
+            "mappedMiB": 44.8203125,
+            "retainedMiB": 121.6796875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 14,
+          "anonMiB": 93.7578125,
+          "anonGrowthMiB": 58.54296875,
+          "rssMiB": 147.88671875,
+          "rssAnonMiB": 93.33203125,
+          "heapMiB": 17.389930725097656,
+          "heapTotalMiB": 22.38671875,
+          "externalMiB": 23.04918098449707,
+          "arrayBuffersMiB": 1.039724349975586,
+          "interventionReleased": {
+            "heapMiB": -0.10547637939453125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 28.2645263671875,
+            "activeMiB": 30.56640625,
+            "residentMiB": 40.015625,
+            "mappedMiB": 49.39453125,
+            "retainedMiB": 117.10546875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 15,
+          "anonMiB": 90.23046875,
+          "anonGrowthMiB": 55.015625,
+          "rssMiB": 144.69921875,
+          "rssAnonMiB": 89.8046875,
+          "heapMiB": 18.90997314453125,
+          "heapTotalMiB": 29.34375,
+          "externalMiB": 19.41397476196289,
+          "arrayBuffersMiB": 1.0389881134033203,
+          "interventionReleased": {
+            "heapMiB": -0.10768890380859375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 28.938644409179688,
+            "activeMiB": 31.2890625,
+            "residentMiB": 35.98046875,
+            "mappedMiB": 45.359375,
+            "retainedMiB": 121.140625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 16,
+          "anonMiB": 99.1796875,
+          "anonGrowthMiB": 63.96484375,
+          "rssMiB": 153.15625,
+          "rssAnonMiB": 98.75390625,
+          "heapMiB": 28.66826629638672,
+          "heapTotalMiB": 42.31640625,
+          "externalMiB": 23.05516242980957,
+          "arrayBuffersMiB": 6.056532859802246,
+          "interventionReleased": {
+            "heapMiB": -0.10774993896484375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.82569122314453,
+            "activeMiB": 35.140625,
+            "residentMiB": 39.76171875,
+            "mappedMiB": 49.140625,
+            "retainedMiB": 117.359375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 17,
+          "anonMiB": 93.22265625,
+          "anonGrowthMiB": 58.0078125,
+          "rssMiB": 147.3828125,
+          "rssAnonMiB": 92.796875,
+          "heapMiB": 24.235260009765625,
+          "heapTotalMiB": 56.0234375,
+          "externalMiB": 19.721598625183105,
+          "arrayBuffersMiB": 2.7240734100341797,
+          "interventionReleased": {
+            "heapMiB": -0.107696533203125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 29.634368896484375,
+            "activeMiB": 31.9609375,
+            "residentMiB": 36.58203125,
+            "mappedMiB": 45.9609375,
+            "retainedMiB": 120.5390625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 18,
+          "anonMiB": 103.66015625,
+          "anonGrowthMiB": 68.4453125,
+          "rssMiB": 158.203125,
+          "rssAnonMiB": 103.2734375,
+          "heapMiB": 29.425209045410156,
+          "heapTotalMiB": 59.4140625,
+          "externalMiB": 23.06547260284424,
+          "arrayBuffersMiB": 6.0679473876953125,
+          "interventionReleased": {
+            "heapMiB": -0.1077117919921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.1015625
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.58299255371094,
+            "activeMiB": 34.6640625,
+            "residentMiB": 39.2890625,
+            "mappedMiB": 48.6640625,
+            "retainedMiB": 117.8359375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 19,
+          "anonMiB": 109.15234375,
+          "anonGrowthMiB": 73.9375,
+          "rssMiB": 163.85546875,
+          "rssAnonMiB": 108.7265625,
+          "heapMiB": 29.592567443847656,
+          "heapTotalMiB": 59.1640625,
+          "externalMiB": 23.061674118041992,
+          "arrayBuffersMiB": 6.064148902893066,
+          "interventionReleased": {
+            "heapMiB": -0.1077117919921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 31.982467651367188,
+            "activeMiB": 34.15234375,
+            "residentMiB": 38.77734375,
+            "mappedMiB": 48.15234375,
+            "retainedMiB": 118.34765625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 20,
+          "anonMiB": 106.4375,
+          "anonGrowthMiB": 71.22265625,
+          "rssMiB": 161.015625,
+          "rssAnonMiB": 106.01171875,
+          "heapMiB": 24.637916564941406,
+          "heapTotalMiB": 88.26953125,
+          "externalMiB": 19.78299617767334,
+          "arrayBuffersMiB": 2.785470962524414,
+          "interventionReleased": {
+            "heapMiB": -0.1077117919921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 29.892959594726562,
+            "activeMiB": 32.2421875,
+            "residentMiB": 36.8671875,
+            "mappedMiB": 46.2421875,
+            "retainedMiB": 120.2578125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 21,
+          "anonMiB": 111.421875,
+          "anonGrowthMiB": 76.20703125,
+          "rssMiB": 166.05859375,
+          "rssAnonMiB": 110.99609375,
+          "heapMiB": 29.899551391601562,
+          "heapTotalMiB": 91.42578125,
+          "externalMiB": 23.059178352355957,
+          "arrayBuffersMiB": 6.061653137207031,
+          "interventionReleased": {
+            "heapMiB": -0.10773468017578125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 31.843109130859375,
+            "activeMiB": 33.84765625,
+            "residentMiB": 38.47265625,
+            "mappedMiB": 47.84765625,
+            "retainedMiB": 118.65234375
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 22,
+          "anonMiB": 112.58203125,
+          "anonGrowthMiB": 77.3671875,
+          "rssMiB": 167.01953125,
+          "rssAnonMiB": 112.15625,
+          "heapMiB": 30.05084991455078,
+          "heapTotalMiB": 91.6640625,
+          "externalMiB": 23.05211067199707,
+          "arrayBuffersMiB": 6.0545854568481445,
+          "interventionReleased": {
+            "heapMiB": -0.10772705078125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.792503356933594,
+            "activeMiB": 34.96484375,
+            "residentMiB": 39.58984375,
+            "mappedMiB": 48.96484375,
+            "retainedMiB": 117.53515625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 23,
+          "anonMiB": 115.54296875,
+          "anonGrowthMiB": 80.328125,
+          "rssMiB": 169.5,
+          "rssAnonMiB": 115.1171875,
+          "heapMiB": 30.148590087890625,
+          "heapTotalMiB": 91.9140625,
+          "externalMiB": 23.063976287841797,
+          "arrayBuffersMiB": 6.066451072692871,
+          "interventionReleased": {
+            "heapMiB": -0.10772705078125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.0078125
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.620643615722656,
+            "activeMiB": 34.9921875,
+            "residentMiB": 39.6171875,
+            "mappedMiB": 48.9921875,
+            "retainedMiB": 117.5078125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 24,
+          "anonMiB": 115.65234375,
+          "anonGrowthMiB": 80.4375,
+          "rssMiB": 170.23828125,
+          "rssAnonMiB": 115.2265625,
+          "heapMiB": 30.53569793701172,
+          "heapTotalMiB": 91.9140625,
+          "externalMiB": 23.055962562561035,
+          "arrayBuffersMiB": 6.058437347412109,
+          "interventionReleased": {
+            "heapMiB": -0.1068267822265625,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.23100280761719,
+            "activeMiB": 34.45703125,
+            "residentMiB": 39.08203125,
+            "mappedMiB": 48.45703125,
+            "retainedMiB": 118.04296875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 25,
+          "anonMiB": 115.48828125,
+          "anonGrowthMiB": 80.2734375,
+          "rssMiB": 170.61328125,
+          "rssAnonMiB": 115.0625,
+          "heapMiB": 30.56639862060547,
+          "heapTotalMiB": 91.9140625,
+          "externalMiB": 23.04923725128174,
+          "arrayBuffersMiB": 6.0517120361328125,
+          "interventionReleased": {
+            "heapMiB": -0.1067352294921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.600135803222656,
+            "activeMiB": 34.921875,
+            "residentMiB": 39.546875,
+            "mappedMiB": 48.921875,
+            "retainedMiB": 117.578125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 26,
+          "anonMiB": 116.21875,
+          "anonGrowthMiB": 81.00390625,
+          "rssMiB": 170.23046875,
+          "rssAnonMiB": 115.79296875,
+          "heapMiB": 31.161239624023438,
+          "heapTotalMiB": 91.96875,
+          "externalMiB": 23.364201545715332,
+          "arrayBuffersMiB": 6.366676330566406,
+          "interventionReleased": {
+            "heapMiB": -0.10675811767578125,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.511474609375,
+            "activeMiB": 34.86328125,
+            "residentMiB": 39.48828125,
+            "mappedMiB": 48.86328125,
+            "retainedMiB": 117.63671875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 27,
+          "anonMiB": 117.5078125,
+          "anonGrowthMiB": 82.29296875,
+          "rssMiB": 171.72265625,
+          "rssAnonMiB": 117.08203125,
+          "heapMiB": 31.332321166992188,
+          "heapTotalMiB": 92.96875,
+          "externalMiB": 23.361316680908203,
+          "arrayBuffersMiB": 6.363791465759277,
+          "interventionReleased": {
+            "heapMiB": -0.1067352294921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 33.59580993652344,
+            "activeMiB": 35.9140625,
+            "residentMiB": 40.5390625,
+            "mappedMiB": 50.04296875,
+            "retainedMiB": 116.45703125
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 28,
+          "anonMiB": 117.6171875,
+          "anonGrowthMiB": 82.40234375,
+          "rssMiB": 171.59375,
+          "rssAnonMiB": 117.19140625,
+          "heapMiB": 31.046653747558594,
+          "heapTotalMiB": 92.4140625,
+          "externalMiB": 23.05449390411377,
+          "arrayBuffersMiB": 6.056968688964844,
+          "interventionReleased": {
+            "heapMiB": -0.10671234130859375,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.237396240234375,
+            "activeMiB": 34.3125,
+            "residentMiB": 38.9375,
+            "mappedMiB": 48.3125,
+            "retainedMiB": 118.1875
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 29,
+          "anonMiB": 118.3125,
+          "anonGrowthMiB": 83.09765625,
+          "rssMiB": 172.8671875,
+          "rssAnonMiB": 117.88671875,
+          "heapMiB": 31.294944763183594,
+          "heapTotalMiB": 92.81640625,
+          "externalMiB": 23.048550605773926,
+          "arrayBuffersMiB": 6.049921035766602,
+          "interventionReleased": {
+            "heapMiB": -0.1067352294921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": -0.00390625
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 32.61613464355469,
+            "activeMiB": 34.859375,
+            "residentMiB": 39.484375,
+            "mappedMiB": 48.859375,
+            "retainedMiB": 117.640625
+          },
+          "browsersGone": true
+        },
+        {
+          "cycle": 30,
+          "anonMiB": 113.38671875,
+          "anonGrowthMiB": 78.171875,
+          "rssMiB": 167.91796875,
+          "rssAnonMiB": 112.9609375,
+          "heapMiB": 26.844322204589844,
+          "heapTotalMiB": 90.62890625,
+          "externalMiB": 20.39241600036621,
+          "arrayBuffersMiB": 3.394890785217285,
+          "interventionReleased": {
+            "heapMiB": -0.1067352294921875,
+            "externalMiB": 0,
+            "arrayBuffersMiB": 0,
+            "anonMiB": 0
+          },
+          "sharpCache": {
+            "memory": {
+              "current": 0,
+              "high": 6,
+              "max": 50
+            },
+            "files": {
+              "current": 0,
+              "max": 20
+            },
+            "items": {
+              "current": 100,
+              "max": 100
+            }
+          },
+          "sharpCounters": {
+            "queue": 0,
+            "process": 0
+          },
+          "native": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocatedMiB": 29.45916748046875,
+            "activeMiB": 31.48046875,
+            "residentMiB": 36.10546875,
+            "mappedMiB": 45.48046875,
+            "retainedMiB": 121.01953125
+          },
+          "browsersGone": true
+        }
+      ],
+      "lastFiveAnonSlopeMiBPerCycle": -0.4859375,
+      "lastFiveAnonSpanMiB": 4.92578125,
+      "lastTenAnonSlopeMiBPerCycle": 0.4513020833333333,
+      "lastTenAnonSpanMiB": 6.890625,
+      "normalCleanupBudget": {
+        "limitMiB": 64,
+        "passingCycles": 17,
+        "allWithinBudget": false
+      },
+      "forcedGcCalls": 0,
+      "gcEvents": 1891,
+      "maxGcPauseMs": 70.8538910150528,
+      "peakCgroupMiB": 892.48828125,
+      "oomKillDelta": 0,
+      "operations": 900,
+      "sourceReceipts": 900,
+      "hashes": {
+        "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+        "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+        "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+        "tools/fixtures/capacity.html": "b314862837def716920ae588104d507278f38eb28227f050cbcda5958ffdc6e6",
+        "tools/profile-client.cjs": "1fe6cac6cbfc06028a68e841c00a8d3f6c6ef6de315761eeaf2671a95d56d0e8",
+        "tools/memory-host.cjs": "4aa6373270f1acd1860c5768f33509c7b6a5f58393d1b7db60a1fcf0147fcb61",
+        "tools/memory-client.cjs": "94466370f5c29ce25edcba3ab0fdbba41bafbb3554d08d70cefe8c9044febd3a",
+        "tools/verify-docker-memory.sh": "a6d5fc9f4faa65e47cc65cbf6376108e7b98155c6918bdaf5e0e6956c7b6894b",
+        "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed"
+      },
+      "image": "sha256:ecf2353f445532de577f9fb0b0f9547231d7715a518f397c66aaec0f3058576c",
+      "sharpConcurrency": 1,
+      "sharpVersions": {
+        "aom": "3.15.1",
+        "archive": "3.8.9",
+        "cairo": "1.18.6",
+        "cgif": "0.5.4",
+        "exif": "0.6.26",
+        "expat": "2.8.5",
+        "ffi": "3.8.0",
+        "fontconfig": "2.18.3",
+        "freetype": "2.14.3",
+        "fribidi": "1.0.17",
+        "glib": "2.90.0",
+        "harfbuzz": "14.5.0",
+        "heif": "1.23.5",
+        "highway": "1.4.0",
+        "imagequant": "2.4.1",
+        "lcms": "2.19.1",
+        "mozjpeg": "0826579",
+        "pango": "1.58.2",
+        "pixman": "0.46.4",
+        "png": "1.6.58",
+        "proxy-libintl": "0.5",
+        "rsvg": "2.63.2",
+        "tiff": "4.7.2",
+        "uhdr": "2.0.2",
+        "vips": "8.18.7",
+        "webp": "1.6.0",
+        "xml2": "2.15.4",
+        "zlib-ng": "2.3.3",
+        "sharp": "0.35.5"
+      },
+      "nativeProbe": {
+        "glibc": "2.36",
+        "env": {
+          "MALLOC_ARENA_MAX": "2",
+          "VIPS_CONCURRENCY": "1",
+          "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+          "MALLOC_CONF": "narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000"
+        },
+        "allocator": {
+          "mallocSymbolImage": "node",
+          "implementation": "jemalloc",
+          "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+          "allocated": 11391072,
+          "active": 13803520,
+          "resident": 20086784,
+          "mapped": 29917184,
+          "retained": 144670720
+        },
+        "binarySha256": "8f31068400d433a1c0131bebe14ade03118cadb251cedb1bc3f519dc5b364845"
+      },
+      "finalGcCalls": 2,
+      "trimCalls": 0,
+      "durationMs": 569728.6999690001,
+      "finalDiagnostics": [
+        {
+          "phase": "finalIdle",
+          "cycle": 30,
+          "trimReleased": null,
+          "gcEventsDuringCheckpoint": 0,
+          "before": {
+            "anonMiB": 114.1953125,
+            "externalMiB": 21.494348526000977,
+            "heapMiB": 32.270477294921875,
+            "heapTotalMiB": 90.62890625,
+            "arrayBuffersMiB": 4.496823310852051,
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 30.2509765625,
+              "activeMiB": 32.5546875,
+              "residentMiB": 37.1796875,
+              "mappedMiB": 46.5546875,
+              "retainedMiB": 119.9453125
+            }
+          },
+          "after": {
+            "anonMiB": 114.1953125,
+            "externalMiB": 21.494348526000977,
+            "heapMiB": 32.37445068359375,
+            "heapTotalMiB": 90.62890625,
+            "arrayBuffersMiB": 4.496823310852051,
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 30.2509765625,
+              "activeMiB": 32.5546875,
+              "residentMiB": 37.1796875,
+              "mappedMiB": 46.5546875,
+              "retainedMiB": 119.9453125
+            }
+          }
+        },
+        {
+          "phase": "finalGc",
+          "cycle": 30,
+          "trimReleased": null,
+          "gcEventsDuringCheckpoint": 2,
+          "before": {
+            "anonMiB": 114.2109375,
+            "externalMiB": 21.494348526000977,
+            "heapMiB": 32.555267333984375,
+            "heapTotalMiB": 90.62890625,
+            "arrayBuffersMiB": 4.496823310852051,
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 30.2509765625,
+              "activeMiB": 32.5546875,
+              "residentMiB": 37.23046875,
+              "mappedMiB": 46.60546875,
+              "retainedMiB": 119.89453125
+            }
+          },
+          "after": {
+            "anonMiB": 111.01171875,
+            "externalMiB": 4.336681365966797,
+            "heapMiB": 17.39672088623047,
+            "heapTotalMiB": 26.4296875,
+            "arrayBuffersMiB": 0.5227499008178711,
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 10.952995300292969,
+              "activeMiB": 13.19921875,
+              "residentMiB": 37.21875,
+              "mappedMiB": 46.59375,
+              "retainedMiB": 119.90625
+            }
+          }
+        },
+        {
+          "phase": "finalSettled",
+          "cycle": 30,
+          "trimReleased": null,
+          "gcEventsDuringCheckpoint": 0,
+          "before": {
+            "anonMiB": 93.5390625,
+            "externalMiB": 4.336681365966797,
+            "heapMiB": 18.64771270751953,
+            "heapTotalMiB": 26.4296875,
+            "arrayBuffersMiB": 0.5227499008178711,
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 10.954093933105469,
+              "activeMiB": 13.19921875,
+              "residentMiB": 17.82421875,
+              "mappedMiB": 27.19921875,
+              "retainedMiB": 139.30078125
+            }
+          },
+          "after": {
+            "anonMiB": 93.5390625,
+            "externalMiB": 4.336681365966797,
+            "heapMiB": 18.753883361816406,
+            "heapTotalMiB": 26.4296875,
+            "arrayBuffersMiB": 0.5227499008178711,
+            "native": {
+              "mallocSymbolImage": "node",
+              "implementation": "jemalloc",
+              "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+              "allocatedMiB": 10.954093933105469,
+              "activeMiB": 13.19921875,
+              "residentMiB": 17.82421875,
+              "mappedMiB": 27.19921875,
+              "retainedMiB": 139.30078125
+            }
+          }
+        }
+      ],
+      "treatmentValid": true,
+      "sourceMatchesPlan": true,
+      "nativeTreatmentValid": true,
+      "receiptsValid": true
+    }
+  ],
+  "consistentSources": true,
+  "consistentImages": true,
+  "complete": true,
+  "preflight": {
+    "allocator": "jemalloc",
+    "passed": true,
+    "mapped": true,
+    "liveBufferBytes": 67108864,
+    "allocatedDelta": 67291712,
+    "before": {
+      "mallocSymbolImage": "node",
+      "implementation": "jemalloc",
+      "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+      "allocated": 3350976,
+      "active": 3760128,
+      "resident": 8753152,
+      "mapped": 18776064,
+      "retained": 2719744
+    },
+    "after": {
+      "mallocSymbolImage": "node",
+      "implementation": "jemalloc",
+      "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+      "allocated": 70642688,
+      "active": 71077888,
+      "resident": 76001280,
+      "mapped": 88027136,
+      "retained": 19451904
+    }
+  },
+  "mappingSnapshots": {
+    "baseline": {
+      "regions": 240,
+      "categories": {
+        "fileBacked": {
+          "rssMiB": 57.359375,
+          "anonMiB": 1.04296875,
+          "sizeMiB": 126.03125,
+          "count": 66
+        },
+        "unnamed": {
+          "rssMiB": 33.25390625,
+          "anonMiB": 33.25390625,
+          "sizeMiB": 547.69921875,
+          "count": 170
+        },
+        "unnamedExecutable": {
+          "rssMiB": 0.609375,
+          "anonMiB": 0.609375,
+          "sizeMiB": 511.75,
+          "count": 1
+        },
+        "mainStack": {
+          "rssMiB": 0.0703125,
+          "anonMiB": 0.0703125,
+          "sizeMiB": 0.12890625,
+          "count": 1
+        },
+        "namedOther": {
+          "rssMiB": 0.00390625,
+          "anonMiB": 0,
+          "sizeMiB": 0.0234375,
+          "count": 2
+        }
+      },
+      "rssMiB": 91.296875,
+      "anonMiB": 34.9765625,
+      "topAnonymous": [
+        {
+          "address": "767a65a70000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 3,
+          "Rss": 2.84765625,
+          "Private_Dirty": 2.77734375,
+          "Anonymous": 2.84765625
+        },
+        {
+          "address": "767a85d70000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 2.5,
+          "Rss": 2.2109375,
+          "Private_Dirty": 2.14453125,
+          "Anonymous": 2.2109375
+        },
+        {
+          "address": "767aa1e00000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 8,
+          "Rss": 2.1796875,
+          "Private_Dirty": 2.1796875,
+          "Anonymous": 2.1796875
+        },
+        {
+          "address": "767a65080000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 9.5,
+          "Rss": 2.04296875,
+          "Private_Dirty": 1.92578125,
+          "Anonymous": 2.04296875
+        },
+        {
+          "address": "767aa0800000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 4,
+          "Rss": 1.265625,
+          "Private_Dirty": 1.265625,
+          "Anonymous": 1.265625
+        },
+        {
+          "address": "767aa0cef000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 9.0625,
+          "Rss": 1.01953125,
+          "Private_Dirty": 1.01953125,
+          "Anonymous": 1.01953125
+        },
+        {
+          "address": "767a62573000",
+          "permissions": "r--p",
+          "name": "/app/node_modules/@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.18.7",
+          "Size": 0.6875,
+          "Rss": 0.67578125,
+          "Private_Dirty": 0.67578125,
+          "Anonymous": 0.67578125
+        },
+        {
+          "address": "767a65d80000",
+          "permissions": "rwxp",
+          "name": "(unnamed)",
+          "Size": 511.75,
+          "Rss": 0.609375,
+          "Private_Dirty": 0.609375,
+          "Anonymous": 0.609375
+        },
+        {
+          "address": "1e8f4cc80000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 0.25390625,
+          "Rss": 0.25390625,
+          "Private_Dirty": 0.25390625,
+          "Anonymous": 0.25390625
+        },
+        {
+          "address": "7d69100000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 0.25,
+          "Rss": 0.25,
+          "Private_Dirty": 0.25,
+          "Anonymous": 0.25
+        },
+        {
+          "address": "fdfe240000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 0.25,
+          "Rss": 0.25,
+          "Private_Dirty": 0.25,
+          "Anonymous": 0.25
+        },
+        {
+          "address": "1c219200000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 0.25,
+          "Rss": 0.25,
+          "Private_Dirty": 0.25,
+          "Anonymous": 0.25
+        }
+      ]
+    },
+    "postIdle": {
+      "regions": 505,
+      "categories": {
+        "fileBacked": {
+          "rssMiB": 58.33984375,
+          "anonMiB": 1.04296875,
+          "sizeMiB": 126.03125,
+          "count": 66
+        },
+        "unnamed": {
+          "rssMiB": 109.82421875,
+          "anonMiB": 109.82421875,
+          "sizeMiB": 813.93359375,
+          "count": 435
+        },
+        "unnamedExecutable": {
+          "rssMiB": 2.59375,
+          "anonMiB": 2.59375,
+          "sizeMiB": 511.75,
+          "count": 1
+        },
+        "mainStack": {
+          "rssMiB": 0.0703125,
+          "anonMiB": 0.0703125,
+          "sizeMiB": 0.12890625,
+          "count": 1
+        },
+        "namedOther": {
+          "rssMiB": 0.00390625,
+          "anonMiB": 0,
+          "sizeMiB": 0.0234375,
+          "count": 2
+        }
+      },
+      "rssMiB": 170.83203125,
+      "anonMiB": 113.53125,
+      "topAnonymous": [
+        {
+          "address": "767a5c935000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 29,
+          "Rss": 8.89453125,
+          "Private_Dirty": 8.89453125,
+          "Anonymous": 8.89453125
+        },
+        {
+          "address": "767a58532000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 44,
+          "Rss": 4.3984375,
+          "Private_Dirty": 4.3984375,
+          "Anonymous": 4.3984375
+        },
+        {
+          "address": "767a60e38000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 6.5,
+          "Rss": 3.3984375,
+          "Private_Dirty": 3.390625,
+          "Anonymous": 3.3984375
+        },
+        {
+          "address": "767a65080000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 9.5,
+          "Rss": 2.95703125,
+          "Private_Dirty": 2.94921875,
+          "Anonymous": 2.95703125
+        },
+        {
+          "address": "767a5f637000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 16,
+          "Rss": 2.71484375,
+          "Private_Dirty": 2.7109375,
+          "Anonymous": 2.71484375
+        },
+        {
+          "address": "767a65d80000",
+          "permissions": "rwxp",
+          "name": "(unnamed)",
+          "Size": 511.75,
+          "Rss": 2.59375,
+          "Private_Dirty": 2.59375,
+          "Anonymous": 2.59375
+        },
+        {
+          "address": "767a65a70000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 3,
+          "Rss": 2.47265625,
+          "Private_Dirty": 2.47265625,
+          "Anonymous": 2.47265625
+        },
+        {
+          "address": "767aa1e00000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 8,
+          "Rss": 2.28125,
+          "Private_Dirty": 2.28125,
+          "Anonymous": 2.28125
+        },
+        {
+          "address": "767a85d70000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 2.5,
+          "Rss": 2.1484375,
+          "Private_Dirty": 2.1484375,
+          "Anonymous": 2.1484375
+        },
+        {
+          "address": "767aa0800000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 4,
+          "Rss": 1.375,
+          "Private_Dirty": 1.375,
+          "Anonymous": 1.375
+        },
+        {
+          "address": "767aa0cef000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 9.0625,
+          "Rss": 1.01953125,
+          "Private_Dirty": 1.01953125,
+          "Anonymous": 1.01953125
+        },
+        {
+          "address": "767a62573000",
+          "permissions": "r--p",
+          "name": "/app/node_modules/@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.18.7",
+          "Size": 0.6875,
+          "Rss": 0.67578125,
+          "Private_Dirty": 0.67578125,
+          "Anonymous": 0.67578125
+        }
+      ]
+    },
+    "finalSettled": {
+      "regions": 474,
+      "categories": {
+        "fileBacked": {
+          "rssMiB": 58.33984375,
+          "anonMiB": 1.04296875,
+          "sizeMiB": 126.03125,
+          "count": 66
+        },
+        "unnamed": {
+          "rssMiB": 89.9140625,
+          "anonMiB": 89.9140625,
+          "sizeMiB": 770.71484375,
+          "count": 404
+        },
+        "unnamedExecutable": {
+          "rssMiB": 2.59375,
+          "anonMiB": 2.59375,
+          "sizeMiB": 511.75,
+          "count": 1
+        },
+        "mainStack": {
+          "rssMiB": 0.0703125,
+          "anonMiB": 0.0703125,
+          "sizeMiB": 0.12890625,
+          "count": 1
+        },
+        "namedOther": {
+          "rssMiB": 0.00390625,
+          "anonMiB": 0,
+          "sizeMiB": 0.0234375,
+          "count": 2
+        }
+      },
+      "rssMiB": 150.921875,
+      "anonMiB": 93.62109375,
+      "topAnonymous": [
+        {
+          "address": "767a65080000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 9.5,
+          "Rss": 2.9453125,
+          "Private_Dirty": 2.9375,
+          "Anonymous": 2.9453125
+        },
+        {
+          "address": "767a65d80000",
+          "permissions": "rwxp",
+          "name": "(unnamed)",
+          "Size": 511.75,
+          "Rss": 2.59375,
+          "Private_Dirty": 2.59375,
+          "Anonymous": 2.59375
+        },
+        {
+          "address": "767a65a70000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 3,
+          "Rss": 2.453125,
+          "Private_Dirty": 2.453125,
+          "Anonymous": 2.453125
+        },
+        {
+          "address": "767aa1e00000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 8,
+          "Rss": 2.28125,
+          "Private_Dirty": 2.28125,
+          "Anonymous": 2.28125
+        },
+        {
+          "address": "767a85d70000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 2.5,
+          "Rss": 2.125,
+          "Private_Dirty": 2.125,
+          "Anonymous": 2.125
+        },
+        {
+          "address": "767a60e38000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 6.5,
+          "Rss": 1.5625,
+          "Private_Dirty": 1.5546875,
+          "Anonymous": 1.5625
+        },
+        {
+          "address": "767aa0800000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 4,
+          "Rss": 1.5546875,
+          "Private_Dirty": 1.5546875,
+          "Anonymous": 1.5546875
+        },
+        {
+          "address": "767a5f637000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 16,
+          "Rss": 1.14453125,
+          "Private_Dirty": 1.14453125,
+          "Anonymous": 1.14453125
+        },
+        {
+          "address": "767aa0cef000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 9.0625,
+          "Rss": 1.01953125,
+          "Private_Dirty": 1.01953125,
+          "Anonymous": 1.01953125
+        },
+        {
+          "address": "767a62573000",
+          "permissions": "r--p",
+          "name": "/app/node_modules/@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.18.7",
+          "Size": 0.6875,
+          "Rss": 0.67578125,
+          "Private_Dirty": 0.67578125,
+          "Anonymous": 0.67578125
+        },
+        {
+          "address": "1e8f4cc80000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 0.25390625,
+          "Rss": 0.25390625,
+          "Private_Dirty": 0.25390625,
+          "Anonymous": 0.25390625
+        },
+        {
+          "address": "5e8bf00000",
+          "permissions": "rw-p",
+          "name": "(unnamed)",
+          "Size": 0.25,
+          "Rss": 0.25,
+          "Private_Dirty": 0.25,
+          "Anonymous": 0.25
+        }
+      ]
+    }
+  },
+  "v8Snapshots": {
+    "baseline": {
+      "heap": {
+        "total_heap_size": 32694272,
+        "total_heap_size_executable": 1048576,
+        "total_physical_size": 23371776,
+        "total_available_size": 1158432640,
+        "used_heap_size": 14774208,
+        "heap_size_limit": 1174405120,
+        "malloced_memory": 540720,
+        "peak_malloced_memory": 1536000,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 16384,
+        "used_global_handles_size": 15776,
+        "external_memory": 4909984
+      },
+      "spaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 16777216,
+          "space_used_size": 1105176,
+          "space_available_size": 7282920,
+          "physical_space_size": 7229440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 12230656,
+          "space_used_size": 10597808,
+          "space_available_size": 439488,
+          "physical_space_size": 12320768
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 1048576,
+          "space_used_size": 616896,
+          "space_available_size": 431552,
+          "physical_space_size": 1048576
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 2224128,
+          "space_used_size": 2045720,
+          "space_available_size": 178264,
+          "physical_space_size": 2359296
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 8388608,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 413696,
+          "space_used_size": 409568,
+          "space_available_size": 0,
+          "physical_space_size": 413696
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        }
+      ],
+      "processStatus": {
+        "Name": null,
+        "Umask": 22,
+        "State": null,
+        "Tgid": 10,
+        "Ngid": 0,
+        "Pid": 10,
+        "PPid": 1,
+        "TracerPid": 0,
+        "Uid": 0,
+        "Gid": 0,
+        "FDSize": 64,
+        "Groups": 0,
+        "NStgid": 10,
+        "NSpid": 10,
+        "NSpgid": 1,
+        "NSsid": 1,
+        "Kthread": 0,
+        "VmPeak": 1214340,
+        "VmSize": 1214088,
+        "VmLck": 0,
+        "VmPin": 0,
+        "VmHWM": 93816,
+        "VmRSS": 93816,
+        "RssAnon": 36144,
+        "RssFile": 57672,
+        "RssShmem": 0,
+        "VmData": 691636,
+        "VmStk": 132,
+        "VmExe": 43756,
+        "VmLib": 14540,
+        "VmPTE": 1652,
+        "VmSwap": 0,
+        "HugetlbPages": 0,
+        "CoreDumping": 0,
+        "THP_enabled": 1,
+        "untag_mask": 18446744073709552000,
+        "Threads": 13,
+        "SigQ": null,
+        "SigPnd": 0,
+        "ShdPnd": 0,
+        "SigBlk": 0,
+        "SigIgn": 1001000,
+        "SigCgt": 100004602,
+        "CapInh": 0,
+        "CapPrm": null,
+        "CapEff": null,
+        "CapBnd": null,
+        "CapAmb": 0,
+        "NoNewPrivs": 0,
+        "Seccomp": 2,
+        "Seccomp_filters": 1,
+        "Speculation_Store_Bypass": null,
+        "SpeculationIndirectBranch": null,
+        "Cpus_allowed": null,
+        "Cpus_allowed_list": null,
+        "Mems_allowed": null,
+        "Mems_allowed_list": 0,
+        "voluntary_ctxt_switches": 429,
+        "nonvoluntary_ctxt_switches": 2
+      }
+    },
+    "postIdle": {
+      "heap": {
+        "total_heap_size": 95031296,
+        "total_heap_size_executable": 2883584,
+        "total_physical_size": 63688704,
+        "total_available_size": 1140316832,
+        "used_heap_size": 28252024,
+        "heap_size_limit": 1174405120,
+        "malloced_memory": 540720,
+        "peak_malloced_memory": 4681728,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 24576,
+        "used_global_handles_size": 16096,
+        "external_memory": 22538458
+      },
+      "spaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 67108864,
+          "space_used_size": 5452936,
+          "space_available_size": 28099448,
+          "physical_space_size": 35540992
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 17997824,
+          "space_used_size": 14396640,
+          "space_available_size": 655664,
+          "physical_space_size": 18087936
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2883584,
+          "space_used_size": 2371776,
+          "space_available_size": 511456,
+          "physical_space_size": 2883584
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 3272704,
+          "space_used_size": 2284560,
+          "space_available_size": 982240,
+          "physical_space_size": 3407872
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 2875392,
+          "space_used_size": 2861000,
+          "space_available_size": 30693432,
+          "physical_space_size": 2875392
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 892928,
+          "space_used_size": 885880,
+          "space_available_size": 0,
+          "physical_space_size": 892928
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        }
+      ],
+      "processStatus": {
+        "Name": null,
+        "Umask": 22,
+        "State": null,
+        "Tgid": 10,
+        "Ngid": 0,
+        "Pid": 10,
+        "PPid": 1,
+        "TracerPid": 0,
+        "Uid": 0,
+        "Gid": 0,
+        "FDSize": 64,
+        "Groups": 0,
+        "NStgid": 10,
+        "NSpid": 10,
+        "NSpgid": 1,
+        "NSsid": 1,
+        "Kthread": 0,
+        "VmPeak": 1490796,
+        "VmSize": 1486712,
+        "VmLck": 0,
+        "VmPin": 0,
+        "VmHWM": 215224,
+        "VmRSS": 175488,
+        "RssAnon": 116812,
+        "RssFile": 58676,
+        "RssShmem": 0,
+        "VmData": 964224,
+        "VmStk": 132,
+        "VmExe": 43756,
+        "VmLib": 14540,
+        "VmPTE": 4048,
+        "VmSwap": 0,
+        "HugetlbPages": 0,
+        "CoreDumping": 0,
+        "THP_enabled": 1,
+        "untag_mask": 18446744073709552000,
+        "Threads": 21,
+        "SigQ": null,
+        "SigPnd": 0,
+        "ShdPnd": 0,
+        "SigBlk": 0,
+        "SigIgn": 1001000,
+        "SigCgt": 100004602,
+        "CapInh": 0,
+        "CapPrm": null,
+        "CapEff": null,
+        "CapBnd": null,
+        "CapAmb": 0,
+        "NoNewPrivs": 0,
+        "Seccomp": 2,
+        "Seccomp_filters": 1,
+        "Speculation_Store_Bypass": null,
+        "SpeculationIndirectBranch": null,
+        "Cpus_allowed": null,
+        "Cpus_allowed_list": null,
+        "Mems_allowed": null,
+        "Mems_allowed_list": 0,
+        "voluntary_ctxt_switches": 77298,
+        "nonvoluntary_ctxt_switches": 278
+      }
+    },
+    "finalSettled": {
+      "heap": {
+        "total_heap_size": 27713536,
+        "total_heap_size_executable": 2883584,
+        "total_physical_size": 26505216,
+        "total_available_size": 1151601960,
+        "used_heap_size": 19777288,
+        "heap_size_limit": 1174405120,
+        "malloced_memory": 540720,
+        "peak_malloced_memory": 4681728,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 24576,
+        "used_global_handles_size": 16000,
+        "external_memory": 5680439
+      },
+      "spaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 4194304,
+          "space_used_size": 1635744,
+          "space_available_size": 461280,
+          "physical_space_size": 2760704
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 16949248,
+          "space_used_size": 13975200,
+          "space_available_size": 140448,
+          "physical_space_size": 17039360
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2883584,
+          "space_used_size": 1921856,
+          "space_available_size": 961376,
+          "physical_space_size": 2883584
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 3272704,
+          "space_used_size": 1835688,
+          "space_available_size": 1249352,
+          "physical_space_size": 3407872
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 413696,
+          "space_used_size": 409568,
+          "space_available_size": 0,
+          "physical_space_size": 413696
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        }
+      ],
+      "processStatus": {
+        "Name": null,
+        "Umask": 22,
+        "State": null,
+        "Tgid": 10,
+        "Ngid": 0,
+        "Pid": 10,
+        "PPid": 1,
+        "TracerPid": 0,
+        "Uid": 0,
+        "Gid": 0,
+        "FDSize": 64,
+        "Groups": 0,
+        "NStgid": 10,
+        "NSpid": 10,
+        "NSpgid": 1,
+        "NSsid": 1,
+        "Kthread": 0,
+        "VmPeak": 1490796,
+        "VmSize": 1442456,
+        "VmLck": 0,
+        "VmPin": 0,
+        "VmHWM": 215224,
+        "VmRSS": 155148,
+        "RssAnon": 96472,
+        "RssFile": 58676,
+        "RssShmem": 0,
+        "VmData": 919988,
+        "VmStk": 132,
+        "VmExe": 43756,
+        "VmLib": 14540,
+        "VmPTE": 3868,
+        "VmSwap": 0,
+        "HugetlbPages": 0,
+        "CoreDumping": 0,
+        "THP_enabled": 1,
+        "untag_mask": 18446744073709552000,
+        "Threads": 13,
+        "SigQ": null,
+        "SigPnd": 0,
+        "ShdPnd": 0,
+        "SigBlk": 0,
+        "SigIgn": 1001000,
+        "SigCgt": 100004602,
+        "CapInh": 0,
+        "CapPrm": null,
+        "CapEff": null,
+        "CapBnd": null,
+        "CapAmb": 0,
+        "NoNewPrivs": 0,
+        "Seccomp": 2,
+        "Seccomp_filters": 1,
+        "Speculation_Store_Bypass": null,
+        "SpeculationIndirectBranch": null,
+        "Cpus_allowed": null,
+        "Cpus_allowed_list": null,
+        "Mems_allowed": null,
+        "Mems_allowed_list": 0,
+        "voluntary_ctxt_switches": 77397,
+        "nonvoluntary_ctxt_switches": 279
+      }
+    }
+  },
+  "provenance": {
+    "evidenceRoot": "/home/Kei/dom-mirror-validation/20261026/jemalloc-thirty",
+    "sourceCommit": "e02f7bca3211d808d14bdb9701c82b67eaf8384e",
+    "build": "Cached dom-mirror:allocator plus COPY tools; pinned dependencies, not fresh online install",
+    "baseImage": "sha256:6c409ffc0d2b332e66710625ec64fa4529b64a3f38576e7acdef9c0f5a847bcc",
+    "analysisHashes": {
+      "tools/run-jemalloc-long.sh": "483e6424722a2307a557043102c4b44a925509e7fcb920540c805a14659901cb",
+      "tools/summarize-memory.cjs": "173bb5ce3ec4201e96574831f8aa8554d7072e8fb7d922397fad5723b5b0ac6b",
+      "tools/summarize-allocator.cjs": "9cb9770c670af6ba3f925e576fe4966e5a1b41ddca70d05665556561262f6903",
+      "tools/plot-memory-long.py": "df399ccded1e43e852fff1d282458ee989f4f0731ed990764e9c179d30897bbd",
+      "tools/verify-docker-vikunja.sh": "dad7dd003a3816d647bbd0948fb5434f05d899846c27345d8fc0980e6f48f44d",
+      "tools/allocator-business-host.cjs": "119f3bf9030783ac3d7fc9b55e058f5499c312cae1a9447e5f90e2f5e5f00fbf"
+    },
+    "host": {
+      "kernel": "6.6.114.1-microsoft-standard-WSL2",
+      "logicalCpus": 24,
+      "quotaNote": "Docker quotas, not exclusive host cores"
+    },
+    "audit": "900 unique receipts and 90 source IDs; unchanged nine measured source hashes versus ten-cycle profiles; all 90 tracked Chromium parents gone and none jemalloc-mapped; normal forced GC=0, final GC=2, trim=0; quota/OOM controls independently checked; subsequent business checks sequential"
+  },
+  "business": {
+    "plan": {
+      "scope": "Sequential candidate real-business checks after thirty-cycle host exits; functional/lifecycle only, not a latency or memory budget test",
+      "sourceCommit": "e02f7bca3211d808d14bdb9701c82b67eaf8384e",
+      "image": "sha256:ecf2353f445532de577f9fb0b0f9547231d7715a518f397c66aaec0f3058576c",
+      "profile": "jemalloc",
+      "sessionGraceMs": 2000,
+      "cases": {
+        "core": [
+          "direct",
+          "dom",
+          "frame"
+        ],
+        "recovery": [
+          "dom",
+          "frame"
+        ]
+      },
+      "hashes": {
+        "tools/verify-docker-vikunja.sh": "dad7dd003a3816d647bbd0948fb5434f05d899846c27345d8fc0980e6f48f44d",
+        "tools/allocator-business-host.cjs": "119f3bf9030783ac3d7fc9b55e058f5499c312cae1a9447e5f90e2f5e5f00fbf",
+        "tools/verify-vikunja.cjs": "ddb29553afad3e4d7c0948d7e4d3cd1f28a3cd7f41dfbb6de5285a03663f970a",
+        "tools/verify-recovery.cjs": "527ae87f177934dbdb22b5a44ed9c16a4ba4472eddeaac52b210db2705e91c51"
+      }
+    },
+    "checks": {
+      "core": {
+        "passed": true,
+        "results": [
+          {
+            "mode": "direct",
+            "steps": [
+              {
+                "name": "login",
+                "pass": true
+              },
+              {
+                "name": "create",
+                "pass": true,
+                "task": {
+                  "id": 1,
+                  "title": "UI direct 147bab6f",
+                  "done": false
+                }
+              },
+              {
+                "name": "priority",
+                "pass": true,
+                "priority": 2
+              },
+              {
+                "name": "complete",
+                "pass": true,
+                "done": true
+              }
+            ],
+            "pass": true,
+            "started": "2026-10-25T23:12:33.883Z",
+            "projectId": 2,
+            "taskId": 1,
+            "finished": "2026-10-25T23:12:37.903Z"
+          },
+          {
+            "mode": "dom",
+            "steps": [
+              {
+                "name": "login",
+                "pass": true
+              },
+              {
+                "name": "create",
+                "pass": true,
+                "task": {
+                  "id": 2,
+                  "title": "UI dom d50c6fbe",
+                  "done": false
+                }
+              },
+              {
+                "name": "priority",
+                "pass": true,
+                "priority": 2
+              },
+              {
+                "name": "complete",
+                "pass": true,
+                "done": true
+              }
+            ],
+            "pass": true,
+            "started": "2026-10-25T23:12:37.903Z",
+            "projectId": 4,
+            "taskId": 2,
+            "finished": "2026-10-25T23:12:43.328Z"
+          },
+          {
+            "mode": "frame",
+            "steps": [
+              {
+                "name": "login",
+                "pass": true
+              },
+              {
+                "name": "create",
+                "pass": true,
+                "task": {
+                  "id": 3,
+                  "title": "UI frame 5ee65469",
+                  "done": false
+                }
+              },
+              {
+                "name": "priority",
+                "pass": true,
+                "priority": 2
+              },
+              {
+                "name": "complete",
+                "pass": true,
+                "done": true
+              }
+            ],
+            "pass": true,
+            "started": "2026-10-25T23:12:43.328Z",
+            "projectId": 6,
+            "taskId": 3,
+            "finished": "2026-10-25T23:12:47.757Z"
+          }
+        ],
+        "allocator": {
+          "node": "v24.21.0",
+          "allocator": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocated": 21632288,
+            "active": 23392256,
+            "resident": 28340224,
+            "mapped": 38645760,
+            "retained": 106582016
+          },
+          "sharpConcurrency": 1,
+          "env": {
+            "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+            "MALLOC_CONF": "narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000",
+            "MALLOC_ARENA_MAX": "2",
+            "VIPS_CONCURRENCY": "1"
+          },
+          "browsers": [
+            {
+              "pid": 43,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            },
+            {
+              "pid": 207,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            }
+          ],
+          "hashes": {
+            "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+            "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+            "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+            "tools/allocator-business-host.cjs": "119f3bf9030783ac3d7fc9b55e058f5499c312cae1a9447e5f90e2f5e5f00fbf",
+            "tools/verify-vikunja.cjs": "ddb29553afad3e4d7c0948d7e4d3cd1f28a3cd7f41dfbb6de5285a03663f970a",
+            "tools/verify-recovery.cjs": "527ae87f177934dbdb22b5a44ed9c16a4ba4472eddeaac52b210db2705e91c51",
+            "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed"
+          }
+        },
+        "applicationImage": "vikunja/vikunja@sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576",
+        "applicationVersion": "Vikunja api version v2.7.1\nBuilt with go1.27.3",
+        "evidenceRoot": "/home/Kei/dom-mirror-validation/20261026/jemalloc-business-core",
+        "mirrorImage": "sha256:ecf2353f445532de577f9fb0b0f9547231d7715a518f397c66aaec0f3058576c",
+        "limits": {
+          "mirrorCpus": 2,
+          "mirrorMemoryMiB": 2048,
+          "clientCpus": null,
+          "clientMemoryMiB": 2048,
+          "applicationCpus": 1,
+          "applicationMemoryMiB": 768
+        },
+        "browserParentsReclaimed": 2,
+        "oomKilled": false
+      },
+      "recovery": {
+        "passed": true,
+        "results": [
+          {
+            "mode": "dom",
+            "pass": true,
+            "steps": [
+              {
+                "name": "login-route-draft",
+                "pass": true
+              },
+              {
+                "name": "committed-without-ui-confirmation",
+                "pass": true,
+                "taskId": 1,
+                "count": 1
+              },
+              {
+                "name": "same-account-isolation",
+                "pass": true
+              },
+              {
+                "name": "expiry-and-explicit-restart",
+                "pass": true
+              }
+            ]
+          },
+          {
+            "mode": "frame",
+            "pass": true,
+            "steps": [
+              {
+                "name": "login-route-draft",
+                "pass": true
+              },
+              {
+                "name": "committed-without-ui-confirmation",
+                "pass": true,
+                "taskId": 3,
+                "count": 1
+              },
+              {
+                "name": "same-account-isolation",
+                "pass": true
+              },
+              {
+                "name": "expiry-and-explicit-restart",
+                "pass": true
+              }
+            ]
+          }
+        ],
+        "allocator": {
+          "node": "v24.21.0",
+          "allocator": {
+            "mallocSymbolImage": "node",
+            "implementation": "jemalloc",
+            "version": "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c",
+            "allocated": 19184128,
+            "active": 20602880,
+            "resident": 27770880,
+            "mapped": 37634048,
+            "retained": 104972288
+          },
+          "sharpConcurrency": 1,
+          "env": {
+            "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+            "MALLOC_CONF": "narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000",
+            "MALLOC_ARENA_MAX": "2",
+            "VIPS_CONCURRENCY": "1"
+          },
+          "browsers": [
+            {
+              "pid": 42,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            },
+            {
+              "pid": 191,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            },
+            {
+              "pid": 398,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            },
+            {
+              "pid": 540,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            },
+            {
+              "pid": 703,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            },
+            {
+              "pid": 913,
+              "closed": true,
+              "connected": false,
+              "jemallocMapped": false,
+              "processGone": true
+            }
+          ],
+          "hashes": {
+            "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+            "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+            "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+            "tools/allocator-business-host.cjs": "119f3bf9030783ac3d7fc9b55e058f5499c312cae1a9447e5f90e2f5e5f00fbf",
+            "tools/verify-vikunja.cjs": "ddb29553afad3e4d7c0948d7e4d3cd1f28a3cd7f41dfbb6de5285a03663f970a",
+            "tools/verify-recovery.cjs": "527ae87f177934dbdb22b5a44ed9c16a4ba4472eddeaac52b210db2705e91c51",
+            "tools/native-memory.c": "0c220a2c559f5eb656db6cd3f0c728edff07195aef320ae5c76faeb20a09bfed"
+          }
+        },
+        "applicationImage": "vikunja/vikunja@sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576",
+        "applicationVersion": "Vikunja api version v2.7.1\nBuilt with go1.27.3",
+        "evidenceRoot": "/home/Kei/dom-mirror-validation/20261026/jemalloc-business-recovery",
+        "mirrorImage": "sha256:ecf2353f445532de577f9fb0b0f9547231d7715a518f397c66aaec0f3058576c",
+        "limits": {
+          "mirrorCpus": 2,
+          "mirrorMemoryMiB": 2048,
+          "clientCpus": null,
+          "clientMemoryMiB": 2048,
+          "applicationCpus": 1,
+          "applicationMemoryMiB": 768
+        },
+        "browserParentsReclaimed": 6,
+        "oomKilled": false
+      }
+    },
+    "scope": "Functional/lifecycle checks in source-image public API host; not tarball business, latency, memory-budget or real identity-provider qualification"
+  }
+}

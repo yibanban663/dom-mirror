@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-media-pix</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+    img { margin: 4px; border: 1px solid #ccd; }
+    #bgset { margin-top: 8px; width: 60px; height: 60px; border: 1px solid #99a; }
+    #report { margin-top: 12px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h3>响应式图片与媒体</h3>
+  <img id="i1" src="pic-a.png" alt="" width="40">
+  <img id="i2" srcset="pic-b.png 1x, pic-b.png 2x" alt="" width="40">
+  <picture><source srcset="pic-c.png" type="image/png"><img id="i3" alt="" width="40"></picture>
+  <div id="bgset"></div>
+  <video id="v1" poster="pic-a.png" width="80" height="45" muted></video>
+  <audio id="a1" muted></audio>
+  <button id="play">播放</button>
+  <button id="pause">暂停</button>
+  <button id="seek">seek 0.4</button>
+  <div id="report">REPORT:</div>
+  <script>
+    document.getElementById('bgset').style.backgroundImage = 'image-set("pic-b.png" 1x)';
+    // 静音 1s 8bit PCM WAV（JS 构造，无外部字节）——两端 muted 自动播放均被策略允许
+    (function () {
+      const sr = 8000, ch = 1, bits = 8, n = sr, bytes = 44 + n;
+      const buf = new Uint8Array(bytes);
+      const w = (o, s) => { for (let i = 0; i < s.length; i++) buf[o + i] = s.charCodeAt(i); };
+      const u32 = (o, v) => { buf[o] = v & 255; buf[o + 1] = (v >> 8) & 255; buf[o + 2] = (v >> 16) & 255; buf[o + 3] = (v >> 24) & 255; };
+      const u16 = (o, v) => { buf[o] = v & 255; buf[o + 1] = (v >> 8) & 255; };
+      w(0, 'RIFF'); u32(4, 36 + n); w(8, 'WAVE'); w(12, 'fmt ');
+      u32(16, 16); u16(20, 1); u16(22, ch);
+      u32(24, sr); u32(28, sr * ch * bits / 8); u16(32, ch * bits / 8); u16(34, bits);
+      w(36, 'data'); u32(40, n);
+      let bin = '';
+      for (let i = 0; i < bytes; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      document.getElementById('a1').src = 'data:audio/wav;base64,' + btoa(bin);
+    })();
+    const a1 = document.getElementById('a1');
+    const report = () => {
+      const ids = ['i1', 'i2', 'i3'];
+      const parts = ids.map((id) => {
+        const im = document.getElementById(id);
+        return id + ':' + (im.naturalWidth > 0 ? im.currentSrc.split('/').pop() : 'FAIL');
+      });
+      const v = document.getElementById('v1');
+      parts.push('poster:' + ((v.poster || '').split('/').pop() || 'FAIL'));
+      parts.push('audio:' + (a1.paused ? 'paused' : 'playing') + '@' + a1.currentTime.toFixed(2) + (a1.muted ? 'm' : 'u'));
+      document.getElementById('report').textContent = 'REPORT:' + parts.join('|') + '|bg:' + getComputedStyle(document.getElementById('bgset')).backgroundImage.slice(0, 40);
+    };
+    setTimeout(report, 2500);
+    document.body.addEventListener('click', () => setTimeout(report, 300));
+    document.getElementById('play').addEventListener('click', () => { a1.play().catch(() => {}); setTimeout(report, 400); });
+    document.getElementById('pause').addEventListener('click', () => { a1.pause(); setTimeout(report, 300); });
+    document.getElementById('seek').addEventListener('click', () => { a1.currentTime = 0.4; setTimeout(report, 300); });
+  </script>
+</body>
+</html>

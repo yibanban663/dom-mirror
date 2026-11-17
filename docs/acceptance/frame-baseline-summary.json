@@ -1,0 +1,90 @@
+{
+  "before": {
+    "suppressed": 1,
+    "forwarded": 11,
+    "events": [
+      {
+        "session": "6f4820a92068392b2fdb729f4e0f520c",
+        "index": 0
+      }
+    ],
+    "passed": false,
+    "initialPixel": [
+      24,
+      139,
+      67,
+      255
+    ],
+    "firstForwardedPixel": [
+      31,
+      139,
+      67,
+      255
+    ],
+    "client": {
+      "probe": {
+        "keydownObserved": true,
+        "domMs": 68.39999997615814,
+        "drawMs": null,
+        "paintOpportunityMs": null,
+        "correlation": null
+      },
+      "text": "Measured task 00",
+      "pixels": [
+        [
+          24,
+          139,
+          67,
+          255
+        ]
+      ]
+    },
+    "error": "TimeoutError: Waiting failed: 5000ms exceeded\n    at new WaitTask (file:///app/node_modules/puppeteer-core/lib/puppeteer/common/WaitTask.js:46:34)\n    at IsolatedWorld.waitForFunction (file:///app/node_modules/puppeteer-core/lib/puppeteer/api/Realm.js:49:26)\n    at CdpFrame.waitForFunction (file:///app/node_modules/puppeteer-core/lib/puppeteer/api/Frame.js:585:43)\n    at CdpFrame.<anonymous> (file:///app/node_modules/puppeteer-core/lib/puppeteer/util/decorators.js:101:27)\n    at CdpPage.waitForFunction (file:///app/node_modules/puppeteer-core/lib/puppeteer/api/Page.js:1542:37)\n    at /app/tools/verify-frame-baseline.cjs:70:18"
+  },
+  "after": {
+    "suppressed": 1,
+    "forwarded": 1,
+    "events": [
+      {
+        "session": "ee30a41b49e87040f5dda7ed7d568970",
+        "index": 0
+      }
+    ],
+    "passed": true,
+    "initialPixel": [
+      24,
+      139,
+      67,
+      255
+    ],
+    "firstForwardedPixel": [
+      31,
+      139,
+      67,
+      255
+    ],
+    "client": {
+      "probe": {
+        "keydownObserved": true,
+        "domMs": 68.59999999403954,
+        "drawMs": 63.599999994039536,
+        "paintOpportunityMs": 75.69999998807907,
+        "correlation": null
+      },
+      "text": "Measured task 00",
+      "pixels": [
+        [
+          31,
+          139,
+          67,
+          255
+        ]
+      ]
+    }
+  },
+  "sourceBeforeSha256": "db669d222d05472c85b8940414bd18bf1d0510b6d808f073dd80c791c6ee12c3",
+  "sourceAfterSha256": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+  "testScriptSha256": "dd37741d53b0dc76ad91258554dc1928e240f124c0ec651921e0e90cbb71488f",
+  "imageBefore": "sha256:146950b713535672cabe8b0acf32a6cdd981a10249cc216bfb0a09eaf2dc9399",
+  "imageAfter": "sha256:c4a51534f1f6d2828ff833fb0b881070d64ec242d4d20942b402527e361a33d4"
+}

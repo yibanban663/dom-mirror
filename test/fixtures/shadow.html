@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Shadow DOM</title>
+<style>
+  body { font: 14px Arial, sans-serif; padding: 24px; color: #16263a; }
+  my-card { display: block; margin: 12px 0; }
+  #state { margin-top: 10px; color: #0a5; }
+</style>
+</head>
+<body>
+<h3>Shadow DOM mirror</h3>
+<my-card id="c1"></my-card>
+<div id="state">ready</div>
+<script>
+  class MyCard extends HTMLElement {
+    constructor() {
+      super();
+      const sr = this.attachShadow({ mode: 'open' });
+      sr.innerHTML = '<style>.box{padding:10px;border:1px solid #99a;border-radius:6px}'
+        + '.box b{color:#a33}</style>'
+        + '<div class="box"><b id="title">CARD-INIT</b>'
+        + '<button id="btn">change</button>'
+        + '<input id="in" placeholder="type here" autocomplete="off">'
+        + '<span id="out"></span>'
+        + '<canvas id="cv" width="80" height="30"></canvas></div>';
+      const cv = sr.querySelector('#cv').getContext('2d');
+      cv.fillStyle = '#2a9d8f';
+      cv.fillRect(10, 5, 60, 20);
+      sr.querySelector('#btn').addEventListener('click', () => {
+        const n = (parseInt(sr.querySelector('#title').dataset.n || '0', 10) || 0) + 1;
+        sr.querySelector('#title').textContent = 'CARD-CHANGED-' + n;
+        sr.querySelector('#title').dataset.n = String(n);
+        document.querySelector('#state').textContent = 'clicked-' + n;
+      });
+      sr.querySelector('#in').addEventListener('input', (e) => {
+        sr.querySelector('#out').textContent = 'typed:' + e.target.value;
+      });
+    }
+  }
+  customElements.define('my-card', MyCard);
+  // 延迟创建第二个组件：走 attachShadow patch + 宿主补丁路径（注入后新建）
+  setTimeout(() => {
+    const c2 = document.createElement('my-card');
+    c2.id = 'c2';
+    document.body.appendChild(c2);
+    document.querySelector('#state').textContent = 'late-mounted';
+  }, 900);
+</script>
+</body>
+</html>

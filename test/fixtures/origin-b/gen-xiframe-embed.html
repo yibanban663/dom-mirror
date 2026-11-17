@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>xframe-embed</title>
+  <style>
+    body { font: 13px system-ui, sans-serif; margin: 8px; background: #eef7ee; }
+    .badge { display: inline-block; padding: 3px 8px; background: #2c7; color: #fff; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <span class="badge">EMBED-OK</span>
+  <img src="pic-b.png" width="24" alt="">
+  <div id="xstat">STAT:loading</div>
+  <script>
+    // 脚本必须被剥离：若执行说明 sanitize 失效（断言 STAT 恒为 loading）
+    document.getElementById('xstat').textContent = 'STAT:ran-script';
+  </script>
+</body>
+</html>

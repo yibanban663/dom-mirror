@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>beacon-v2</title>
+<style>body{font:14px/1.6 system-ui,sans-serif;margin:16px;background:#fafafa}
+.card{background:#fff;border:1px solid #dde;border-radius:6px;padding:8px;margin:6px}
+canvas{border:1px solid #ccd}#list div{border-bottom:1px solid #eee;padding:2px 4px;font-family:Consolas,monospace}</style></head>
+<body>
+<div class="card">SLOW CHART (2s) <canvas id="cs" width="420" height="200"></canvas></div>
+<div class="card">FAST ANIM (60fps) <canvas id="cf" width="420" height="120"></canvas></div>
+<div class="card">EVENTS<div id="list"></div></div>
+<script>
+function draw(id, seed, hdr){var cv=document.getElementById(id),g=cv.getContext('2d');g.clearRect(0,0,cv.width,cv.height);
+g.strokeStyle='#468';g.lineWidth=2;g.beginPath();for(var i=0;i<=40;i++){var y=cv.height/2+Math.sin((i+seed)*0.35)*cv.height*0.35*Math.cos(i*0.11+seed*0.7);if(i===0)g.moveTo(i*10,y);else g.lineTo(i*10,y);}g.stroke();
+g.fillStyle=hdr;g.fillRect(0,0,cv.width,16);g.fillStyle='#335';g.font='12px Consolas,monospace';g.fillText('chart '+id+' t='+seed.toFixed(1),6,12);}
+var t=0;
+setInterval(function(){t+=2;draw('cs',t,'#eef');draw('cf',t,'#efe');
+var l=document.getElementById('list'),r=document.createElement('div');r.textContent=new Date().toISOString()+' ev='+Math.random().toString(36).slice(2,10);l.insertBefore(r,l.firstChild);while(l.children.length>8)l.removeChild(l.lastChild);},2000);
+(function anim(){draw('cf',performance.now()/600,'#efe');requestAnimationFrame(anim);})();
+draw('cs',0,'#eef');
+</script></body></html>

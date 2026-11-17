@@ -1,0 +1,159 @@
+{
+  "scope": "Local, isolated synthetic identity and source; known valid resume token, not token guessing.",
+  "testScriptSha256": "3f107d61294b2cca50139ad1c03779e55c8ab19e382f0c7f1e30ef3bc874a6cb",
+  "runtime": "Current source over cached unchanged dependencies; npm ls passed; not a fresh standard Dockerfile build.",
+  "images": {
+    "dom-mirror:boundary": "sha256:2e4a9fa62e436b6d88f33b1b61cff7749589240cb9bf22812e182bd6971f7409",
+    "dom-mirror:identity": "sha256:402162cb39336730b1b6ee93a2d06e9c81cca2d08f33d154bd1ba86fe5112744"
+  },
+  "runs": {
+    "baseline-authenticated": {
+      "version": "0.11.0",
+      "enforce": false,
+      "cases": [
+        {
+          "mode": "dom",
+          "events": [
+            {
+              "id": "f3cceb9f-653d-445d-9680-97f3b80c97fe",
+              "draft": "synthetic-owner-draft",
+              "count": 1
+            }
+          ],
+          "otherUserOwnSession": true,
+          "crossUser": {
+            "resumed": true,
+            "code": null,
+            "receivedOwnerData": true
+          },
+          "crossTenant": {
+            "resumed": true,
+            "code": null,
+            "receivedOwnerData": true
+          },
+          "ownerResume": true,
+          "businessReplayCount": 0,
+          "existingConnectionSurvivesHostRevocation": true,
+          "revokedIdentity": {
+            "httpStatus": null,
+            "resumed": true
+          },
+          "unauthenticated": {
+            "httpStatus": null,
+            "resumed": true
+          },
+          "protectionPassed": false,
+          "completed": true
+        },
+        {
+          "mode": "frame",
+          "events": [
+            {
+              "id": "b01e10b6-1a76-455d-b899-1f53f8af8042",
+              "draft": "synthetic-owner-draft",
+              "count": 1
+            }
+          ],
+          "otherUserOwnSession": true,
+          "crossUser": {
+            "resumed": true,
+            "code": null,
+            "receivedOwnerData": true
+          },
+          "crossTenant": {
+            "resumed": true,
+            "code": null,
+            "receivedOwnerData": true
+          },
+          "ownerResume": true,
+          "businessReplayCount": 0,
+          "existingConnectionSurvivesHostRevocation": true,
+          "revokedIdentity": {
+            "httpStatus": null,
+            "resumed": true
+          },
+          "unauthenticated": {
+            "httpStatus": null,
+            "resumed": true
+          },
+          "protectionPassed": false,
+          "completed": true
+        }
+      ],
+      "sourceSha256": "512481aea04c8c7668e809d90d3ed47753348b3250284888bf6b87ff0c269a95",
+      "completed": true
+    },
+    "fixed-authenticated": {
+      "version": "0.11.0",
+      "enforce": true,
+      "cases": [
+        {
+          "mode": "dom",
+          "events": [
+            {
+              "id": "40ea7434-c267-46e7-8174-af229ab8efa0",
+              "draft": "synthetic-owner-draft",
+              "count": 1
+            }
+          ],
+          "otherUserOwnSession": true,
+          "crossUser": {
+            "resumed": false,
+            "code": "SESSION_EXPIRED"
+          },
+          "crossTenant": {
+            "resumed": false,
+            "code": "SESSION_EXPIRED"
+          },
+          "ownerResume": true,
+          "businessReplayCount": 0,
+          "existingConnectionSurvivesHostRevocation": true,
+          "revokedIdentity": {
+            "httpStatus": 401,
+            "resumed": false
+          },
+          "unauthenticated": {
+            "httpStatus": 401,
+            "resumed": false
+          },
+          "protectionPassed": true,
+          "completed": true
+        },
+        {
+          "mode": "frame",
+          "events": [
+            {
+              "id": "59c33ce5-5cda-4ae5-8e26-61d7b127e7fa",
+              "draft": "synthetic-owner-draft",
+              "count": 1
+            }
+          ],
+          "otherUserOwnSession": true,
+          "crossUser": {
+            "resumed": false,
+            "code": "SESSION_EXPIRED"
+          },
+          "crossTenant": {
+            "resumed": false,
+            "code": "SESSION_EXPIRED"
+          },
+          "ownerResume": true,
+          "businessReplayCount": 0,
+          "existingConnectionSurvivesHostRevocation": true,
+          "revokedIdentity": {
+            "httpStatus": 401,
+            "resumed": false
+          },
+          "unauthenticated": {
+            "httpStatus": 401,
+            "resumed": false
+          },
+          "protectionPassed": true,
+          "completed": true
+        }
+      ],
+      "sourceSha256": "18b45b0545cfce4d7203bb79c11886f8ceb5af0910ebc890773ff398545c3c26",
+      "completed": true
+    }
+  }
+}

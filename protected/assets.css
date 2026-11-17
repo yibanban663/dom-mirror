@@ -1,0 +1,4 @@
+@font-face { font-family: BrandFont; src: url(font.woff2) format('woff2'); }
+#fnt { font-family: BrandFont, monospace; }
+.box { color: red; }
+#bg { width: 40px; height: 40px; background-image: url(img.png); }

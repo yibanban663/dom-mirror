@@ -1,0 +1,11 @@
+ARG BASE_IMAGE=dom-mirror:local
+FROM ${BASE_IMAGE}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libjemalloc2=5.3.0-1 \
+ && rm -rf /var/lib/apt/lists/*
+ENV MALLOC_ARENA_MAX=2 VIPS_CONCURRENCY=1
+COPY tools /app/tools
+RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+    -I/usr/local/include/node tools/native-memory.c -o tools/native-memory.node \
+ && node -e "console.log(require('./tools/native-memory.node').allocatorStats())" \
+ && LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 node -e "const s=require('./tools/native-memory.node').allocatorStats();if(s.implementation!=='jemalloc')throw Error('allocator');console.log(s)"

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Synthetic data boundary fixture</title>
+  <link rel="stylesheet" href="/fixture.css">
+  <style>body { font: 16px sans-serif; padding: 24px; } input, button { margin: 8px; }</style>
+</head>
+<body>
+  <h1>Synthetic data boundary fixture</h1>
+  <p id="visible"></p>
+  <input id="visible-input" aria-label="Visible field">
+  <input id="hidden-input" type="hidden">
+  <input id="password" type="password" autocomplete="off">
+  <div id="dataset">Public label with private metadata</div>
+  <div id="inline-style">Public label with unused CSS value</div>
+  <div id="not-displayed" style="display:none"></div>
+  <img id="image" width="24" height="24" alt="Synthetic resource">
+  <label>Edit this <input id="editable"></label><output id="echo">Waiting for input</output>
+  <button id="mutate">Update source markers</button>
+  <button id="patch">Update without changing document attributes</button>
+  <span id="phase">INITIAL</span>
+  <template id="template">DM_TEST_INITIAL_TEMPLATE_END</template>
+  <noscript>DM_TEST_INITIAL_NOSCRIPT_END</noscript>
+  <!-- DM_TEST_INITIAL_COMMENT_END -->
+  <script>
+    window.logicMarker = 'DM_TEST_INITIAL_SCRIPT_END';
+    const token = (phase, kind) => `DM_TEST_${phase}_${kind}_END`;
+    function apply(phase) {
+      document.querySelector('#visible').textContent = token(phase, 'VISIBLE');
+      document.querySelector('#visible-input').value = token(phase, 'INPUT');
+      document.querySelector('#visible-input').setAttribute('value', token(phase, 'INPUT'));
+      document.querySelector('#hidden-input').setAttribute('value', token(phase, 'HIDDEN_INPUT'));
+      document.querySelector('#password').setAttribute('value', token(phase, 'PASSWORD'));
+      document.querySelector('#dataset').setAttribute('data-private', token(phase, 'DATASET'));
+      document.querySelector('#dataset').setAttribute('data-theme', 'fixture-theme');
+      document.querySelector('#inline-style').style.setProperty('--unused-private', token(phase, 'INLINE_CSS'));
+      document.querySelector('#not-displayed').textContent = token(phase, 'HIDDEN_TEXT');
+      if (phase !== 'PATCHED') {
+        document.documentElement.setAttribute('data-private', token(phase, 'HTML_ATTR'));
+        document.body.setAttribute('data-private', token(phase, 'BODY_ATTR'));
+      }
+      document.querySelector('#image').src = '/image.png?hint=' + token(phase, 'RESOURCE_URL');
+      window.privateRuntimeValue = token(phase, 'JS_GLOBAL');
+      document.cookie = 'fixture_cookie=' + token(phase, 'COOKIE') + '; SameSite=Strict; path=/';
+      localStorage.setItem('fixture_private', token(phase, 'STORAGE'));
+      document.querySelector('#phase').textContent = phase;
+      if (phase === 'UPDATED') {
+        document.querySelector('#template').innerHTML = token(phase, 'TEMPLATE');
+        document.querySelector('#template').setAttribute('data-revision', '1');
+        document.querySelector('noscript').textContent = token(phase, 'NOSCRIPT');
+        window.logicMarker = token(phase, 'SCRIPT');
+      }
+    }
+    apply('INITIAL');
+    document.querySelector('#editable').addEventListener('input', event => {
+      document.querySelector('#echo').textContent = 'Echo: ' + event.target.value;
+    });
+    async function update(phase) {
+      apply(phase);
+      await fetch('/events', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ case: new URLSearchParams(location.search).get('case'), phase,
+          hidden: document.querySelector('#hidden-input').value }) });
+    }
+    document.querySelector('#mutate').addEventListener('click', () => update('UPDATED'));
+    document.querySelector('#patch').addEventListener('click', () => update('PATCHED'));
+  </script>
+</body>
+</html>

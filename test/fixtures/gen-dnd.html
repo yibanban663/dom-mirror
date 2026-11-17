@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>gen-dnd</title>
+  <style>
+    body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+    #item { width: 90px; padding: 10px; background: #dfe8f5; border: 1px solid #89a; border-radius: 6px; text-align: center; }
+    #dz { margin-top: 14px; width: 220px; height: 90px; border: 2px dashed #89a; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #567; }
+    #dz.hot { background: #cfe3ff; }
+    #tpad { margin-top: 14px; padding: 14px; border: 1px solid #99a; border-radius: 6px; }
+    #report { margin-top: 12px; font-family: Consolas, monospace; background: #f4f6fa; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h3>拖拽/触摸/焦点/自愈</h3>
+  <div id="item" draggable="true">拖我</div>
+  <div id="dz">放到这里</div>
+  <div id="tpad">触摸板（touch 事件）</div>
+  <input id="t1" type="text" placeholder="焦点目标">
+  <button id="fbtn">程序化聚焦</button>
+  <div id="report">REPORT:</div>
+  <script>
+    const report = (t) => { document.getElementById('report').textContent = 'REPORT:' + t; };
+    const item = document.getElementById('item');
+    const dz = document.getElementById('dz');
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', 'ITEM-A');
+      report('dragstart');
+    });
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('hot'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('hot'));
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const data = e.dataTransfer.getData('text/plain');
+      dz.textContent = '收到:' + data;
+      report('drop:' + data);
+    });
+    // 触摸
+    const tpad = document.getElementById('tpad');
+    tpad.addEventListener('touchstart', (e) => { report('touch:' + [...e.touches].map(t => Math.round(t.clientX) + ',' + Math.round(t.clientY)).join('|')); }, { passive: true });
+    tpad.addEventListener('touchend', (e) => { report('touchend'); }, { passive: true });
+    // 程序化焦点
+    document.getElementById('fbtn').addEventListener('click', () => {
+      document.getElementById('t1').focus();
+      report('focus:' + (document.activeElement.id || 'none'));
+    });
+  </script>
+</body>
+</html>

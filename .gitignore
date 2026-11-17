@@ -1,0 +1,15 @@
+node_modules/
+bin/
+*.log
+.env
+.DS_Store
+ck/
+
+assets/obf/
+.venv/
+__pycache__/
+artifacts/
+*.tgz
+tools/NotoSansSC-*.ttf
+*.bak
+tools/.vik-*

@@ -1,0 +1,402 @@
+{
+  "pass": true,
+  "name": "@lizhen-xxaq/dom-mirror",
+  "version": "0.11.0",
+  "archiveSha256": "1aecc222d15087a67848f3d484641dd29a6381ad6d30bf8a3b6a4c6cb46e0d9b",
+  "integrity": "sha512-er/Oa1VJzDDfdrIfi6GLJFs7KQBSgaB0VpYs61E531OHnjNtiGJePzWRZpdOOcSXGPC8XDNABfdfMJLdAT94uA==",
+  "negative": {
+    "pass": true,
+    "checks": [
+      {
+        "name": "changed-archive",
+        "rejected": true
+      },
+      {
+        "name": "changed-installed-file",
+        "rejected": true
+      },
+      {
+        "name": "source-directory-fallback",
+        "rejected": true
+      },
+      {
+        "name": "node-path-fallback",
+        "rejected": true
+      }
+    ]
+  },
+  "suites": {
+    "core": {
+      "results": [
+        {
+          "mode": "direct",
+          "steps": [
+            {
+              "name": "login",
+              "pass": true
+            },
+            {
+              "name": "create",
+              "pass": true,
+              "task": {
+                "id": 1,
+                "title": "UI direct 3613f5fc",
+                "done": false
+              }
+            },
+            {
+              "name": "priority",
+              "pass": true,
+              "priority": 2
+            },
+            {
+              "name": "complete",
+              "pass": true,
+              "done": true
+            }
+          ],
+          "pass": true,
+          "started": "2026-10-26T01:40:22.663Z",
+          "projectId": 2,
+          "taskId": 1,
+          "finished": "2026-10-26T01:40:26.785Z"
+        },
+        {
+          "mode": "dom",
+          "steps": [
+            {
+              "name": "login",
+              "pass": true
+            },
+            {
+              "name": "create",
+              "pass": true,
+              "task": {
+                "id": 2,
+                "title": "UI dom 3a1325d2",
+                "done": false
+              }
+            },
+            {
+              "name": "priority",
+              "pass": true,
+              "priority": 2
+            },
+            {
+              "name": "complete",
+              "pass": true,
+              "done": true
+            }
+          ],
+          "pass": true,
+          "started": "2026-10-26T01:40:26.785Z",
+          "projectId": 4,
+          "taskId": 2,
+          "finished": "2026-10-26T01:40:31.506Z"
+        },
+        {
+          "mode": "frame",
+          "steps": [
+            {
+              "name": "login",
+              "pass": true
+            },
+            {
+              "name": "create",
+              "pass": true,
+              "task": {
+                "id": 3,
+                "title": "UI frame d3a9d863",
+                "done": false
+              }
+            },
+            {
+              "name": "priority",
+              "pass": true,
+              "priority": 2
+            },
+            {
+              "name": "complete",
+              "pass": true,
+              "done": true
+            }
+          ],
+          "pass": true,
+          "started": "2026-10-26T01:40:31.506Z",
+          "projectId": 6,
+          "taskId": 3,
+          "finished": "2026-10-26T01:40:36.938Z"
+        }
+      ],
+      "lifecycle": {
+        "pass": true,
+        "before": {
+          "name": "@lizhen-xxaq/dom-mirror",
+          "version": "0.11.0",
+          "archiveSha256": "1aecc222d15087a67848f3d484641dd29a6381ad6d30bf8a3b6a4c6cb46e0d9b",
+          "integrity": "sha512-er/Oa1VJzDDfdrIfi6GLJFs7KQBSgaB0VpYs61E531OHnjNtiGJePzWRZpdOOcSXGPC8XDNABfdfMJLdAT94uA==",
+          "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+          "dependencies": {
+            "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+            "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+            "ws": "/consumer/node_modules/ws/index.js"
+          },
+          "verifiedArchiveFiles": 151,
+          "lockSha256": "b71623f5f65f20b58b895c1c821b951506bf0a9efac60853cd998af6c5da854a",
+          "node": "v24.21.0",
+          "sourceCheckoutAbsent": true,
+          "loadedModulesInsideConsumer": true,
+          "browsers": [
+            {
+              "pid": 37,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 202,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            }
+          ]
+        },
+        "after": {
+          "name": "@lizhen-xxaq/dom-mirror",
+          "version": "0.11.0",
+          "archiveSha256": "1aecc222d15087a67848f3d484641dd29a6381ad6d30bf8a3b6a4c6cb46e0d9b",
+          "integrity": "sha512-er/Oa1VJzDDfdrIfi6GLJFs7KQBSgaB0VpYs61E531OHnjNtiGJePzWRZpdOOcSXGPC8XDNABfdfMJLdAT94uA==",
+          "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+          "dependencies": {
+            "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+            "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+            "ws": "/consumer/node_modules/ws/index.js"
+          },
+          "verifiedArchiveFiles": 151,
+          "lockSha256": "b71623f5f65f20b58b895c1c821b951506bf0a9efac60853cd998af6c5da854a",
+          "node": "v24.21.0",
+          "sourceCheckoutAbsent": true,
+          "loadedModulesInsideConsumer": true,
+          "browsers": [
+            {
+              "pid": 37,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 202,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 426,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            }
+          ]
+        },
+        "activeSessionClosed": true,
+        "repeatedClosePassed": true,
+        "hostRemainsAlive": true,
+        "closedMirrorStatus": 503
+      },
+      "image": "sha256:2b939883627068e7430e20aac8f594a3b56f0d4d508776d9ab817108f89e5d43",
+      "noOOM": true
+    },
+    "recovery": {
+      "results": [
+        {
+          "mode": "dom",
+          "pass": true,
+          "steps": [
+            {
+              "name": "login-route-draft",
+              "pass": true
+            },
+            {
+              "name": "committed-without-ui-confirmation",
+              "pass": true,
+              "taskId": 1,
+              "count": 1
+            },
+            {
+              "name": "same-account-isolation",
+              "pass": true
+            },
+            {
+              "name": "expiry-and-explicit-restart",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "mode": "frame",
+          "pass": true,
+          "steps": [
+            {
+              "name": "login-route-draft",
+              "pass": true
+            },
+            {
+              "name": "committed-without-ui-confirmation",
+              "pass": true,
+              "taskId": 3,
+              "count": 1
+            },
+            {
+              "name": "same-account-isolation",
+              "pass": true
+            },
+            {
+              "name": "expiry-and-explicit-restart",
+              "pass": true
+            }
+          ]
+        }
+      ],
+      "lifecycle": {
+        "pass": true,
+        "before": {
+          "name": "@lizhen-xxaq/dom-mirror",
+          "version": "0.11.0",
+          "archiveSha256": "1aecc222d15087a67848f3d484641dd29a6381ad6d30bf8a3b6a4c6cb46e0d9b",
+          "integrity": "sha512-er/Oa1VJzDDfdrIfi6GLJFs7KQBSgaB0VpYs61E531OHnjNtiGJePzWRZpdOOcSXGPC8XDNABfdfMJLdAT94uA==",
+          "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+          "dependencies": {
+            "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+            "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+            "ws": "/consumer/node_modules/ws/index.js"
+          },
+          "verifiedArchiveFiles": 151,
+          "lockSha256": "b71623f5f65f20b58b895c1c821b951506bf0a9efac60853cd998af6c5da854a",
+          "node": "v24.21.0",
+          "sourceCheckoutAbsent": true,
+          "loadedModulesInsideConsumer": true,
+          "browsers": [
+            {
+              "pid": 37,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 187,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 391,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 531,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 697,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 907,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            }
+          ]
+        },
+        "after": {
+          "name": "@lizhen-xxaq/dom-mirror",
+          "version": "0.11.0",
+          "archiveSha256": "1aecc222d15087a67848f3d484641dd29a6381ad6d30bf8a3b6a4c6cb46e0d9b",
+          "integrity": "sha512-er/Oa1VJzDDfdrIfi6GLJFs7KQBSgaB0VpYs61E531OHnjNtiGJePzWRZpdOOcSXGPC8XDNABfdfMJLdAT94uA==",
+          "entry": "/consumer/node_modules/@lizhen-xxaq/dom-mirror/index.js",
+          "dependencies": {
+            "puppeteer": "/consumer/node_modules/puppeteer/lib/puppeteer/puppeteer.js",
+            "sharp": "/consumer/node_modules/sharp/dist/index.cjs",
+            "ws": "/consumer/node_modules/ws/index.js"
+          },
+          "verifiedArchiveFiles": 151,
+          "lockSha256": "b71623f5f65f20b58b895c1c821b951506bf0a9efac60853cd998af6c5da854a",
+          "node": "v24.21.0",
+          "sourceCheckoutAbsent": true,
+          "loadedModulesInsideConsumer": true,
+          "browsers": [
+            {
+              "pid": 37,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 187,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 391,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 531,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 697,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 907,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            },
+            {
+              "pid": 1062,
+              "closed": true,
+              "connected": false,
+              "processGone": true
+            }
+          ]
+        },
+        "activeSessionClosed": true,
+        "repeatedClosePassed": true,
+        "hostRemainsAlive": true,
+        "closedMirrorStatus": 503
+      },
+      "image": "sha256:2b939883627068e7430e20aac8f594a3b56f0d4d508776d9ab817108f89e5d43",
+      "noOOM": true
+    }
+  },
+  "archiveFileHashes": {
+    "index.js": "1052359f11f8e79601c633633783cf4baec15dda3a7b5f1cd8ea105cdc68357b",
+    "server.js": "5a96e84f3d0e24725be20daff0bd10ceb02e6a67a024f931075aeef1f76f607b",
+    "client/index.html": "68d390e96c35607d6bacaa441b34765a0cf697d3ab0ead97eb6014cfa5eccc16",
+    "lib/options.js": "72c9b0451cac05ad448f84a4a2ef2d76cb561c67155b5318c4ab6b91c70a4dd9",
+    "lib/sessions.js": "b7c3d243fb2476e27f39432204d18dc9a4920017dd85da2874193a2163ffc307",
+    "tools/package-business-host.cjs": "d8d3289f1e53a4e4a867184766d23ae9537fe14d74eec5e055692a41a51dd171",
+    "tools/verify-package-lifecycle.cjs": "ef9a744b8dae3bb9a2588ebd64a06a40039a03d48abb4ef30c62122b6379a018",
+    "tools/verify-vikunja.cjs": "ddb29553afad3e4d7c0948d7e4d3cd1f28a3cd7f41dfbb6de5285a03663f970a",
+    "tools/verify-recovery.cjs": "527ae87f177934dbdb22b5a44ed9c16a4ba4472eddeaac52b210db2705e91c51"
+  },
+  "businessImage": "vikunja/vikunja@sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576",
+  "businessVersion": "Vikunja api version v2.7.1\nBuilt with go1.27.3",
+  "baseCommit": "dcb150039c802698ce5ea7710ad877df8ee17a10",
+  "scope": "Local pre-publication tarball generated before this acceptance report; Node 24.21.0 Linux x64; no allocator/GC tuning; not capacity or long-soak qualification."
+}
