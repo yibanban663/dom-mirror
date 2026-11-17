@@ -1085,15 +1085,16 @@ async function runSession(ws, req, lifecycle) {
   };
 
   // ===== DL 模式（Display-List 指令流）：采集 → diff → 下发 =====
-  let dlTimer = null, dlPrev = null, dlFirst = true, dlBusy = false;
+  // v2：MutationObserver 增量门（页面无变化时 collector 立即 skip）+ 空闲自适应间隔
+  let dlTimer = null, dlPrev = null, dlFirst = true, dlBusy = false, dlSkip = 0;
   function startDlMirror() {
     if (dlTimer) return;
     const tickDl = async () => {
-      if (dlBusy || !page || dead || mode !== 'dl') return;
+      if (dlBusy || !page || dead || mode !== 'dl') return { skipped: true };
       dlBusy = true;
       try {
         const data = await page.evaluate(`(${DL_COLLECTOR})(${viewW}, ${viewH})`);
-        if (!data || !Array.isArray(data.items)) return;
+        if (!data || data.skip || !Array.isArray(data.items)) return { skipped: true };
         const cur = new Map(); const changed = [];
         for (const it of data.items) {
           let h = 0; const s1 = JSON.stringify(it.ops);
@@ -1106,18 +1107,25 @@ async function runSession(ws, req, lifecycle) {
         }
         const removed = dlPrev ? [...dlPrev.keys()].filter((k) => !cur.has(k)) : [];
         dlPrev = cur;
-        if (!changed.length && !removed.length && !dlFirst) return;
+        if (!changed.length && !removed.length && !dlFirst) return {};
         sendJson({ type: 'dl', kind: dlFirst ? 'full' : 'patch', w: data.w, h: data.h, base: data.base, items: changed, removed });
         dlFirst = false;
-      } catch (e) { /* 页面导航瞬间可能采集失败：静默，下一拍重试 */ }
+        return {};
+      } catch (e) { return { skipped: true }; }
       finally { dlBusy = false; }
     };
-    dlTimer = setInterval(tickDl, 500);
-    tickDl();
+    const step = () => {
+      tickDl().then((r) => {
+        dlSkip = r && r.skipped ? dlSkip + 1 : 0;
+        const delay = dlSkip > 12 ? 2000 : (dlSkip > 6 ? 1000 : 500);
+        dlTimer = setTimeout(step, delay);
+      }, () => { dlTimer = setTimeout(step, 500); });
+    };
+    step();
   }
   function stopDlMirror() {
-    if (dlTimer) { clearInterval(dlTimer); dlTimer = null; }
-    dlPrev = null; dlFirst = true;
+    if (dlTimer) { clearTimeout(dlTimer); dlTimer = null; }
+    dlPrev = null; dlFirst = true; dlSkip = 0;
     sendJson({ type: 'dl', kind: 'off' });
   }
 
