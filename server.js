@@ -24,6 +24,7 @@ const { stripClientComments } = require('./lib/text-utils');
 const { SessionStore } = require('./lib/sessions');
 const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
+const { DL_COLLECTOR } = require('./lib/displaylist');
 
 const { normalizeOptions } = require('./lib/options');
 const { createBlockedOriginTracker } = require('./lib/policy-report');
@@ -1078,10 +1079,47 @@ async function runSession(ws, req, lifecycle) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false }).catch(() => {});
     await page.goto(ev.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     try { await page.evaluate((x, y) => window.scrollTo(x, y), ev.sx, ev.sy); } catch (e) {}
-    if (mode === 'dom' || mode === 'frame') await startDomMirror().catch(() => {});
+    if (mode === 'dl') startDlMirror(); else if (mode === 'dom' || mode === 'frame') await startDomMirror().catch(() => {});
     logger.log('[idle  ] revived in', Date.now() - t0, 'ms ->', String(ev.url).slice(0, 60));
     armIdleEvict();
   };
+
+  // ===== DL 模式（Display-List 指令流）：采集 → diff → 下发 =====
+  let dlTimer = null, dlPrev = null, dlFirst = true, dlBusy = false;
+  function startDlMirror() {
+    if (dlTimer) return;
+    const tickDl = async () => {
+      if (dlBusy || !page || dead || mode !== 'dl') return;
+      dlBusy = true;
+      try {
+        const data = await page.evaluate(`(${DL_COLLECTOR})(${viewW}, ${viewH})`);
+        if (!data || !Array.isArray(data.items)) return;
+        const cur = new Map(); const changed = [];
+        for (const it of data.items) {
+          let h = 0; const s1 = JSON.stringify(it.ops);
+          for (let i = 0; i < s1.length; i++) h = (h * 31 + s1.charCodeAt(i)) | 0;
+          cur.set(it.id, h);
+          if (!dlPrev || dlPrev.get(it.id) !== h) {
+            for (const op of it.ops) if (op && op.a === 'im' && op.src && /^https?:/.test(op.src)) { op.src = absToProxy(op.src) || op.src; }
+            changed.push(it);
+          }
+        }
+        const removed = dlPrev ? [...dlPrev.keys()].filter((k) => !cur.has(k)) : [];
+        dlPrev = cur;
+        if (!changed.length && !removed.length && !dlFirst) return;
+        sendJson({ type: 'dl', kind: dlFirst ? 'full' : 'patch', w: data.w, h: data.h, base: data.base, items: changed, removed });
+        dlFirst = false;
+      } catch (e) { /* 页面导航瞬间可能采集失败：静默，下一拍重试 */ }
+      finally { dlBusy = false; }
+    };
+    dlTimer = setInterval(tickDl, 500);
+    tickDl();
+  }
+  function stopDlMirror() {
+    if (dlTimer) { clearInterval(dlTimer); dlTimer = null; }
+    dlPrev = null; dlFirst = true;
+    sendJson({ type: 'dl', kind: 'off' });
+  }
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
@@ -1292,16 +1330,18 @@ async function runSession(ws, req, lifecycle) {
           }
           case 'mode': {
             // dom（真文本镜像，默认）↔ frame（像素直出兜底）双向可切
-            const next = ['dom', 'frame'].includes(m.mode) ? m.mode : 'dom';
+            const next = ['dom', 'frame', 'dl'].includes(m.mode) ? m.mode : 'dom';
             // frame → dom：帧差分循环与帧流必须死亡（dom 无帧率不变式）
             if (mode === 'frame' && next !== 'frame') {
               if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
               cdp.send('Page.stopScreencast').catch(() => {});
             }
+            // dl ↔ 其它：DL 采集循环只在 dl 模式存活
+            if (mode === 'dl' && next !== 'dl') stopDlMirror();
             mode = next;
             try {
               await cdp.send('Page.stopScreencast').catch(() => {});
-              await startDomMirror();
+              if (next === 'dl') startDlMirror(); else await startDomMirror();
               sendJson({ type: 'mode', mode });
             } catch (e) {
               sendJson({ type: 'error', msg: `模式 ${next} 启动失败: ${e.message}` });
