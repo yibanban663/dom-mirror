@@ -1086,7 +1086,11 @@ async function runSession(ws, req, lifecycle) {
 
   // ===== DL 模式（Display-List 指令流）：采集 → diff → 下发 =====
   // v2：MutationObserver 增量门（页面无变化时 collector 立即 skip）+ 空闲自适应间隔
+  // v5：collector 改报部分帧（items 只含本拍变化项）——服务端持全量 dlItems 合并；
+  //     partial===false 为全量对账（重建状态 + full 帧）；新增滚动下发与 hit 表透传
   let dlTimer = null, dlPrev = null, dlFirst = true, dlBusy = false, dlSkip = 0, dlUrl = '';
+  const dlItems = new Map(); // id → item：服务端全量状态（部分帧合并/对账基准）
+  let dlSx = null, dlSy = null; // 上一拍滚动位置基线（导航/停止时重置，重置后首拍只定基线不下发）
   function startDlMirror() {
     if (dlTimer) return;
     const tickDl = async () => {
@@ -1096,25 +1100,67 @@ async function runSession(ws, req, lifecycle) {
         // v4：导航检测——URL 变了(含 302 弹回)就重置为全量帧，客户端 store 清空重建
         let curUrl = '';
         try { curUrl = page.url(); } catch (e) {}
-        if (curUrl && dlUrl && curUrl !== dlUrl) { dlFirst = true; dlPrev = null; }
+        if (curUrl && dlUrl && curUrl !== dlUrl) {
+          dlFirst = true; dlPrev = null;
+          dlItems.clear(); dlSx = null; dlSy = null; // v5：全量状态与滚动基线一并重置
+        }
         if (curUrl) dlUrl = curUrl;
+        // P0-1：full 帧只由真全量产生——dlFirst 拍先强制 collector 本拍全量（overflow → partial===false）
+        if (dlFirst) await page.evaluate('window.__xyDlOverflow = true').catch(() => {});
         const data = await page.evaluate(`(${DL_COLLECTOR})(${viewW}, ${viewH})`);
+        // v5 滚动下发：与上一拍基线不同才发 dlscroll（skip 帧也可能是纯滚动，故在 skip 判定前）
+        if (data && Number.isFinite(data.sx) && Number.isFinite(data.sy)) {
+          if (dlSx !== null && dlSy !== null && (data.sx !== dlSx || data.sy !== dlSy)) {
+            if (mode !== 'dl') return { skipped: true }; // P1-2：在飞复检——采集期间可能已停止/切模式
+            sendJson({ type: 'dlscroll', sx: data.sx, sy: data.sy });
+          }
+          dlSx = data.sx; dlSy = data.sy;
+        }
         if (!data || data.skip || !Array.isArray(data.items)) return { skipped: true };
+        // P0-1：dlFirst 拍必须拿到真全量（partial===false）才允许发 full；异常时本拍不发任何 dl 帧，
+        // dlFirst 保持 true 下一拍重试
+        if (dlFirst && data.partial !== false) return { skipped: true };
+        const isFull = dlFirst; // 到这里 dlFirst 为真 ⟺ collector 报了真全量
+        // P0-2：普通对账拍（partial===false，含 scroll 触发的 overflow）不再当 full——不清 dlPrev、
+        // 不置 dlFirst，kind 保持 'patch'，由 hash 二道过滤只发真正变化的 items；dlPrev 清空仅在
+        // URL 变化分支发生。dlItems 仍按对账重建（服务端全量状态基准）
+        if (data.partial === false) dlItems.clear();
+        // v5：removed 由 collector 直接上报；先删后放（同 id 重现时保留新版本）
+        const removed = Array.isArray(data.removed) ? data.removed : [];
+        for (const id of removed) dlItems.delete(id);
+        const proxyIt = (it) => {
+          for (const op of it.ops) if (op && op.a === 'im' && op.src && /^https?:/.test(op.src)) { op.src = absToProxy(op.src) || op.src; }
+        };
         const cur = new Map(); const changed = [];
-        for (const it of data.items) {
-          let h = 0; const s1 = JSON.stringify(it.ops);
-          for (let i = 0; i < s1.length; i++) h = (h * 31 + s1.charCodeAt(i)) | 0;
-          cur.set(it.id, h);
-          if (!dlPrev || dlPrev.get(it.id) !== h) {
-            for (const op of it.ops) if (op && op.a === 'im' && op.src && /^https?:/.test(op.src)) { op.src = absToProxy(op.src) || op.src; }
+        if (dlPrev === null) {
+          // P2：dlPrev===null ⟺ 本拍必 full——跳过逐项 stringify+hash，全部视为 changed
+          for (const it of data.items) { proxyIt(it); changed.push(it); }
+        } else {
+          // hash 第二道过滤（collector 已只报变化，防同内容重复下发）；hit 原样参与透传与 hash
+          // 报到即记 hash：未变化项保留在 dlPrev，防后续对账拍重复下发
+          for (const it of data.items) {
+            let h = 0; const s1 = JSON.stringify(it.ops) + '|' + JSON.stringify(it.hit || 0);
+            for (let i = 0; i < s1.length; i++) h = (h * 31 + s1.charCodeAt(i)) | 0;
+            cur.set(it.id, h);
+            if (dlPrev.get(it.id) === h) continue;
+            proxyIt(it);
             changed.push(it);
           }
         }
-        const removed = dlPrev ? [...dlPrev.keys()].filter((k) => !cur.has(k)) : [];
-        dlPrev = cur;
-        if (!changed.length && !removed.length && !dlFirst) return {};
-        sendJson({ type: 'dl', kind: dlFirst ? 'full' : 'patch', w: data.w, h: data.h, base: data.base, items: changed, removed });
-        dlFirst = false;
+        // P0-3：400 上限只限 patch（full 帧不设限）；patch 截断时只把实际发送的 items 留在 dlPrev
+        //（被截掉的不记 hash——下一拍 hash 不同自然重发）
+        if (!isFull && changed.length > 400) {
+          try { logger.log('[dl   ] frame items overflow:', changed.length, '-> capped at 400'); } catch (e) {}
+          const dropped = changed.slice(400);
+          changed.length = 400;
+          for (const it of dropped) cur.delete(it.id);
+        }
+        dlPrev = cur; // full 拍为空 Map：下一拍起走 hash 过滤
+        for (const it of data.items) dlItems.set(it.id, it); // 与 changed 同引用，proxy 转换已生效
+        if (!changed.length && !removed.length && !isFull) return {};
+        if (mode !== 'dl') return { skipped: true }; // P1-2：在飞复检——发送前确认仍在 dl 模式
+        sendJson({ type: 'dl', kind: isFull ? 'full' : 'patch', w: data.w, h: data.h, base: data.base, items: changed, removed });
+        dlFirst = false; // P0-1：仅真 full 帧发出后才清
         return {};
       } catch (e) { return { skipped: true }; }
       finally { dlBusy = false; }
@@ -1131,6 +1177,7 @@ async function runSession(ws, req, lifecycle) {
   function stopDlMirror() {
     if (dlTimer) { clearTimeout(dlTimer); dlTimer = null; }
     dlPrev = null; dlFirst = true; dlSkip = 0;
+    dlItems.clear(); dlSx = null; dlSy = null; // v5：全量状态与滚动基线一并清空
     sendJson({ type: 'dl', kind: 'off' });
   }
 
@@ -1514,10 +1561,21 @@ async function runSession(ws, req, lifecycle) {
             break;
           case 'composition':
             noteInput();
+            // v5 DL 模式 IME 定位：客户端带 m.x/m.y（最近点击坐标）→ 先物理点击聚焦再合成；
+            // dom 模式不发 x/y，此前置无副作用。lib/input.js 的 focusRef(id/path) 不动。
+            if (m && Number.isFinite(m.x) && Number.isFinite(m.y)) {
+              await page.mouse.click(m.x, m.y).catch(() => {});
+              delete m.x; delete m.y;
+            }
             await input.composition(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition failed: ' + err.message }));
             break;
           case 'composition-commit':
             noteInput();
+            // v5 DL 模式 IME 定位：同 composition——前置点击聚焦，坐标用完即删
+            if (m && Number.isFinite(m.x) && Number.isFinite(m.y)) {
+              await page.mouse.click(m.x, m.y).catch(() => {});
+              delete m.x; delete m.y;
+            }
             await input.compositionCommit(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition commit failed: ' + err.message }));
             break;
           case 'upload-begin': {
