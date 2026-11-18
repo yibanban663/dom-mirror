@@ -1,0 +1,82 @@
+// Chromium PaintOp 全量导出补丁
+// 
+// 目标：在 cc::DisplayItemList 的序列化点强制导出所有层的 PaintOpBuffer
+// 为 SkPicture 二进制，通过共享内存或文件供外部消费。
+//
+// 补丁位置：src/cc/paint/display_item_list.cc
+// 依赖：cc/paint/paint_op_buffer.h, third_party/skia/include/core/SkPictureRecorder.h
+//
+// 构建：打在 Chromium 156 源码上，标准构建流程（gn + autoninja chrome）
+// 使用：环境变量 XY_SKP_DUMP_DIR=/tmp/skp 激活，不需要时不编译任何 overhead
+
+--- a/src/cc/paint/display_item_list.cc
++++ b/src/cc/paint/display_item_list.cc
+@@ -20,6 +20,10 @@
+ #include "third_party/skia/include/core/SkCanvas.h"
+ #include "third_party/skia/include/core/SkPictureRecorder.h"
+ 
++// [XY-DL] 全量 PaintOp 导出补丁 —— v1
++// 在 DisplayItemList 创建/更新时，把 PaintOpBuffer 录制为 SkPicture 并落盘。
++// 外部（dom-mirror 引擎）通过 watch 目录消费 .skp 文件，经 CanvasKit 无损重放。
++#include "base/files/file_util.h"
++#include "base/strings/string_number_conversions.h"
+ 
+ namespace cc {
+ 
++namespace {
++// [XY-DL] 导出开关：环境变量控制，不设则零开销
++bool SkpDumpEnabled() {
++  static bool enabled = getenv("XY_SKP_DUMP_DIR") != nullptr;
++  return enabled;
++}
++
++void DumpSkPicture(const PaintOpBuffer* buffer, const gfx::Rect& layer_rect,
++                   uint64_t item_id) {
++  if (!SkpDumpEnabled() || !buffer) return;
++
++  const char* dir = getenv("XY_SKP_DUMP_DIR");
++  if (!dir) return;
++
++  // 录制 PaintOpBuffer → SkPicture（零成本：本来就要 playback）
++  SkPictureRecorder recorder;
++  SkCanvas* canvas = recorder.beginRecording(
++      SkRect::MakeXYWH(layer_rect.x(), layer_rect.y(),
++                       layer_rect.width(), layer_rect.height()));
++  buffer->Playback(canvas);
++  sk_sp<SkPicture> picture = recorder.finishRecordingAsPicture();
++
++  // 序列化 SkPicture → 二进制
++  sk_sp<SkData> data = picture->serialize();
++  if (!data || data->size() == 0) return;
++
++  // 落盘：<dir>/<layer_rect>_<id>.skp
++  // 文件名含 rect 供消费端定位，id 去重
++  std::string filename = base::StringPrintf(
++      "%s/%dx%dx%dx%d_%llu.skp",
++      dir, layer_rect.x(), layer_rect.y(),
++      layer_rect.width(), layer_rect.height(),
++      static_cast<unsigned long long>(item_id));
++
++  base::WriteFile(base::FilePath::FromUTF8Unsafe(filename),
++                  static_cast<const char*>(data->data()), data->size());
++}
++
++// [XY-DL] 全局层计数器（生成唯一 ID）
++std::atomic<uint64_t> g_skp_item_id{0};
++}  // namespace
++
+ DisplayItemList::DisplayItemList(FlushMode flush_mode,
+                                  raster_color_space color_space)
+     : flush_mode_(flush_mode), color_space_(color_space) {}
+@@ -45,6 +92,11 @@ void DisplayItemList::Finalize() {
+   // about to be handed off to the raster worker. See
+   // https://crbug.com/922713 for details.
+   playback_.ShrinkToFit();
++
++  // [XY-DL] Finalize 是所有 DisplayItemList 的必经点——在这里导出
++  // 保证每个层（含首屏/静默层）都会被抓到，覆盖 cc.debug.picture 的缺口
++  if (SkpDumpEnabled()) {
++    DumpSkPicture(&playback_, CullRect().TogfxRect(),
++                  ++g_skp_item_id);
++  }
+ }
