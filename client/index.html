@@ -260,6 +260,30 @@
   let dlKeyTarget = null;               // v5 隐藏 input：canvas 无法唤起输入法，由它承接 IME 合成
   let compositionStr = '';              // v5 合成中文本地投机回显（compositionupdate 写入）
   let dlLocalEcho = '';                 // v5 单字符投机回显（服务端 dl 帧到达即清）
+  // v7.1: 两端字体统一——服务端 Linux 渲染实际落在 Noto Sans SC，客户端注入引擎同款字体
+  (function dlInjectNoto() {
+    const st = document.createElement('style'); st.id = 'dlNotoStyle';
+    st.textContent = '@font-face{font-family:"Noto Sans SC";font-weight:400;font-display:swap;src:url("/f/noto-regular") format("woff2")}'
+      + '@font-face{font-family:"Noto Sans SC";font-weight:700;font-display:swap;src:url("/f/noto-bold") format("woff2")}';
+    document.head.appendChild(st);
+    try { document.fonts.ready.then(() => { if (typeof dlReplay === 'function') dlReplay(); }); } catch (e) {}
+  })();
+  let dlFontFams = new Set();
+  function dlRegisterFonts(fonts) {
+    let css = '';
+    for (const f of fonts) {
+      if (!f || !f.fam || !f.u || dlFontFams.has(f.fam + '|' + f.w)) continue;
+      dlFontFams.add(f.fam + '|' + f.w);
+      const wt = (parseInt(f.w, 10) >= 600) ? '700' : '400';
+      css += '@font-face{font-family:"' + String(f.fam).replace(/"/g, '') + '";font-weight:' + wt + ';font-display:swap;src:url("' + f.u + '");}';
+    }
+    if (!css) return;
+    let st = document.getElementById('dlFontStyle');
+    if (!st) { st = document.createElement('style'); st.id = 'dlFontStyle'; document.head.appendChild(st); }
+    st.textContent += css;
+    dlReplay(); // 字体注册后重放（swap 到位前先系统字体，加载完再正形）
+    try { document.fonts.ready.then(() => dlReplay()); } catch (e) {}
+  }
   function dlCanvas() {
     let c = document.getElementById('dlCanvas');
     if (!c) {
@@ -414,7 +438,7 @@
           dlRR(ctx, o, g);
         } catch (e) {}
       } else if (o.a === 'tx') {
-        ctx.font = (o.w || 400) + ' ' + (o.s || 14) + 'px "' + (o.f || 'sans-serif') + '", "Microsoft YaHei", "PingFang SC", sans-serif';
+        ctx.font = (o.w || 400) + ' ' + (o.s || 14) + 'px "Noto Sans SC", "' + (o.f || 'sans-serif') + '", "Microsoft YaHei", sans-serif';
         if (o.ls) { try { ctx.letterSpacing = o.ls + 'px'; } catch (e) {} }
         ctx.fillStyle = o.c || '#333'; ctx.textBaseline = 'alphabetic';
         ctx.textAlign = o.align === 'center' ? 'center' : (o.align === 'right' ? 'right' : 'left');
@@ -467,6 +491,7 @@
     // v6：full 只清 store/order 与滚动偏移，dlImages（SVG/图片 dataURL 缓存）跨 full
     // 保留——滚动/对账触发的 full 重发不再全图闪烁+重新解码取图。
     if (j.kind === 'full') { dlStore = new Map(); dlOrder = []; dlSx = 0; dlSy = 0; dlLocalEcho = ''; }
+    if (j.fonts && j.fonts.length) dlRegisterFonts(j.fonts);
     if (j.base) dlBase = j.base;
     // v5：item 可能携带 hit:{k,x,y,w,h}（服务端命中测试元数据）——随 item 整体入
     // store 即可；重放只消费 ops，hit 字段天然被忽略。

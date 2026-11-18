@@ -1159,7 +1159,11 @@ async function runSession(ws, req, lifecycle) {
         for (const it of data.items) dlItems.set(it.id, it); // 与 changed 同引用，proxy 转换已生效
         if (!changed.length && !removed.length && !isFull) return {};
         if (mode !== 'dl') return { skipped: true }; // P1-2：在飞复检——发送前确认仍在 dl 模式
-        sendJson({ type: 'dl', kind: isFull ? 'full' : 'patch', w: data.w, h: data.h, base: data.base, items: changed, removed });
+        let dlFonts = null;
+        if (isFull && Array.isArray(data.fonts) && data.fonts.length) {
+          dlFonts = data.fonts.map((f) => { try { return { fam: f.fam, w: f.w, u: absToProxy(f.u) || f.u }; } catch (e) { return f; } });
+        }
+        sendJson({ type: 'dl', kind: isFull ? 'full' : 'patch', w: data.w, h: data.h, base: data.base, items: changed, removed, fonts: dlFonts });
         dlFirst = false; // P0-1：仅真 full 帧发出后才清
         return {};
       } catch (e) { return { skipped: true }; }
