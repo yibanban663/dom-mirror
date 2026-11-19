@@ -36,6 +36,18 @@ test('put/get 往返：剥编码头并按实际 body 重算 content-length', () 
   assert.equal(hit.body.equals(body), true);
 });
 
+test('同一 URL 的源站 CSS 和代理改写 CSS 可分别命中', () => {
+  const c = createOriginAssetCache();
+  const url = 'http://x/theme.css?v=1';
+  const raw = Buffer.from('body {}');
+  const rewritten = Buffer.from('.xy-body {}');
+  assert.ok(c.put(url, { status: 200, headers: {}, body: raw }));
+  assert.equal(c.get(url, 'css-rw'), null);
+  assert.ok(c.put(url, { status: 200, headers: {}, body: rewritten }, 'css-rw'));
+  assert.deepEqual(c.get(url).body, raw);
+  assert.deepEqual(c.get(url, 'css-rw').body, rewritten);
+});
+
 test('TTL：max-age 限幅 [30s,600s]，无 cache-control 用默认', async () => {
   let t = 1000;
   const c = createOriginAssetCache({ defaultTtlMs: 500, now: () => t });
@@ -63,7 +75,20 @@ test('字节上限 LRU 逐出：超限逐最旧，touch 保新', () => {
   assert.equal(c.get('http://x/b.js'), null); // 未 touch 的 b 被逐
   assert.ok(c.get('http://x/a.js')); // touch 过的 a 保留
   assert.ok(c.get('http://x/c.js'));
-  assert.ok(c.stats().bytes <= 3200 + 512);
+  assert.ok(c.stats().bytes <= 3200);
+});
+
+test('单条记账大小超过总预算时拒绝写入，保留已有条目', () => {
+  const c = createOriginAssetCache({ maxBytes: 1024 });
+  const put = (url, length) => c.put(url, { status: 200, headers: {}, body: Buffer.alloc(length) });
+  const cached = 'http://x/a.js';
+  const tooLarge = 'http://x/b.js';
+
+  assert.equal(put(cached, 512), true); // 加上 512 字节开销，恰好用满预算
+  assert.equal(put(tooLarge, 513), false);
+  assert.equal(c.get(tooLarge), null);
+  assert.ok(c.get(cached));
+  assert.deepEqual(c.stats(), { entries: 1, bytes: 1024, maxBytes: 1024 });
 });
 
 test('超限单体不入库', () => {
