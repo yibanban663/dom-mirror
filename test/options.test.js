@@ -3,6 +3,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeOptions } = require('../lib/options');
 
+test('origin asset cache capacity accepts finite values between 0 and 1024 MiB', () => {
+  const config = originAssetCacheMb => normalizeOptions({ originUrl: 'http://localhost/', originAssetCacheMb });
+  for (const value of [0, 0.5, 1024]) assert.equal(config(value).originAssetCacheMb, value);
+  for (const value of [NaN, Infinity, -1, 1025, '1']) assert.throws(() => config(value), /originAssetCacheMb/);
+});
+
 test('redaction accepts exact attribute names and snapshots a normalized independent list', () => {
   const attributes = ['DATA-PRIVATE', 'data-private', 'aria-label'];
   const config = normalizeOptions({ originUrl: 'http://localhost/', redactAttributes: attributes });
