@@ -59,6 +59,25 @@ test('import never listens, launches Chromium, reads Demo config or owns process
   `], { cwd: require('node:path').join(__dirname, '..'), timeout: 10000 });
 });
 
+test('the asset proxy caches rewritten CSS across requests', async t => {
+  let requests = 0;
+  const origin = http.createServer((req, res) => {
+    requests++;
+    res.writeHead(200, { 'content-type': 'text/css', 'cache-control': 'public, max-age=60' });
+    res.end('body { color: red }');
+  });
+  origin.listen(0, '127.0.0.1');
+  await once(origin, 'listening');
+  t.after(() => new Promise(resolve => origin.close(resolve)));
+  const { url } = await host(t, { originUrl: 'http://127.0.0.1:' + origin.address().port, originAssetCacheMb: 1 });
+  for (let i = 0; i < 2; i++) {
+    const response = await fetch(url + '/m/theme.css?v=1');
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '.xy-body { color: red }');
+  }
+  assert.equal(requests, 1);
+});
+
 test('invalid package options fail before creating resources', async () => {
   for (const options of [undefined, {}, { originUrl: 'file:///tmp/a' },
     { originUrl: 'http://user:password@localhost/' },

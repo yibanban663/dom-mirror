@@ -487,10 +487,10 @@ function proxyAsset(req, res) {
   // v0.76：css 经代理改写（选择子映射/绝对URL）后与源站原始字节不同——必须
   // 与会话浏览器拦截路径（原始键）隔离存取，否则源站页面吃到 .xy-body 改写
   // 版 css 即中毒（Vikunja 建项点击全错实测）
-  const cacheKey = /\.css(?:$|\?)/i.test(uKey) ? ('css-rw:' + uKey) : uKey;
+  const cacheVariant = /\.css$/i.test(u.pathname) ? 'css-rw' : undefined;
   // v0.32 镜像复用：/m/ 表现层资产跨访客共享缓存——命中免回源
   if (originAssetCache) {
-    const hit = originAssetCache.get(cacheKey);
+    const hit = originAssetCache.get(uKey, cacheVariant);
     if (hit) {
       try { logger.log('[cache ] m-hit', new URL(u).pathname.slice(0, 70)); } catch (e) {}
       res.writeHead(hit.status, {
@@ -534,7 +534,7 @@ function proxyAsset(req, res) {
         let body = Buffer.concat(chunks);
         // v0.76：css 响应改写后再入库/下发（缓存里存改写后形态，命中零成本）
         if (/^text\/css/.test(ct)) { try { body = Buffer.from(cssProxyRewrite(body.toString('utf8'))); } catch (e) {} }
-        originAssetCache.put(cacheKey, { status: up.statusCode || 200, headers: up.headers, body });
+        originAssetCache.put(uKey, { status: up.statusCode || 200, headers: up.headers, body }, cacheVariant);
         if (!res.headersSent) {
           res.writeHead(up.statusCode || 200, {
             'content-type': up.headers['content-type'] || 'application/octet-stream',

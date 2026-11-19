@@ -36,6 +36,18 @@ test('put/get 往返：剥编码头并按实际 body 重算 content-length', () 
   assert.equal(hit.body.equals(body), true);
 });
 
+test('同一 URL 的源站 CSS 和代理改写 CSS 可分别命中', () => {
+  const c = createOriginAssetCache();
+  const url = 'http://x/theme.css?v=1';
+  const raw = Buffer.from('body {}');
+  const rewritten = Buffer.from('.xy-body {}');
+  assert.ok(c.put(url, { status: 200, headers: {}, body: raw }));
+  assert.equal(c.get(url, 'css-rw'), null);
+  assert.ok(c.put(url, { status: 200, headers: {}, body: rewritten }, 'css-rw'));
+  assert.deepEqual(c.get(url).body, raw);
+  assert.deepEqual(c.get(url, 'css-rw').body, rewritten);
+});
+
 test('TTL：max-age 限幅 [30s,600s]，无 cache-control 用默认', async () => {
   let t = 1000;
   const c = createOriginAssetCache({ defaultTtlMs: 500, now: () => t });
