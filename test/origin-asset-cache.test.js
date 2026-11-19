@@ -63,7 +63,20 @@ test('字节上限 LRU 逐出：超限逐最旧，touch 保新', () => {
   assert.equal(c.get('http://x/b.js'), null); // 未 touch 的 b 被逐
   assert.ok(c.get('http://x/a.js')); // touch 过的 a 保留
   assert.ok(c.get('http://x/c.js'));
-  assert.ok(c.stats().bytes <= 3200 + 512);
+  assert.ok(c.stats().bytes <= 3200);
+});
+
+test('单条记账大小超过总预算时拒绝写入，保留已有条目', () => {
+  const c = createOriginAssetCache({ maxBytes: 1024 });
+  const put = (url, length) => c.put(url, { status: 200, headers: {}, body: Buffer.alloc(length) });
+  const cached = 'http://x/a.js';
+  const tooLarge = 'http://x/b.js';
+
+  assert.equal(put(cached, 512), true); // 加上 512 字节开销，恰好用满预算
+  assert.equal(put(tooLarge, 513), false);
+  assert.equal(c.get(tooLarge), null);
+  assert.ok(c.get(cached));
+  assert.deepEqual(c.stats(), { entries: 1, bytes: 1024, maxBytes: 1024 });
 });
 
 test('超限单体不入库', () => {
