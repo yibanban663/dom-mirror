@@ -2654,7 +2654,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         if (mirrorBody) {
           const sr = mirrorRoot;
           const art = sr.querySelectorAll('[data-xy-sel], .xy-tiles, [data-xy-sel] *');
-          fp = mirrorBody.querySelectorAll('*').length - art.length;
+          fp = mirrorBody.querySelectorAll('[data-xy-id]').length; /* v0.79 snapshot-sourced only: aligns client count with server countable set, kills structural false-drift */
         }
       } catch (e) {}
       const rumTick = (window.__rumTick = (window.__rumTick || 0) + 1);
