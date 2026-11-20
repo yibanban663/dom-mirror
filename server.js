@@ -249,7 +249,7 @@ function serveClientHtml(req, res) {
           'Content-Length': gz.length,
           'X-Content-Type-Options': 'nosniff',
           'Referrer-Policy': 'no-referrer',
-          'X-Frame-Options': 'SAMEORIGIN',
+          'X-Frame-Options': process.env.XY_ALLOW_FRAMING === '1' ? 'ALLOWALL' : 'SAMEORIGIN',
           'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
           'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
         });
@@ -264,7 +264,7 @@ function serveClientHtml(req, res) {
       // v0.36 WAF 加固：安全响应头
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'X-Frame-Options': 'SAMEORIGIN',
+      'X-Frame-Options': process.env.XY_ALLOW_FRAMING === '1' ? 'ALLOWALL' : 'SAMEORIGIN',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
     });
