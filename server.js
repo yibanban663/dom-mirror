@@ -1723,7 +1723,23 @@ async function runSession(ws, req, lifecycle) {
     //（限频 15s；dnd 结构小漂移（<结构阈值）正是靠本通道自愈的，v0.79 由
     // frame 降级顺带完成，观测模式必须显式补上）
     if (!FIDELITY_DOWNGRADE) {
+      // v0.82 观测模式熔断：重同步后失配形貌不变（同 match/judged）= 结构性
+      // 失配（视口差异/字体度量/动画区域几何），重拍永远无法收敛——只会把动
+      // 态页打成 15s 一次整树重建（实测烽火台：snaps 每 45s+1、闪屏不可用、
+      // CPU/带宽双爆）。连续 2 轮相似失配 → 静默 10 分钟，补丁通道继续保鲜。
       const nowOb = Date.now();
+      const sig = String(why).replace(/\s+/g, ' ');
+      if (fidelityDowngrade.__sig === sig) fidelityDowngrade.__repeat = (fidelityDowngrade.__repeat || 0) + 1;
+      else { fidelityDowngrade.__sig = sig; fidelityDowngrade.__repeat = 0; }
+      if ((fidelityDowngrade.__repeat || 0) >= 2) {
+        fidelityDowngrade.__muteUntil = nowOb + 600000;
+        if (nowOb - (fidelityDowngrade.__muteLog || 0) > 600000) {
+          fidelityDowngrade.__muteLog = nowOb;
+          try { logger.log('[fidelity] OBSERVE mute 10min (structural mismatch, patches keep flow) why=' + why); } catch (eD) {}
+        }
+        return;
+      }
+      if (fidelityDowngrade.__muteUntil && nowOb < fidelityDowngrade.__muteUntil) return;
       if (nowOb - (fidelityDowngrade.__lastResync || 0) > 15000) {
         fidelityDowngrade.__lastResync = nowOb;
         try { logger.log('[fidelity] OBSERVE resync-dom origin=' + orgOf() + ' why=' + why); } catch (eD) {}
