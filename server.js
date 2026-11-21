@@ -2491,10 +2491,15 @@ async function runSession(ws, req, lifecycle) {
         let rafActive = false;
         // v0.72 video 旁路 rAF 门：视频播放不依赖页面 rAF（纯 <video> 页 rAF 静止），
         // 页内有可见 video 就保持捕获循环存活；静止视频由 sig 指数退避收敛成本
-        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) return; }
+        // v0.83 内容率旁路：rAF 停转但画布内容仍在变（ECharts 类"短动画长静止"
+        // 轮询图表）不应整拍跳过——上一拍 streak>=2 的画布视为内容活跃，继续捕获
+        // 并允许进入 JPEG 快道（带宽仍受 TILE_BUDGET/CAPTURE_PER_SEC 双闸约束）
+        const contentActive = list.some((it) => { const k = it.id !== undefined ? it.id : it.path; return (animStreak.get(k) || 0) >= 2; });
+        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !contentActive && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) return; }
         else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
+        if (contentActive) rafActive = true;
         // v0.65 动画集合（含 streak 判定）——用于帧流目标与占位集
-        const animItems = list.filter((it) => it.kind !== 'elbit' && it.kind !== 'video' && rafActive && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2); // v0.72 video 不进帧流（非 canvas 合成面）
+        const animItems = list.filter((it) => it.kind !== 'elbit' && it.kind !== 'video' && (rafActive || contentActive) && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2); // v0.72 video 不进帧流（非 canvas 合成面）
         if (animItems.length) {
           scLastAnimAt = Date.now();
           if (!scOn) {
@@ -2553,7 +2558,7 @@ async function runSession(ws, req, lifecycle) {
           let usedData = false;
           // v0.64 动画快速通道判定（streak 来自此前各拍；截图后 sig record 再更新）
           const animStreakN = animStreak.get(sigKey) || 0;
-          const animFast = it.kind !== 'elbit' && rafActive && animStreakN >= 2;
+          const animFast = it.kind !== 'elbit' && (rafActive || contentActive) && animStreakN >= 2;
           // v0.77 快车道分级：streak 2-4 = 慢更新（轮询仪表盘 2s 一刷）——全分辨率
           // q85（每秒至多一两帧，带宽无压力，文字/图表必须清晰）；streak≥5 = 真动画
           // 才降半档走 ANIM_SCALE/ANIM_QUALITY（带宽优先）。beacon 实测模糊根因：
