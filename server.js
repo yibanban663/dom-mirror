@@ -25,6 +25,7 @@ const { SessionStore } = require('./lib/sessions');
 const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
 const { DL_COLLECTOR } = require('./lib/displaylist');
+const { createSkpBridge } = require('./lib/skp-bridge');
 
 const { normalizeOptions } = require('./lib/options');
 const { createBlockedOriginTracker } = require('./lib/policy-report');
@@ -101,6 +102,7 @@ const sessionLaunch = () => puppeteer.launch({
 const browserPool = config.browserPoolSize > 0
   ? createBrowserPool({ size: config.browserPoolSize, launch: sessionLaunch, logger, maxTenants: config.browserPoolTenants, idleHibernateMs: config.browserPoolHibernateMs })
   : null;
+const skpBridge = createSkpBridge({ shellPath: '/app/dl-a/headless_shell', logger: (m) => logger.log('[skp-bridge] ' + m) });
 // v0.32 镜像复用：热页池（单访客专用预热页，免冷启动）+ 源站静态资产跨会话共享缓存
 const { createWarmPageManager } = require('./lib/warm-pages');
 const { createOriginAssetCache } = require('./lib/origin-asset-cache');
@@ -582,6 +584,7 @@ function proxyAsset(req, res) {
 // 域=CJK 标点(3000-303F)+基本区(4E00-9FFF)+全角(FF00-FFEF)。
 // 字体由 tools/build_obf_font.py 在构建期烘焙（种子池 assets/obf/），会话创建即生效
 // （零预热）；种子池可扩容，动态按会话构建走同脚本（python3-fonttools）。
+const XY_A_ROUTE = process.env.XY_A_ROUTE === '1';
 const OBF_ON = config.obfuscate;
 // v0.76 样式表直通：默认关闭（opt-in XY_CSS_PASSTHROUGH=1）。v0.84 结案：当年
 // "路由切换后补丁 id miss" 真相是直通字节漏做字体栈对齐 → 保真锚点持续失配
@@ -781,6 +784,12 @@ function handleRequest(req, res) {
       }
     } catch (e) {}
     return proxyAsset(req, res);
+  }
+  // v0.84 A-route：CanvasKit 由引擎同源伺服（CSP script-src 'self' 放行）
+  if (req.url === '/f/ck.js' || req.url === '/f/ck.wasm') {
+    sendFile(req, res, path.join('/app/dl-a', req.url.endsWith('.js') ? 'canvaskit.js' : 'canvaskit.wasm'),
+      req.url.endsWith('.js') ? 'application/javascript' : 'application/wasm', 'public, max-age=86400, immutable');
+    return;
   }
   if (req.url === '/f/noto-regular' || req.url === '/f/noto-bold') {
     // 与服务端渲染同源的字体下发（WOFF2）：客户端文字度量与像素渲染一致
@@ -1092,6 +1101,7 @@ async function runSession(ws, req, lifecycle) {
   const dlItems = new Map(); // id → item：服务端全量状态（部分帧合并/对账基准）
   let dlSx = null, dlSy = null; // 上一拍滚动位置基线（导航/停止时重置，重置后首拍只定基线不下发）
   function startDlMirror() {
+  if (XY_A_ROUTE) { try { const __u = (typeof page !== 'undefined' && page && page.url) ? page.url() : ORIGIN_URL; skpBridge.start(__u, (obj) => sendJson(obj)); } catch (eA) { logger.log('[skp-bridge] start err', eA.message); } }
     if (dlTimer) return;
     const tickDl = async () => {
       if (dlBusy || !page || dead || mode !== 'dl') return { skipped: true };
@@ -1186,6 +1196,7 @@ async function runSession(ws, req, lifecycle) {
   };
 
   function stopDlMirror() {
+    if (XY_A_ROUTE) skpBridge.stop();
     if (dlTimer) { clearTimeout(dlTimer); dlTimer = null; }
     dlPrev = null; dlFirst = true; dlSkip = 0;
     dlItems.clear(); dlSx = null; dlSy = null; // v5：全量状态与滚动基线一并清空
@@ -1248,7 +1259,7 @@ async function runSession(ws, req, lifecycle) {
   };
   cleanups.add(cleanup);
   lifecycle.cleanup = cleanup;
-  ws.on('close', cleanup);
+  ws.on('close', () => { cleanup(); if (XY_A_ROUTE) skpBridge.stop(); }); // A-route
   ws.on('error', () => {});
   // v0.30 会话活性探测：浏览器页销毁后 TCP 半开不触发 close（既有缺陷，
   // 一会话一浏览器时靠 MAX_SESSIONS 冗余掩盖；池化后会占死池位）。
@@ -1501,6 +1512,7 @@ async function runSession(ws, req, lifecycle) {
             break;
           }
           case 'navigate': {
+            if (XY_A_ROUTE && skpBridge) skpBridge.setUrl(m.url);
             // v0.30 伪路由：地址栏跳转。仅允许会话源站白名单内的目标（与请求
             // 拦截同语义）；相对地址按当前页解析，裸主机名自动补 http://
             noteInput();

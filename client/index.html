@@ -482,6 +482,50 @@
       ctx.fillText(dlEcho, ex, ey);
     }
   }
+  let arCv = null, arCK = null, arCKLoading = false, arPic = null, arDirty = false;
+  function arInit() {
+    if (arCv || arCKLoading) return;
+    arCKLoading = true;
+    arCv = document.createElement('canvas');
+    arCv.id = 'xyAroute';
+    arCv.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:60;pointer-events:none;background:#fff';
+    const dl = document.getElementById('dlCanvas');
+    const host = (dl && dl.parentElement) || document.body;
+    if (dl) host.insertBefore(arCv, dl.nextSibling); else document.body.appendChild(arCv);
+    const sc = document.createElement('script');
+    sc.src = '/f/ck.js';
+    sc.onload = () => {
+      CanvasKitInit({ locateFile: f => '/f/ck.wasm' }).then(ck => {
+        arCK = ck;
+        const surface = arCK.MakeCanvasSurface(arCv);
+        const scv = surface ? surface.getCanvas() : null;
+        const draw = () => {
+          if (arPic && arDirty && scv) {
+            scv.clear(arCK.WHITE);
+            scv.drawPicture(arPic);
+            surface.flush();
+            arDirty = false;
+          }
+          requestAnimationFrame(draw);
+        };
+        requestAnimationFrame(draw);
+      });
+    };
+    document.head.appendChild(sc);
+  }
+  function arSkpFrame(j) {
+    arInit();
+    if (arCv) { const dl = document.getElementById('dlCanvas'); if (dl && (arCv.width !== dl.width || arCv.height !== dl.height)) { arCv.width = dl.width; arCv.height = dl.height; } }
+    if (!arCK) return;
+    try {
+      const bin = Uint8Array.from(atob(j.b64), c => c.charCodeAt(0));
+      const pic = arCK.MakePicture(bin);
+      window.__arDbg = { n: (window.__arDbg ? window.__arDbg.n : 0) + 1, len: bin.length, ok: !!pic };
+      if (pic) { arPic = pic; arDirty = true; }
+    } catch (e) {}
+  }
+  function arHide() { if (arCv) arCv.style.display = 'none'; }
+  function arShow() { if (arCv) arCv.style.display = 'block'; }
   function dlFrame(j) {
     if (j.kind === 'off') { dlCleanup(); const c = document.getElementById('dlCanvas'); if (c) c.style.display = 'none'; return; }
     const cv = dlCanvas();
@@ -2570,6 +2614,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
           }
           if (j.type === 'mode') { setMode(j.mode); lastErr = ''; setStatus('会话在线', true); }
           else if (j.type === 'dl') { try { dlFrame(j); } catch (e) { console.warn('dl frame error', e); } }
+          else if (j.type === 'skp') { try { arSkpFrame(j); arShow(); } catch (e) {} }
           else if (j.type === 'dlscroll') { try { dlScroll(j.sx, j.sy); } catch (e) { console.warn('dlscroll error', e); } }
           if (j.type === 'fp-req') {
             // v0.75 布局指纹对账：按服务端抽查 id 上报镜像元素渲染尺寸（w/h 与
