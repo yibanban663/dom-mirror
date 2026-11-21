@@ -24,6 +24,7 @@ const { stripClientComments } = require('./lib/text-utils');
 const { SessionStore } = require('./lib/sessions');
 const { frameCropInput, scanDirtyRows, dirtyRects } = require('./lib/frame-codec');
 const { createUploads, UPLOAD_CHUNK_BYTES } = require('./lib/uploads');
+const { DL_COLLECTOR } = require('./lib/displaylist');
 
 const { normalizeOptions } = require('./lib/options');
 const { createBlockedOriginTracker } = require('./lib/policy-report');
@@ -248,7 +249,7 @@ function serveClientHtml(req, res) {
           'Content-Length': gz.length,
           'X-Content-Type-Options': 'nosniff',
           'Referrer-Policy': 'no-referrer',
-          'X-Frame-Options': 'SAMEORIGIN',
+          'X-Frame-Options': process.env.XY_ALLOW_FRAMING === '1' ? 'ALLOWALL' : 'SAMEORIGIN',
           'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
           'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
         });
@@ -263,7 +264,7 @@ function serveClientHtml(req, res) {
       // v0.36 WAF 加固：安全响应头
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'X-Frame-Options': 'SAMEORIGIN',
+      'X-Frame-Options': process.env.XY_ALLOW_FRAMING === '1' ? 'ALLOWALL' : 'SAMEORIGIN',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Content-Security-Policy': "default-src * data: blob:; script-src 'self' 'unsafe-inline'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; connect-src * ws: wss:; object-src 'none'; base-uri 'none'",
     });
@@ -1078,10 +1079,118 @@ async function runSession(ws, req, lifecycle) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewW, height: viewH, deviceScaleFactor: DPR, mobile: false }).catch(() => {});
     await page.goto(ev.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     try { await page.evaluate((x, y) => window.scrollTo(x, y), ev.sx, ev.sy); } catch (e) {}
-    if (mode === 'dom' || mode === 'frame') await startDomMirror().catch(() => {});
+    if (mode === 'dl') startDlMirror(); else if (mode === 'dom' || mode === 'frame') await startDomMirror().catch(() => {});
     logger.log('[idle  ] revived in', Date.now() - t0, 'ms ->', String(ev.url).slice(0, 60));
     armIdleEvict();
   };
+
+  // ===== DL 模式（Display-List 指令流）：采集 → diff → 下发 =====
+  // v2：MutationObserver 增量门（页面无变化时 collector 立即 skip）+ 空闲自适应间隔
+  // v5：collector 改报部分帧（items 只含本拍变化项）——服务端持全量 dlItems 合并；
+  //     partial===false 为全量对账（重建状态 + full 帧）；新增滚动下发与 hit 表透传
+  let dlTimer = null, dlPrev = null, dlFirst = true, dlBusy = false, dlSkip = 0, dlUrl = '';
+  const dlItems = new Map(); // id → item：服务端全量状态（部分帧合并/对账基准）
+  let dlSx = null, dlSy = null; // 上一拍滚动位置基线（导航/停止时重置，重置后首拍只定基线不下发）
+  function startDlMirror() {
+    if (dlTimer) return;
+    const tickDl = async () => {
+      if (dlBusy || !page || dead || mode !== 'dl') return { skipped: true };
+      dlBusy = true;
+      try {
+        // v4：导航检测——URL 变了(含 302 弹回)就重置为全量帧，客户端 store 清空重建
+        let curUrl = '';
+        try { curUrl = page.url(); } catch (e) {}
+        if (curUrl && dlUrl && curUrl !== dlUrl) {
+          dlFirst = true; dlPrev = null;
+          dlItems.clear(); dlSx = null; dlSy = null; // v5：全量状态与滚动基线一并重置
+        }
+        if (curUrl) dlUrl = curUrl;
+        // P0-1：full 帧只由真全量产生——dlFirst 拍先强制 collector 本拍全量（overflow → partial===false）
+        if (dlFirst) await page.evaluate('window.__xyDlOverflow = true').catch(() => {});
+        const data = await page.evaluate(`(${DL_COLLECTOR})(${viewW}, ${viewH})`);
+        // v5 滚动下发：与上一拍基线不同才发 dlscroll（skip 帧也可能是纯滚动，故在 skip 判定前）
+        if (data && Number.isFinite(data.sx) && Number.isFinite(data.sy)) {
+          if (dlSx !== null && dlSy !== null && (data.sx !== dlSx || data.sy !== dlSy)) {
+            if (mode !== 'dl') return { skipped: true }; // P1-2：在飞复检——采集期间可能已停止/切模式
+            sendJson({ type: 'dlscroll', sx: data.sx, sy: data.sy });
+          }
+          dlSx = data.sx; dlSy = data.sy;
+        }
+        if (!data || data.skip || !Array.isArray(data.items)) return { skipped: true };
+        // P0-1：dlFirst 拍必须拿到真全量（partial===false）才允许发 full；异常时本拍不发任何 dl 帧，
+        // dlFirst 保持 true 下一拍重试
+        if (dlFirst && data.partial !== false) return { skipped: true };
+        const isFull = dlFirst; // 到这里 dlFirst 为真 ⟺ collector 报了真全量
+        // P0-2：普通对账拍（partial===false，含 scroll 触发的 overflow）不再当 full——不清 dlPrev、
+        // 不置 dlFirst，kind 保持 'patch'，由 hash 二道过滤只发真正变化的 items；dlPrev 清空仅在
+        // URL 变化分支发生。dlItems 仍按对账重建（服务端全量状态基准）
+        if (data.partial === false) dlItems.clear();
+        // v5：removed 由 collector 直接上报；先删后放（同 id 重现时保留新版本）
+        const removed = Array.isArray(data.removed) ? data.removed : [];
+        for (const id of removed) dlItems.delete(id);
+        const proxyIt = (it) => {
+          for (const op of it.ops) if (op && op.a === 'im' && op.src && /^https?:/.test(op.src)) { op.src = absToProxy(op.src) || op.src; }
+        };
+        const cur = new Map(); const changed = [];
+        if (dlPrev === null) {
+          // P2：dlPrev===null ⟺ 本拍必 full——跳过逐项 stringify+hash，全部视为 changed
+          for (const it of data.items) { proxyIt(it); changed.push(it); }
+        } else {
+          // hash 第二道过滤（collector 已只报变化，防同内容重复下发）；hit 原样参与透传与 hash
+          // 报到即记 hash：未变化项保留在 dlPrev，防后续对账拍重复下发
+          for (const it of data.items) {
+            let h = 0; const s1 = JSON.stringify(it.ops) + '|' + JSON.stringify(it.hit || 0);
+            for (let i = 0; i < s1.length; i++) h = (h * 31 + s1.charCodeAt(i)) | 0;
+            cur.set(it.id, h);
+            if (dlPrev.get(it.id) === h) continue;
+            proxyIt(it);
+            changed.push(it);
+          }
+        }
+        // P0-3：400 上限只限 patch（full 帧不设限）；patch 截断时只把实际发送的 items 留在 dlPrev
+        //（被截掉的不记 hash——下一拍 hash 不同自然重发）
+        if (!isFull && changed.length > 400) {
+          try { logger.log('[dl   ] frame items overflow:', changed.length, '-> capped at 400'); } catch (e) {}
+          const dropped = changed.slice(400);
+          changed.length = 400;
+          for (const it of dropped) cur.delete(it.id);
+        }
+        dlPrev = cur; // full 拍为空 Map：下一拍起走 hash 过滤
+        for (const it of data.items) dlItems.set(it.id, it); // 与 changed 同引用，proxy 转换已生效
+        if (!changed.length && !removed.length && !isFull) return {};
+        if (mode !== 'dl') return { skipped: true }; // P1-2：在飞复检——发送前确认仍在 dl 模式
+        let dlFonts = null;
+        if (isFull && Array.isArray(data.fonts) && data.fonts.length) {
+          dlFonts = data.fonts.map((f) => { try { return { fam: f.fam, w: f.w, u: absToProxy(f.u) || f.u }; } catch (e) { return f; } });
+        }
+        sendJson({ type: 'dl', kind: isFull ? 'full' : 'patch', w: data.w, h: data.h, base: data.base, items: changed, removed, fonts: dlFonts });
+        dlFirst = false; // P0-1：仅真 full 帧发出后才清
+        return {};
+      } catch (e) { return { skipped: true }; }
+      finally { dlBusy = false; }
+    };
+    const step = () => {
+      tickDl().then((r) => {
+        dlSkip = r && r.skipped ? dlSkip + 1 : 0;
+        const delay = dlSkip > 12 ? 2000 : (dlSkip > 6 ? 1000 : 500);
+        dlTimer = setTimeout(step, delay);
+      }, () => { dlTimer = setTimeout(step, 500); });
+    };
+    step();
+  }
+  // v6: 输入回显桥——把 activeElement 的 value 写进 data-xydl-val 属性，MutationObserver 即触发该元素重采
+  const __xyDlEchoVal = async (pg) => {
+    try {
+      await pg.evaluate("(() => { const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.value) a.setAttribute('data-xydl-val', String(a.value).slice(0, 120)); })()");
+    } catch (e) {}
+  };
+
+  function stopDlMirror() {
+    if (dlTimer) { clearTimeout(dlTimer); dlTimer = null; }
+    dlPrev = null; dlFirst = true; dlSkip = 0;
+    dlItems.clear(); dlSx = null; dlSy = null; // v5：全量状态与滚动基线一并清空
+    sendJson({ type: 'dl', kind: 'off' });
+  }
 
   const sendJson = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
@@ -1292,16 +1401,18 @@ async function runSession(ws, req, lifecycle) {
           }
           case 'mode': {
             // dom（真文本镜像，默认）↔ frame（像素直出兜底）双向可切
-            const next = ['dom', 'frame'].includes(m.mode) ? m.mode : 'dom';
+            const next = ['dom', 'frame', 'dl'].includes(m.mode) ? m.mode : 'dom';
             // frame → dom：帧差分循环与帧流必须死亡（dom 无帧率不变式）
             if (mode === 'frame' && next !== 'frame') {
               if (diffTimer) { clearInterval(diffTimer); diffTimer = null; }
               cdp.send('Page.stopScreencast').catch(() => {});
             }
+            // dl ↔ 其它：DL 采集循环只在 dl 模式存活
+            if (mode === 'dl' && next !== 'dl') stopDlMirror();
             mode = next;
             try {
               await cdp.send('Page.stopScreencast').catch(() => {});
-              await startDomMirror();
+              if (next === 'dl') startDlMirror(); else await startDomMirror();
               sendJson({ type: 'mode', mode });
             } catch (e) {
               sendJson({ type: 'error', msg: `模式 ${next} 启动失败: ${e.message}` });
@@ -1461,11 +1572,24 @@ async function runSession(ws, req, lifecycle) {
             break;
           case 'composition':
             noteInput();
+            // v5 DL 模式 IME 定位：客户端带 m.x/m.y（最近点击坐标）→ 先物理点击聚焦再合成；
+            // dom 模式不发 x/y，此前置无副作用。lib/input.js 的 focusRef(id/path) 不动。
+            if (m && Number.isFinite(m.x) && Number.isFinite(m.y)) {
+              await page.mouse.click(m.x, m.y).catch(() => {});
+              delete m.x; delete m.y;
+            }
             await input.composition(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition failed: ' + err.message }));
+            await __xyDlEchoVal(page); // v6: 把合成文本写入属性触发 DL 采集回显
             break;
           case 'composition-commit':
             noteInput();
+            // v5 DL 模式 IME 定位：同 composition——前置点击聚焦，坐标用完即删
+            if (m && Number.isFinite(m.x) && Number.isFinite(m.y)) {
+              await page.mouse.click(m.x, m.y).catch(() => {});
+              delete m.x; delete m.y;
+            }
             await input.compositionCommit(page, cdp, m).catch(err => sendJson({ type: 'error', msg: 'composition commit failed: ' + err.message }));
+            await __xyDlEchoVal(page); // v6: 上屏文本写入属性触发 DL 采集回显
             break;
           case 'upload-begin': {
             // 镜像文件上传（v0.13）：客户端 File → WS 分块 → 会话临时目录 →
@@ -1723,7 +1847,23 @@ async function runSession(ws, req, lifecycle) {
     //（限频 15s；dnd 结构小漂移（<结构阈值）正是靠本通道自愈的，v0.79 由
     // frame 降级顺带完成，观测模式必须显式补上）
     if (!FIDELITY_DOWNGRADE) {
+      // v0.82 观测模式熔断：重同步后失配形貌不变（同 match/judged）= 结构性
+      // 失配（视口差异/字体度量/动画区域几何），重拍永远无法收敛——只会把动
+      // 态页打成 15s 一次整树重建（实测烽火台：snaps 每 45s+1、闪屏不可用、
+      // CPU/带宽双爆）。连续 2 轮相似失配 → 静默 10 分钟，补丁通道继续保鲜。
       const nowOb = Date.now();
+      const sig = String(why).replace(/\s+/g, ' ');
+      if (fidelityDowngrade.__sig === sig) fidelityDowngrade.__repeat = (fidelityDowngrade.__repeat || 0) + 1;
+      else { fidelityDowngrade.__sig = sig; fidelityDowngrade.__repeat = 0; }
+      if ((fidelityDowngrade.__repeat || 0) >= 2) {
+        fidelityDowngrade.__muteUntil = nowOb + 600000;
+        if (nowOb - (fidelityDowngrade.__muteLog || 0) > 600000) {
+          fidelityDowngrade.__muteLog = nowOb;
+          try { logger.log('[fidelity] OBSERVE mute 10min (structural mismatch, patches keep flow) why=' + why); } catch (eD) {}
+        }
+        return;
+      }
+      if (fidelityDowngrade.__muteUntil && nowOb < fidelityDowngrade.__muteUntil) return;
       if (nowOb - (fidelityDowngrade.__lastResync || 0) > 15000) {
         fidelityDowngrade.__lastResync = nowOb;
         try { logger.log('[fidelity] OBSERVE resync-dom origin=' + orgOf() + ' why=' + why); } catch (eD) {}
@@ -2393,6 +2533,7 @@ async function runSession(ws, req, lifecycle) {
     // 实测 beacon 态势图：300KB PNG 瓦片在 18MB/min 预算下仅 ~0.9fps，地球呈
     // 冻结-跳变；JPEG@q50/0.5x 后预算内可达 ~5-7fps（慢速旋转视觉连续）。
     const animStreak = new Map();
+    const animLastChange = new Map(); // v0.83 最近内容变化时刻（内容率快道的速率信号）
     const vidLast = new Map(); // v0.72 video 帧节流（sigKey→上次捕获时刻）
     const ANIM_SCALE = Math.min(1, Math.max(0.25, parseFloat(process.env.XY_TILE_ANIM_SCALE || '0.5') || 0.5));
     const ANIM_QUALITY = Math.min(95, Math.max(20, parseInt(process.env.XY_TILE_ANIM_QUALITY || '50', 10) || 50));
@@ -2475,10 +2616,26 @@ async function runSession(ws, req, lifecycle) {
         let rafActive = false;
         // v0.72 video 旁路 rAF 门：视频播放不依赖页面 rAF（纯 <video> 页 rAF 静止），
         // 页内有可见 video 就保持捕获循环存活；静止视频由 sig 指数退避收敛成本
-        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) return; }
+        // v0.83 内容率旁路：rAF 停转但画布内容仍在变（ECharts 类"短动画长静止"
+        // 轮询图表）不应整拍跳过——上一拍 streak>=2 的画布视为内容活跃，继续捕获
+        // 并允许进入 JPEG 快道（带宽仍受 TILE_BUDGET/CAPTURE_PER_SEC 双闸约束）
+        const contentActive = list.some((it) => { const k = it.id !== undefined ? it.id : it.path; const lc = animLastChange.get(k) || 0; return lc && Date.now() - lc < 15000; });
+        if (rafN === rafLast.n) {
+          const frozenFor = Date.now() - rafLast.at;
+          if (frozenFor > 300 && !contentActive && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) {
+            // v0.83b 探测捕获：rAF 停转不再是硬门——每 2s 放行一拍探测（静态页由
+            // 画布自身退避 450ms→3600ms 与预算闸兜底 CPU）。此前硬 return 拦在
+            // streak 建立之前，烽火台图表曾永无 tile（鸡生蛋）
+            const probeOk = Date.now() - (rafLast.probeAt || 0) >= 2000;
+            if (!probeOk) return;
+            rafLast.probeAt = Date.now();
+          }
+        } else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
+        if (contentActive) rafActive = true;
         else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
+        if (contentActive) rafActive = true;
         // v0.65 动画集合（含 streak 判定）——用于帧流目标与占位集
-        const animItems = list.filter((it) => it.kind !== 'elbit' && it.kind !== 'video' && rafActive && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2); // v0.72 video 不进帧流（非 canvas 合成面）
+        const animItems = list.filter((it) => it.kind !== 'elbit' && it.kind !== 'video' && (rafActive || contentActive) && (animStreak.get(it.id !== undefined ? it.id : it.path) || 0) >= 2); // v0.72 video 不进帧流（非 canvas 合成面）
         if (animItems.length) {
           scLastAnimAt = Date.now();
           if (!scOn) {
@@ -2537,7 +2694,8 @@ async function runSession(ws, req, lifecycle) {
           let usedData = false;
           // v0.64 动画快速通道判定（streak 来自此前各拍；截图后 sig record 再更新）
           const animStreakN = animStreak.get(sigKey) || 0;
-          const animFast = it.kind !== 'elbit' && rafActive && animStreakN >= 2;
+          const lcKey = animLastChange.get(sigKey) || 0;
+          const animFast = it.kind !== 'elbit' && (rafActive || contentActive) && animStreakN >= 1 && lcKey && Date.now() - lcKey < 15000;
           // v0.77 快车道分级：streak 2-4 = 慢更新（轮询仪表盘 2s 一刷）——全分辨率
           // q85（每秒至多一两帧，带宽无压力，文字/图表必须清晰）；streak≥5 = 真动画
           // 才降半档走 ANIM_SCALE/ANIM_QUALITY（带宽优先）。beacon 实测模糊根因：
@@ -2620,7 +2778,7 @@ async function runSession(ws, req, lifecycle) {
             } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
           } catch (e) {}
           if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) {
-            animStreak.delete(sigKey); // v0.64 静止即退出动画通道
+            animStreak.set(sigKey, Math.max(0, (animStreak.get(sigKey) || 0) - 1)); // v0.83 静止衰减（间歇变化图表可累计）
             // 直读失真收敛：rAF 在动但直读内容连续不变 → 切截图通道
             if (usedData) {
               const n = (dataUrlBlank.get(sigKey) || 0) + 1;
@@ -2631,6 +2789,7 @@ async function runSession(ws, req, lifecycle) {
           }
           if (usedData) dataUrlBlank.delete(sigKey);
           animStreak.set(sigKey, (animStreak.get(sigKey) || 0) + 1); // v0.64 连续变化计数
+          animLastChange.set(sigKey, Date.now()); // v0.83 速率信号
           if (process.env.XY_DBG_TILE) { try { logger.log('[dbgtile] id=' + sigKey + ' kind=' + (it.kind || 'canvas') + ' via=' + (usedData ? 'data' : 'shot') + ' len=' + (shot ? shot.data.length : 'null')); } catch (e) {} }
           if (ws.readyState === 1) {
             // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素

@@ -135,6 +135,7 @@
       <div class="quality" style="margin-top:12px">
         <button data-m="dom" class="active">DOM 镜像</button>
         <button data-m="frame">像素直出兜底</button>
+        <button data-m="dl">DL 指令流</button>
       </div>
       <div class="conn-info" style="margin-top:10px">
         受保护源站标题：<code id="oTitle">-</code><br>
@@ -229,20 +230,279 @@
 
   function setMode(mo) {
     mode = mo;
-    const isDom = mo === 'dom' || mo === 'frame';
+    const isDom = mo === 'dom' || mo === 'frame' || mo === 'dl';
     frameMode = mo === 'frame';
     if (window.__xyDebug) console.log('setMode', mo);
     m('mMode').textContent = mo;
     m('spec').textContent = mo === 'dom' ? 'DOM 镜像（本地渲染 + 服务端补丁）'
+      : mo === 'dl' ? 'DL 指令流（服务端采集布局结果 → 本地 Canvas 重放）'
       : '像素直出（服务端整页渲染，本地零重排）';
     document.getElementById('box').style.display = isDom ? 'none' : '';
     document.getElementById('cur').style.display = 'none';
     document.getElementById('mirrorBox').style.display = isDom ? '' : 'none';
     document.getElementById('stageHint').innerHTML = mo === 'dom'
       ? '你现在看到的是 <b>DOM 镜像</b>：页面结构由服务端编码下发、<b>渲染在你本地</b>——本地滚动、CSS 悬停与动画无需等待服务端；内容变化由服务端推送小补丁（事件驱动，业务 DOM 静止时不发结构补丁，统计和心跳仍发送）。试试：滚动页面、悬停按钮、在输入框打字。'
+      : mo === 'dl'
+      ? 'DL 指令流：矢量指令在本地 Canvas 重放（F12 里只有画布）。试试点击输入框打字（支持中文输入法）、滚动页面。'
       : '操作说明：鼠标直接在画面上移动 / 点击 / 滚动；点击画面后即可用键盘输入。';
     document.querySelectorAll('.quality button[data-m]').forEach(b => b.classList.toggle('active', b.dataset.m === mo));
+    const dlc = document.getElementById('dlCanvas');
+    if (dlc) dlc.style.display = mo === 'dl' ? '' : 'none';
+    if (mo !== 'dl') dlCleanup(); // v6 离开 DL 视图：清投机回显、拆走隐藏 IME input
   }
+
+
+  // ---------- DL 模式：指令流 → Canvas 重放（feat/dl-mode v1；v5 滚动平移 + IME + 本地回显；v6 视口自适应 + 缓存/IME 清理） ----------
+  let dlStore = new Map(), dlOrder = [], dlImages = new Map(), dlBase = '#fff';
+  let dlSx = 0, dlSy = 0;               // v5 滚动平移偏移（dlscroll 帧驱动，重放时进 setTransform）
+  let dlVW = 1280, dlVH = 720;          // v6 视口自适应：full/patch 帧可带 w/h 覆写逻辑视口
+  let dlLastClick = { x: 0, y: 0 };     // v5 最近一次点击的逻辑坐标（dlVW×dlVH，回显锚点）
+  let dlKeyTarget = null;               // v5 隐藏 input：canvas 无法唤起输入法，由它承接 IME 合成
+  let compositionStr = '';              // v5 合成中文本地投机回显（compositionupdate 写入）
+  let dlLocalEcho = '';                 // v5 单字符投机回显（服务端 dl 帧到达即清）
+  // v7.1: 两端字体统一——服务端 Linux 渲染实际落在 Noto Sans SC，客户端注入引擎同款字体
+  (function dlInjectNoto() {
+    const st = document.createElement('style'); st.id = 'dlNotoStyle';
+    st.textContent = '@font-face{font-family:"Noto Sans SC";font-weight:400;font-display:swap;src:url("/f/noto-regular") format("woff2")}'
+      + '@font-face{font-family:"Noto Sans SC";font-weight:700;font-display:swap;src:url("/f/noto-bold") format("woff2")}';
+    document.head.appendChild(st);
+    try { document.fonts.ready.then(() => { if (typeof dlReplay === 'function') dlReplay(); }); } catch (e) {}
+  })();
+  let dlFontFams = new Set();
+  function dlRegisterFonts(fonts) {
+    let css = '';
+    for (const f of fonts) {
+      if (!f || !f.fam || !f.u || dlFontFams.has(f.fam + '|' + f.w)) continue;
+      dlFontFams.add(f.fam + '|' + f.w);
+      const wt = (parseInt(f.w, 10) >= 600) ? '700' : '400';
+      css += '@font-face{font-family:"' + String(f.fam).replace(/"/g, '') + '";font-weight:' + wt + ';font-display:swap;src:url("' + f.u + '");}';
+    }
+    if (!css) return;
+    let st = document.getElementById('dlFontStyle');
+    if (!st) { st = document.createElement('style'); st.id = 'dlFontStyle'; document.head.appendChild(st); }
+    st.textContent += css;
+    dlReplay(); // 字体注册后重放（swap 到位前先系统字体，加载完再正形）
+    try { document.fonts.ready.then(() => dlReplay()); } catch (e) {}
+  }
+  function dlCanvas() {
+    let c = document.getElementById('dlCanvas');
+    if (!c) {
+      c = document.createElement('canvas');
+      c.id = 'dlCanvas';
+      c.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:5;background:#fff;';
+      c.tabIndex = 0; // v5 可聚焦：承接键盘事件
+      document.getElementById('mirrorBox').appendChild(c);
+    }
+    if (!c.__xyDlWired) { c.__xyDlWired = true; dlWire(c); } // 绑定一次：本函数会被反复调用
+    return c;
+  }
+  // v5：屏幕坐标 → 逻辑坐标（画布 CSS 尺寸随容器伸缩；v6 基准 dlVW×dlVH 取代硬编码）
+  function dlLogicXY(c, e) {
+    const r = c.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (dlVW / r.width), y: (e.clientY - r.top) * (dlVH / r.height) };
+  }
+  // v5 键盘转发：与像素模式 cv 一致（SPECIAL + 单字符）。document 捕获层 keyForward
+  // 已转发过的键带 __xyKeyFwd 标记，这里只兜底防双发；合成中（229/isComposing）不转发。
+  function dlKeyDown(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Backspace' && dlLocalEcho) { dlLocalEcho = dlLocalEcho.slice(0, -1); dlReplay(); } // 回显同步退格
+    if (e.__xyKeyFwd) return;
+    if (SPECIAL.has(e.key)) { e.preventDefault(); send({ type: 'key', action: 'down', key: e.key }); return; }
+    if (e.key.length === 1) {
+      e.preventDefault(); send({ type: 'key', action: 'down', text: e.key });
+      dlLocalEcho += e.key; dlReplay(); // 一字符投机回显，patch 到达即清
+    }
+  }
+  function dlKeyUp(e) {
+    if (e.__xyKeyFwd) return;
+    if (SPECIAL.has(e.key)) { send({ type: 'key', action: 'up', key: e.key }); return; }
+    if (e.key.length === 1) send({ type: 'key', action: 'up', text: e.key });
+  }
+  // v5 隐藏 input 承接 IME：mousedown 时创建并聚焦；合成串本地回显 + 位置转发服务端
+  function dlEnsureIme() {
+    // v6：dlCleanup 会 remove 旧 input 并置空 dlKeyTarget——dlKeyTarget 可能悬空
+    //（!isConnected）或已不存在，以 DOM 为准，必要时重建
+    let inp = (dlKeyTarget && dlKeyTarget.isConnected) ? dlKeyTarget : document.getElementById('dlImeInput');
+    if (!inp) {
+      inp = document.createElement('input');
+      inp.id = 'dlImeInput';
+      inp.type = 'text';
+      inp.autocomplete = 'off';
+      inp.style.cssText = 'position:fixed;opacity:0;left:-9999px;top:0;width:8px;height:8px;';
+      inp.addEventListener('compositionupdate', (e) => {
+        const text = e.data || '';
+        compositionStr = text;
+        send({ type: 'composition', x: dlLastClick.x, y: dlLastClick.y, text, s: text.length, e: text.length });
+        dlReplay();
+      });
+      inp.addEventListener('compositionend', (e) => {
+        send({ type: 'composition-commit', x: dlLastClick.x, y: dlLastClick.y, text: e.data || '' });
+        compositionStr = '';
+        inp.value = ''; // 清空待下一轮输入，保留焦点可连续打字
+        inp.focus({ preventScroll: true });
+        dlReplay();
+      });
+      // 焦点实际落在这个 input 上（它会顶掉 canvas 焦点），键盘转发同样要挂这里
+      inp.addEventListener('keydown', dlKeyDown);
+      inp.addEventListener('keyup', dlKeyUp);
+      document.body.appendChild(inp);
+      dlKeyTarget = inp;
+    }
+    dlKeyTarget = inp;
+    inp.focus({ preventScroll: true });
+  }
+  // v6 退出/隐藏 DL 视图时清投机回显并拆走 IME 宿主，防残留合成串与离屏 input
+  function dlCleanup() {
+    compositionStr = '';
+    dlLocalEcho = '';
+    const im = document.getElementById('dlImeInput');
+    if (im) { im.blur(); im.remove(); }
+    if (dlKeyTarget) dlKeyTarget = null;
+  }
+  function dlWire(c) {
+    c.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // v6 防画布拖选文本/原生手势（焦点由下方 c.focus 手动承接）
+      dlLastClick = dlLogicXY(c, e);
+      c.focus({ preventScroll: true });
+      dlEnsureIme(); // 立即转入隐藏 input：后续按键/IME 都有真实宿主
+      send({ type: 'mouse', action: 'down', x: dlLastClick.x, y: dlLastClick.y, button: 'left' });
+    });
+    c.addEventListener('mouseup', (e) => {
+      const p = dlLogicXY(c, e);
+      send({ type: 'mouse', action: 'up', x: p.x, y: p.y, button: 'left' });
+    });
+    c.addEventListener('keydown', dlKeyDown);
+    c.addEventListener('keyup', dlKeyUp);
+    c.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const p = dlLogicXY(c, e);
+      send({ type: 'mouse', action: 'wheel', x: p.x, y: p.y, dx: e.deltaX, dy: e.deltaY });
+    }, { passive: false });
+    c.addEventListener('contextmenu', (e) => e.preventDefault()); // v6 画布右键不出浏览器菜单
+  }
+  function dlImg(src) {
+    let e = dlImages.get(src);
+    if (!e) {
+      const img = new Image();
+      e = { img, ok: false, bad: false };
+      img.onload = () => { e.ok = true; dlReplay(); };
+      img.onerror = () => { e.bad = true; };
+      img.src = src;
+      dlImages.set(src, e);
+    }
+    return e;
+  }
+  function dlRR(ctx, o, fill) {
+    const r = Math.max(0, o.r || 0);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(o.x, o.y, o.w, o.h, r);
+    else {
+      ctx.moveTo(o.x + r, o.y);
+      ctx.arcTo(o.x + o.w, o.y, o.x + o.w, o.y + o.h, r);
+      ctx.arcTo(o.x + o.w, o.y + o.h, o.x, o.y + o.h, r);
+      ctx.arcTo(o.x, o.y + o.h, o.x, o.y, r);
+      ctx.arcTo(o.x, o.y, o.x + o.w, o.y, r);
+      ctx.closePath();
+    }
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (o.s && o.lw) { ctx.strokeStyle = o.s; ctx.lineWidth = o.lw; ctx.stroke(); }
+  }
+  function dlReplay() {
+    const cv = dlCanvas();
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    if (cv.width !== dlVW * dpr || cv.height !== dlVH * dpr) { cv.width = dlVW * dpr; cv.height = dlVH * dpr; }
+    const ctx = cv.getContext('2d');
+    // v5 滚动平移：translate 由滚动偏移承担（dlscroll 帧）；背景同样受 transform，
+    // fillRect(dlSx, dlSy, dlVW, dlVH) 恰好覆盖当前视口区域。
+    ctx.setTransform(dpr, 0, 0, dpr, -dlSx * dpr, -dlSy * dpr);
+    ctx.fillStyle = dlBase || '#fff';
+    ctx.fillRect(dlSx, dlSy, dlVW, dlVH);
+    const list = dlOrder.map((id) => dlStore.get(id)).filter(Boolean).sort((a, b) => a.z - b.z);
+    for (const it of list) for (const o of it.ops) {
+      if (o.a === 'sh') {
+        if (o.inset) continue;
+        ctx.save();
+        ctx.shadowOffsetX = o.dx; ctx.shadowOffsetY = o.dy; ctx.shadowBlur = o.b; ctx.shadowColor = o.c;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(o.x, o.y, o.w, o.h);
+        ctx.restore();
+      } else if (o.a === 'rr') { dlRR(ctx, o, o.f && o.f !== 'rgba(0, 0, 0, 0)' ? o.f : null); }
+      else if (o.a === 'rrg') {
+        const rad = ((o.ang || 180) - 90) * Math.PI / 180;
+        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+        const L = (Math.abs(Math.cos(rad)) * o.w + Math.abs(Math.sin(rad)) * o.h) / 2;
+        try {
+          const g = ctx.createLinearGradient(cx - Math.cos(rad) * L, cy - Math.sin(rad) * L, cx + Math.cos(rad) * L, cy + Math.sin(rad) * L);
+          g.addColorStop(0, o.c1); g.addColorStop(1, o.c2);
+          dlRR(ctx, o, g);
+        } catch (e) {}
+      } else if (o.a === 'tx') {
+        ctx.font = (o.w || 400) + ' ' + (o.s || 14) + 'px "Noto Sans SC", "' + (o.f || 'sans-serif') + '", "Microsoft YaHei", sans-serif';
+        if (o.ls) { try { ctx.letterSpacing = o.ls + 'px'; } catch (e) {} }
+        ctx.fillStyle = o.c || '#333'; ctx.textBaseline = 'alphabetic';
+        ctx.textAlign = o.align === 'center' ? 'center' : (o.align === 'right' ? 'right' : 'left');
+        ctx.fillText(o.t, o.x, o.y);
+        ctx.textAlign = 'left';
+        if (o.ls) { try { ctx.letterSpacing = '0px'; } catch (e) {} }
+      } else if (o.a === 'im') {
+        const e = dlImg(o.src);
+        if (e.ok) {
+          ctx.save();
+          const r = Math.max(0, o.r || 0);
+          if (r) { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(o.x, o.y, o.w, o.h, r); else ctx.rect(o.x, o.y, o.w, o.h); ctx.clip(); }
+          const iw = e.img.naturalWidth || 1, ih = e.img.naturalHeight || 1;
+          const scale = (o.fit === 'contain') ? Math.min(o.w / iw, o.h / ih) : Math.max(o.w / iw, o.h / ih);
+          const dw = iw * scale, dh = ih * scale;
+          ctx.drawImage(e.img, o.x + (o.w - dw) / 2, o.y + (o.h - dh) / 2, dw, dh);
+          ctx.restore();
+        } else if (!e.bad) {
+          ctx.strokeStyle = '#d8dee6'; ctx.lineWidth = 1;
+          ctx.strokeRect(o.x + 0.5, o.y + 0.5, o.w - 1, o.h - 1);
+        }
+      } else if (o.a === 'svg') {
+        const e = dlImg('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(o.html));
+        if (e.ok) { try { ctx.drawImage(e.img, o.x, o.y, o.w, o.h); } catch (er) {} }
+      }
+    }
+    // v5 本地投机回显覆盖层：合成中文（compositionStr）优先，其次单字符缓冲
+    //（dlLocalEcho）。画在视口坐标系（重置 transform，不随滚动平移）——锚点是
+    // 用户点击的屏幕位置；白色半透明底衬 + 14px 黑字。
+    const dlEcho = compositionStr || dlLocalEcho;
+    if (dlEcho) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.font = '14px sans-serif';
+      ctx.textBaseline = 'alphabetic';
+      const tw = ctx.measureText(dlEcho).width;
+      const ex = Math.max(2, Math.min(dlLastClick.x, dlVW - 2 - tw));
+      const ey = Math.max(18, Math.min(dlLastClick.y - 4, dlVH - 2));
+      ctx.fillStyle = 'rgba(255,255,255,0.82)';
+      ctx.fillRect(ex - 2, ey - 14, tw + 4, 20);
+      ctx.fillStyle = '#000';
+      ctx.fillText(dlEcho, ex, ey);
+    }
+  }
+  function dlFrame(j) {
+    if (j.kind === 'off') { dlCleanup(); const c = document.getElementById('dlCanvas'); if (c) c.style.display = 'none'; return; }
+    const cv = dlCanvas();
+    cv.style.display = '';
+    if (j.w) dlVW = j.w;
+    if (j.h) dlVH = j.h;
+    // v6：full 只清 store/order 与滚动偏移，dlImages（SVG/图片 dataURL 缓存）跨 full
+    // 保留——滚动/对账触发的 full 重发不再全图闪烁+重新解码取图。
+    if (j.kind === 'full') { dlStore = new Map(); dlOrder = []; dlSx = 0; dlSy = 0; dlLocalEcho = ''; }
+    if (j.fonts && j.fonts.length) dlRegisterFonts(j.fonts);
+    if (j.base) dlBase = j.base;
+    // v5：item 可能携带 hit:{k,x,y,w,h}（服务端命中测试元数据）——随 item 整体入
+    // store 即可；重放只消费 ops，hit 字段天然被忽略。
+    for (const it of j.items || []) { if (!dlStore.has(it.id)) dlOrder.push(it.id); dlStore.set(it.id, it); }
+    for (const id of j.removed || []) { dlStore.delete(id); dlOrder = dlOrder.filter((x) => x !== id); }
+    if (j.kind === 'patch') dlLocalEcho = ''; // v5：服务端权威渲染到达，清单字符投机回显
+    dlReplay();
+    try { m('mIdle').textContent = 'streaming'; } catch (e) {}
+  }
+  // v5 滚动平移：服务端 dlscroll 帧只带偏移不重发指令，本地平移重放即可（零带宽滚动）
+  function dlScroll(sx, sy) { dlSx = sx || 0; dlSy = sy || 0; dlReplay(); }
 
   // ---------- DOM 镜像：本地 Shadow DOM 渲染 + 补丁应用 + 事件回传 ----------
   let mirrorRoot = null, mirrorBody = null, mirrorWired = false;
@@ -2309,6 +2569,8 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
             }
           }
           if (j.type === 'mode') { setMode(j.mode); lastErr = ''; setStatus('会话在线', true); }
+          else if (j.type === 'dl') { try { dlFrame(j); } catch (e) { console.warn('dl frame error', e); } }
+          else if (j.type === 'dlscroll') { try { dlScroll(j.sx, j.sy); } catch (e) { console.warn('dlscroll error', e); } }
           if (j.type === 'fp-req') {
             // v0.75 布局指纹对账：按服务端抽查 id 上报镜像元素渲染尺寸（w/h 与
             // 滚动无关）。先等字体就绪/首屏图片落位（有限等待），避免把"资源
@@ -2392,7 +2654,7 @@ function buildMirror(css, html, docClass, docAttrs, newBodyId, bodyStyle) {
         if (mirrorBody) {
           const sr = mirrorRoot;
           const art = sr.querySelectorAll('[data-xy-sel], .xy-tiles, [data-xy-sel] *');
-          fp = mirrorBody.querySelectorAll('*').length - art.length;
+          fp = mirrorBody.querySelectorAll('[data-xy-id]').length; /* v0.79 snapshot-sourced only: aligns client count with server countable set, kills structural false-drift */
         }
       } catch (e) {}
       const rumTick = (window.__rumTick = (window.__rumTick || 0) + 1);
