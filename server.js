@@ -2409,6 +2409,7 @@ async function runSession(ws, req, lifecycle) {
     // 实测 beacon 态势图：300KB PNG 瓦片在 18MB/min 预算下仅 ~0.9fps，地球呈
     // 冻结-跳变；JPEG@q50/0.5x 后预算内可达 ~5-7fps（慢速旋转视觉连续）。
     const animStreak = new Map();
+    const animLastChange = new Map(); // v0.83 最近内容变化时刻（内容率快道的速率信号）
     const vidLast = new Map(); // v0.72 video 帧节流（sigKey→上次捕获时刻）
     const ANIM_SCALE = Math.min(1, Math.max(0.25, parseFloat(process.env.XY_TILE_ANIM_SCALE || '0.5') || 0.5));
     const ANIM_QUALITY = Math.min(95, Math.max(20, parseInt(process.env.XY_TILE_ANIM_QUALITY || '50', 10) || 50));
@@ -2494,8 +2495,19 @@ async function runSession(ws, req, lifecycle) {
         // v0.83 内容率旁路：rAF 停转但画布内容仍在变（ECharts 类"短动画长静止"
         // 轮询图表）不应整拍跳过——上一拍 streak>=2 的画布视为内容活跃，继续捕获
         // 并允许进入 JPEG 快道（带宽仍受 TILE_BUDGET/CAPTURE_PER_SEC 双闸约束）
-        const contentActive = list.some((it) => { const k = it.id !== undefined ? it.id : it.path; return (animStreak.get(k) || 0) >= 2; });
-        if (rafN === rafLast.n) { if (Date.now() - rafLast.at > 300 && !contentActive && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) return; }
+        const contentActive = list.some((it) => { const k = it.id !== undefined ? it.id : it.path; const lc = animLastChange.get(k) || 0; return lc && Date.now() - lc < 15000; });
+        if (rafN === rafLast.n) {
+          const frozenFor = Date.now() - rafLast.at;
+          if (frozenFor > 300 && !contentActive && !list.some((it) => it.kind === 'elbit' && it.fresh) && !list.some((it) => it.kind === 'video') && !list.some((it) => it.hot)) {
+            // v0.83b 探测捕获：rAF 停转不再是硬门——每 2s 放行一拍探测（静态页由
+            // 画布自身退避 450ms→3600ms 与预算闸兜底 CPU）。此前硬 return 拦在
+            // streak 建立之前，烽火台图表曾永无 tile（鸡生蛋）
+            const probeOk = Date.now() - (rafLast.probeAt || 0) >= 2000;
+            if (!probeOk) return;
+            rafLast.probeAt = Date.now();
+          }
+        } else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
+        if (contentActive) rafActive = true;
         else { rafActive = true; rafLast = { n: rafN, at: Date.now() }; }
         if (contentActive) rafActive = true;
         // v0.65 动画集合（含 streak 判定）——用于帧流目标与占位集
@@ -2558,7 +2570,8 @@ async function runSession(ws, req, lifecycle) {
           let usedData = false;
           // v0.64 动画快速通道判定（streak 来自此前各拍；截图后 sig record 再更新）
           const animStreakN = animStreak.get(sigKey) || 0;
-          const animFast = it.kind !== 'elbit' && (rafActive || contentActive) && animStreakN >= 2;
+          const lcKey = animLastChange.get(sigKey) || 0;
+          const animFast = it.kind !== 'elbit' && (rafActive || contentActive) && animStreakN >= 1 && lcKey && Date.now() - lcKey < 15000;
           // v0.77 快车道分级：streak 2-4 = 慢更新（轮询仪表盘 2s 一刷）——全分辨率
           // q85（每秒至多一两帧，带宽无压力，文字/图表必须清晰）；streak≥5 = 真动画
           // 才降半档走 ANIM_SCALE/ANIM_QUALITY（带宽优先）。beacon 实测模糊根因：
@@ -2641,7 +2654,7 @@ async function runSession(ws, req, lifecycle) {
             } else sig = { w: 0, h: 0, data: Buffer.from(shot.data, 'base64') };
           } catch (e) {}
           if (!sigs.record(sigKey, sig, Date.now(), { elbit: it.kind === 'elbit' })) {
-            animStreak.delete(sigKey); // v0.64 静止即退出动画通道
+            animStreak.set(sigKey, Math.max(0, (animStreak.get(sigKey) || 0) - 1)); // v0.83 静止衰减（间歇变化图表可累计）
             // 直读失真收敛：rAF 在动但直读内容连续不变 → 切截图通道
             if (usedData) {
               const n = (dataUrlBlank.get(sigKey) || 0) + 1;
@@ -2652,6 +2665,7 @@ async function runSession(ws, req, lifecycle) {
           }
           if (usedData) dataUrlBlank.delete(sigKey);
           animStreak.set(sigKey, (animStreak.get(sigKey) || 0) + 1); // v0.64 连续变化计数
+          animLastChange.set(sigKey, Date.now()); // v0.83 速率信号
           if (process.env.XY_DBG_TILE) { try { logger.log('[dbgtile] id=' + sigKey + ' kind=' + (it.kind || 'canvas') + ' via=' + (usedData ? 'data' : 'shot') + ' len=' + (shot ? shot.data.length : 'null')); } catch (e) {} }
           if (ws.readyState === 1) {
             // v0.37 附带几何（x,y,w,h 页面绝对值）：图表库 reinit 会换 canvas 元素
